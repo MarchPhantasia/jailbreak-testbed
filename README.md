@@ -99,6 +99,11 @@ src/jailbreak_testbed/  M0 参考模型（不参与运行，见其 README）
 docs/            手册（canonical）、早期设计笔记、ADR
 ```
 
+## 审查修复记录
+
+a9b45c9 的 13 项问题（R01–R13）逐项状态、修改、验证与剩余限制见
+[docs/review/a9b45c9-fixes.md](docs/review/a9b45c9-fixes.md)。
+
 ## 与手册的对应
 
 | 手册阶段 | 本版 |
