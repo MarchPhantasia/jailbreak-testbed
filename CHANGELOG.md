@@ -6,7 +6,9 @@
 
 ### 已知问题（版本管理侧记录）
 
-- `src/jailbreak_testbed/`（7 个文件）与 `src/framework/`（17 个文件）在 budget / events / state / replay 上概念重复；前者仅被 3 项早期测试使用（`test_events.py`、`test_replay.py`、`test_state.py`）。待决定：删除，或改为对 `framework` 的 re-export。
+- ~~`src/jailbreak_testbed/` 与 `src/framework/` 概念重复，待决定去留~~ → **已决定：保留并标注为参考模型**（2026-11-11）。
+  它提供 framework 尚未覆盖的 `recompute` 差分与 `rollback` 语义；已加 `src/jailbreak_testbed/README.md` 说明边界，
+  计划在把 recompute 迁入 analysis 层后删除。
 - `.gitignore` 中的 `../.venv/` 是无效模式（git 忽略含 `..` 的规则），已移除；虚拟环境应放在仓库内并由 `.venv/` 覆盖。
 
 ## [code-v0.1.1] — 2026-11-11

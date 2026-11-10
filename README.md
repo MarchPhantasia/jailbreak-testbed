@@ -95,6 +95,7 @@ configs/         实验、endpoints、datasets、stages 样例
 fixtures/        合成任务（含模拟 Target 脚本）
 spec/rubrics/    冻结判据示例
 tests/           59 个测试
+src/jailbreak_testbed/  M0 参考模型（不参与运行，见其 README）
 docs/            手册（canonical）、早期设计笔记、ADR
 ```
 
