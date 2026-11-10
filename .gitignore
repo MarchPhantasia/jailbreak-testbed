@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 实验产物（体积大、且可能含模型原始输出）
+data/episodes/
+data/results/
+*.jsonl.bak
+!spec/**/*.jsonl
+
+# 模型与密钥
+.env
+.env.*
+!env.example
+*.key
+hf_token*
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
