@@ -4,7 +4,10 @@
 
 ## [Unreleased]
 
-（M0 之前的规格修订都进这里）
+### 已知问题（版本管理侧记录）
+
+- `src/jailbreak_testbed/`（7 个文件）与 `src/framework/`（17 个文件）在 budget / events / state / replay 上概念重复；前者仅被 3 项早期测试使用（`test_events.py`、`test_replay.py`、`test_state.py`）。待决定：删除，或改为对 `framework` 的 re-export。
+- `.gitignore` 中的 `../.venv/` 是无效模式（git 忽略含 `..` 的规则），已移除；虚拟环境应放在仓库内并由 `.venv/` 覆盖。
 
 ## [code-v0.1.0] — 2026-11-11
 
