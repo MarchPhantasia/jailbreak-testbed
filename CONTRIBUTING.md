@@ -34,3 +34,15 @@
 ```
 
 `area` 取值：`spec`、`adr`、`protocol`、`configs`、`docs`。
+
+## 版本管理（维护者职责）
+
+| 项 | 约定 |
+|---|---|
+| 分支 | `main` 随时可读；工作分支用 `spec/` `docs/` `feat/` `fix/` 前缀 |
+| 合并 | 进入 `main` 由维护者执行；开发侧提交前请先在本地跑 `bash scripts/precheck.sh` |
+| 标签 | 规格用 `spec-vX.Y`，代码用 `vX.Y.Z`，两者不互推 |
+| 变更记录 | 任何规格改动必须同步 `CHANGELOG.md` 的 `Unreleased`，写明改的是哪条契约 |
+| 钩子 | 克隆后执行一次 `git config core.hooksPath .githooks` 启用提交前检查 |
+
+`scripts/precheck.sh` 检查五项：JSON 可解析、rubric 不变量、文档相对链接、体积与密钥特征、工作区状态。CI 里同名 workflow 会再跑一遍，本地钩子是提前量，不是替代。

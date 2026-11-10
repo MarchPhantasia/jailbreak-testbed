@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# 由 git config core.hooksPath .githooks 启用
+exec bash scripts/precheck.sh
