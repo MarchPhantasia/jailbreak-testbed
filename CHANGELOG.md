@@ -6,6 +6,25 @@
 
 （M0 之前的规格修订都进这里）
 
+## [code-v0.1.0] — 2026-11-11
+
+### 新增（实现）
+
+- `src/framework/`：契约、事件与账本、预算守卫、接入层（Mock / OpenAI 兼容）、三种状态后端（原文 / 摘要 / F-O-X）、前沿与策略、装配与候选、在线与最终评价、执行引擎、控制器、恢复、数据集适配、实验编排、CLI。
+- `fixtures/synthetic_library/`：3 条合成任务（含拒绝样本），用于 M0 闭环。
+- `configs/`：experiment / endpoints / datasets / stages 四份样例。
+- `tests/`：59 项，覆盖手册 §18.1 的必要检查（预算不可绕过、拒答不退款、切换不退款、恢复不调模型、节点隔离、视图正确、出处存在、未知评分不为零、缺项不计覆盖、结果判定顺序）。
+
+### 变更
+
+- `requires-python` 保持 `>=3.10`；新增运行时依赖 `PyYAML` 与入口 `jbt = framework.cli:main`。
+- 移除 `configs/example.yaml`（旧的规格期配置，已被 `configs/experiment.yaml` 取代）。
+
+### 已知缺口
+
+- 归因三层（节点/事实/前缀）只有骨架；LLM 控制器与真实 endpoint 未联调；双裁判与人工切片未实现。
+
+
 ## [spec-v1.1] — 2026-11-10
 
 ### 变更（相对 v1.0）

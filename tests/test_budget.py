@@ -1,72 +1,86 @@
-import os
-import sys
-import unittest
+"""预算与缓存的不变量（手册 §8.2、§8.3、§18.1）。"""
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from __future__ import annotations
 
-from jailbreak_testbed.budget import (  # noqa: E402
-    Budget,
-    BudgetExhausted,
-    BudgetGuard,
-    Ledger,
-    TicketError,
-)
-from jailbreak_testbed.events import Cost, Event, EventType  # noqa: E402
+import pytest
+
+from framework.budget import BudgetExhausted, BudgetGuard
+from framework.clients import ResponseCache
+from framework.contracts import Action, ActionType, BudgetLimits, Status
+from framework.events import EventStore
+
+from helpers import make_engine
 
 
-class BudgetGuardTest(unittest.TestCase):
-    def test_reserve_then_settle_keeps_accounting(self):
-        guard = BudgetGuard(Budget(target_calls=3, judge_calls=1, tokens=1000, wall_ms=10_000))
-        t = guard.reserve("target_calls", 1)
-        self.assertEqual(guard.remaining()["target_calls"], 2)  # 预留已占位
-        cost = guard.settle(t, 1)
-        self.assertEqual(cost.target_calls, 1)
-        self.assertEqual(guard.remaining()["target_calls"], 2)
-        self.assertEqual(guard.spent["target_calls"], 1)
-
-    def test_reserve_beyond_budget_raises(self):
-        guard = BudgetGuard(Budget(target_calls=1))
-        guard.reserve("target_calls", 1)
-        with self.assertRaises(BudgetExhausted):
-            guard.reserve("target_calls", 1)
-
-    def test_settle_twice_raises(self):
-        guard = BudgetGuard(Budget())
-        t = guard.reserve("judge_calls", 1)
-        guard.settle(t, 1)
-        with self.assertRaises(TicketError):
-            guard.settle(t, 1)
-
-    def test_unsettled_ticket_detected(self):
-        guard = BudgetGuard(Budget())
-        t = guard.reserve("target_calls", 1)
-        with self.assertRaises(TicketError):
-            guard.assert_settled([t])
-        guard.settle(t, 1)
-        guard.assert_settled([t])  # 不抛
-
-    def test_unknown_kind_rejected(self):
-        guard = BudgetGuard(Budget())
-        with self.assertRaises(TicketError):
-            guard.reserve("gpu_hours", 1)
+def act(type_: ActionType, query: str = "", node_id: str | None = None) -> Action:
+    return Action(action_id=f"a_{type_.value}_{query[:6]}", type=type_, params={"query": query} if query else {}, node_id=node_id)
 
 
-class LedgerTest(unittest.TestCase):
-    def _ev(self, seq, cost, served):
-        return Event(seq=seq, type=EventType.RESPONSE, cost=cost, served=served)
-
-    def test_aggregates_cost_and_counts_served(self):
-        events = [
-            self._ev(1, Cost(target_calls=1, tokens_out=10), True),
-            self._ev(2, Cost(target_calls=1, tokens_out=10), False),  # 缓存命中
-            self._ev(3, Cost(judge_calls=1, tokens_out=5), True),
-        ]
-        ledger = Ledger.from_events(events)
-        self.assertEqual(ledger.cost.target_calls, 2)
-        self.assertEqual(ledger.cost.judge_calls, 1)
-        self.assertEqual(ledger.logical_calls, 3)
-        self.assertEqual(ledger.served_calls, 2)  # served=false 不计入
+def test_target_budget_cannot_be_exceeded(tmp_path):
+    engine, store, guard, _ = make_engine(tmp_path, scripts={"*": [{"text": "- 库位: C04\n"}]}, target_calls=2)
+    statuses = [engine.execute(act(ActionType.ASK_TARGET, f"问题{i}")).status for i in range(5)]
+    assert statuses[:2] == [Status.OK, Status.OK]
+    assert statuses[2] is Status.BUDGET_EXHAUSTED
+    assert guard.target_calls_used() == 2
+    assert engine.termination_reason == "budget_exhausted"
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_refusal_still_consumes_target_budget(tmp_path):
+    engine, store, guard, _ = make_engine(
+        tmp_path,
+        scripts={"*": [{"status": "REFUSED", "text": "抱歉，我不能提供这方面的信息。"}]},
+        target_calls=3,
+    )
+    res = engine.execute(act(ActionType.ASK_TARGET, "库位是什么"))
+    assert res.status is Status.REFUSED
+    assert guard.target_calls_used() == 1
+    assert store.ledger()["target_calls"] == 1
+    assert store.count("target_refusal") == 1
+
+
+def test_branch_switch_does_not_refund(tmp_path):
+    engine, store, guard, _ = make_engine(tmp_path, scripts={"*": [{"text": "- 库位: C04\n"}]}, target_calls=4)
+    engine.execute(act(ActionType.ASK_TARGET, "第一次查询", node_id="root"))
+    used_after_first = guard.target_calls_used()
+    # 从根节点再开一个分支
+    engine.execute(act(ActionType.ASK_TARGET, "第二次查询", node_id="root"))
+    assert guard.target_calls_used() == used_after_first + 1
+    released = [e for e in store.of_type("budget_settled") if e.payload.get("released")]
+    assert released == []
+
+
+def test_release_only_before_dispatch(tmp_path):
+    store = EventStore(str(tmp_path), "ep_x")
+    guard = BudgetGuard(BudgetLimits(target_calls=1), store, "ep_x")
+    t1 = guard.reserve("target")
+    guard.release(t1)  # 未发出可释放
+    t2 = guard.reserve("target")
+    guard.dispatch(t2)
+    with pytest.raises(RuntimeError):
+        guard.release(t2)  # 已发出不退款
+
+
+def test_double_settle_rejected(tmp_path):
+    store = EventStore(str(tmp_path), "ep_y")
+    guard = BudgetGuard(BudgetLimits(target_calls=2), store, "ep_y")
+    t = guard.reserve("target")
+    guard.dispatch(t)
+    guard.settle(t, {"tokens_in": 1}, call_id="c1")
+    with pytest.raises(RuntimeError):
+        guard.settle(t, {"tokens_in": 1}, call_id="c1")
+    t2 = guard.reserve("target")
+    guard.dispatch(t2)
+    with pytest.raises(RuntimeError):
+        guard.settle(t2, {}, call_id="c1")
+
+
+def test_cache_hit_is_not_a_served_call(tmp_path):
+    cache = ResponseCache(enabled=True)
+    engine, store, guard, _ = make_engine(tmp_path, scripts={"*": [{"text": "- 库位: C04\n"}]}, cache=cache)
+    engine.execute(act(ActionType.ASK_TARGET, "同样的查询", node_id="root"))
+    engine.execute(act(ActionType.ASK_TARGET, "同样的查询", node_id="root"))
+    led = store.ledger()
+    assert led["target_calls"] == 1
+    assert led["served_calls"] == 1
+    assert led["cache_hits"] == 1
+    assert guard.target_calls_used() == 1

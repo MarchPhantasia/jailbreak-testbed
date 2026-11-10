@@ -1,0 +1,29 @@
+# 服务接入（手册 §9）。部署（权重/引擎/GPU）不在仓库范围内。
+endpoints:
+  attacker:
+    protocol: openai_compatible
+    base_url: http://127.0.0.1:8001/v1
+    served_model_name: ATTACKER_MODEL
+    api_key_env: ATTACKER_API_KEY
+    timeout_s: 120
+    concurrency: 1
+    common_params:
+      temperature: 0.7
+      max_tokens: 2048
+    role_map:
+      controller: attacker
+      extractor: attacker
+      assembler: attacker
+  target:
+    protocol: openai_compatible
+    base_url: http://127.0.0.1:8002/v1
+    served_model_name: TARGET_MODEL
+    api_key_env: TARGET_API_KEY
+    timeout_s: 60
+    common_params:
+      temperature: 0.7
+    deployment_record:
+      weights_repo: null        # 由研究者填写；不得据此推断能力
+      precision: null
+      engine_version: null
+      source: unknown           # operator_reported | api_reported | unknown

@@ -3,14 +3,19 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+../.venv/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 
 # 实验产物（体积大、且可能含模型原始输出）
+results/
 data/episodes/
 data/results/
+data/manifests/
+data/raw/
+data/normalized/
 *.jsonl.bak
 !spec/**/*.jsonl
 

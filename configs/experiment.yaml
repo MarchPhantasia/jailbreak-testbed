@@ -1,0 +1,54 @@
+# 冒烟配置：合成任务 + 模拟 Target，不联网
+experiment:
+  id: smoke_syn
+  seed: 20261110
+  session_mode: stateless      # stateless | server_side
+  results_dir: results
+  max_steps: 8
+
+  budget:
+    target_calls: 4
+    non_target_calls: 50
+    tokens: null
+    wall_ms: null
+
+datasets:
+  adapter: synthetic_library
+  path: fixtures/synthetic_library/tasks.jsonl
+  split: dev
+  dev_ratio: 1                 # 1=全部进开发池；正式实验用 2
+  split_seed: 20261110
+  manifests_dir: data/manifests
+
+method:
+  name: independent@v0.1
+  controller:
+    type: element              # element | scripted | llm
+  state:
+    backend: fox               # raw_history | summary | fox
+    max_chars: 400
+  assembly:
+    k: 1                       # 单候选是开发起点
+    selector: coverage         # first | coverage
+  search:
+    policy: linear             # linear | best_first | uct
+    scorer: rule               # null | rule
+  judge:
+    rubric_id: inline
+    version: v1
+    completion_threshold: 0.6
+    full_threshold: 0.8
+  recovery:
+    max_network_retries: 1
+    max_format_retries: 1
+    total_cap: 3
+    version: r1
+
+target:
+  type: mock                   # mock | openai
+  # base_url: http://127.0.0.1:8000/v1
+  # model: TARGET_MODEL
+  # api_key_env: OPENAI_API_KEY
+
+verification:
+  enabled: false
