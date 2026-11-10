@@ -34,7 +34,7 @@
 | ID | 最终行为 | 落点 |
 |---|---|---|
 | S14 | 一次完成的扩展按路径向祖先回传 visit 与 reward；选择动作不再记零样本访问，均值不被稀释 | `engine.py::_ask_target`、`select_node` |
-| S01 | **未完成，记录为阻塞项**：CI 定义保留在 `docs/ci/ci.yml`（内容已是 install + pytest + precheck）。推送凭据缺 `workflow` 权限，无法写入 `.github/workflows/`。仓库断言恢复为严格形态并标记 `xfail(strict=True)`，理由写明"授权后移回即自动转绿"——不让断言冒充完成 | `docs/ci/ci.yml`、`tests/test_review_regressions.py` |
+| S01 | CI 定义已进入有效目录 `.github/workflows/ci.yml`（install + pytest + precheck）；R13 断言恢复严格。**远端 Actions 是否真正运行以 run URL 为准**，文件位置本身不是执行证明 | `.github/workflows/ci.yml`、`tests/test_review_regressions.py` |
 
 ## 验收
 

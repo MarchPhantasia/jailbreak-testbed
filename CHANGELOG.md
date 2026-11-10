@@ -14,7 +14,7 @@
 
 | 问题 | 结论 | 主要落点 |
 |---|---|---|
-| S01 | **阻塞**：凭据缺 `workflow` 权限，CI 仍暂存 `docs/ci/ci.yml`；仓库断言恢复严格并标 `xfail(strict=True)`，授权后移回即自动转绿 | `docs/ci/ci.yml`、`tests/test_review_regressions.py` |
+| S01 | CI 进入 `.github/workflows/ci.yml`，断言恢复严格；凭据补齐后推送成功（远端是否真正触发以 Actions run 为准） | `.github/workflows/ci.yml`、`tests/test_review_regressions.py` |
 | S02 | 原文后端向控制器与装配提供完整原文；截断改为显式 `window_chars`（默认不截断） | `state.py` |
 | S03 | 摘要历史快照归档为 `summary_archive`，活跃材料只保留当前摘要 | `state.py`、`assembly.py` |
 | S04 | 行/键/值联合绑定来源；合并摘要累积全部贡献 evidence；主张继承 support/fidelity，不再一律 ENTAILED | `state.py`、`assembly.py` |
@@ -29,7 +29,7 @@
 | S13 | 指标按重复组做任务级加权；`asr_point` 为主终点，`asr_episode` 与区间同时保留 | `judge.py`、`runner.py` |
 | S14 | UCT 完成扩展后沿声明路径回传 reward；选择动作不再增加零样本访问 | `engine.py` |
 
-结果：仓库测试 102 项（含 1 项 S01 `xfail`）；上轮原始验收 17/17；本轮验收 18/19（S01 为凭据阻塞，测试本身断言有效目录）。
+结果：仓库测试 103 项全通过；上轮原始验收 17/17；本轮验收 19/19。
 
 ### 版本管理侧改动（本轮）
 
