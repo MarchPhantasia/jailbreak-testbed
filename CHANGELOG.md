@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 版本管理侧改动（本轮）
+
+- `.github/workflows/ci.yml` 暂存为 `docs/ci/ci.yml`：当前 token 缺 `workflow` 权限，推送会被远端拒绝。内容为 install + pytest + precheck，补齐权限后一条 `git mv` 即生效。
+- 删除早先的 `docs/ci/docs-check.yml`（其职责已被 `docs/ci/ci.yml` 覆盖）。
+
 ### 已知问题（版本管理侧记录）
 
 - ~~`src/jailbreak_testbed/` 与 `src/framework/` 概念重复，待决定去留~~ → **已决定：保留并标注为参考模型**（2026-11-11）。
