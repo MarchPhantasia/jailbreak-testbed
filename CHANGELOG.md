@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+（下一轮）
+
+## [code-v0.2.0] — 2026-11-11
+
 ### 第二轮审查修复（S01–S14）
 
 按审查包 `review2-4a5c50d` 的 14 组问题修复，16 个文件涉及；新增 `tests/test_round2_invariants.py`（8 项）作仓库内回归保护。
