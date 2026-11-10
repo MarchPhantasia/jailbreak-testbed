@@ -9,6 +9,39 @@
 - `src/jailbreak_testbed/`（7 个文件）与 `src/framework/`（17 个文件）在 budget / events / state / replay 上概念重复；前者仅被 3 项早期测试使用（`test_events.py`、`test_replay.py`、`test_state.py`）。待决定：删除，或改为对 `framework` 的 re-export。
 - `.gitignore` 中的 `../.venv/` 是无效模式（git 忽略含 `..` 的规则），已移除；虚拟环境应放在仓库内并由 `.venv/` 覆盖。
 
+## [code-v0.1.1] — 2026-11-11
+
+按审查包（`a9b45c9`，R01–R13）修复工程与评价契约；测试 60 → 93 项，包内 17 项验收全过。
+
+### 修复
+
+- **R01** 服务配置生效：按 `target.type` 构造客户端，未支持类型直接报错；`check-services` 做真实探测（不可达即不健康）。
+- **R02** 冻结判据：每题 rubric 在计划阶段落盘，评价只读冻结对象；`accept` 值不再被元素名覆盖。
+- **R03** 分母与运行身份：先写 `plan.json` 冻结 episode 清单；同 ID 重跑抛 `FileExistsError`；缺 final / 缺候选记未决，正常终止无答案仍计失败。
+- **R04** 重复组先于划分建立，组内不跨 split。
+- **R05** 原文 / 摘要 / F-O-X 三后端都向装配提供材料；摘要受长度上限约束。
+- **R06** Evidence 完整记录落盘（`evidence.jsonl`），主张 → 证据 → 原始事件 → span → checksum 可解析。
+- **R07** `state_write` 保存所属节点与完整快照；`restore_state(..., node_id=)` 精确恢复，不合并兄弟、不调模型。
+- **R08** 恢复决定真正执行：`retry_same` 重发原查询且不推进控制器；`fallback_assemble` 真正装配。
+- **R09** Target 额度耗尽只拒绝新请求，收尾仍可用剩余本地额度装配并冻结答案。
+- **R10** 缺项按要素关联计算；"未确认/未提供/旧版"不算回答；同值不同要素不合并。
+- **R11** 分支入口可用（`search.branch_width`），UCT 访问/回传接通；未知策略显式报错。
+- **R12** usage 缺失记 `None` 并单列 `*_unknown_calls` / `usage_coverage`，不写成实测 0。
+- **R13** 生效 CI（`.github/workflows/ci.yml` 跑 pytest），`scripts/precheck.sh` 增加测试步骤。
+
+### 契约变化
+
+- 新增 `plan.json`（episode 清单 + 冻结 rubric）与 `rubrics.json`。
+- 新增 `episodes/<id>/evidence.jsonl` 与 `packs.jsonl`。
+- `state_write.payload.snapshot` 保存完整状态；`restore_state` 增加 `node_id` 参数。
+- `budget_settled.cost.tokens_in/tokens_out` 可为 `null`（未知）；ledger 增加 `*_unknown_calls`、`usage_coverage`。
+- `search.branch_width` 控制同父分支宽度（1 = 线性）。
+
+### 已知限制
+
+- R11 的分支策略由研究者声明；未内置自动分叉阈值。
+- 归因三层、双裁判、人工切片仍未实现（按手册属后续阶段）。
+
 ## [code-v0.1.0] — 2026-11-11
 
 ### 新增（实现）

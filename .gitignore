@@ -30,3 +30,6 @@ hf_token*
 .idea/
 .vscode/
 *.swp
+
+# 审查包（不入库）
+*review*.zip

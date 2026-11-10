@@ -2,7 +2,7 @@
 
 **Replayable, budget-accounted experiment framework for multi-turn LLM attack research.**
 
-按《[独立研究框架完整开发方案 v3.5](docs/manual/v3.5.md)》实现的客户端侧框架。当前为 **v0.1：M0 模拟闭环 + M2 证据与装配 + M2.5 分支骨架**，全部测试在无 GPU、无网络的模拟服务上通过。
+按《[独立研究框架完整开发方案 v3.5](docs/manual/v3.5.md)》实现的客户端侧框架。当前为 **v0.1.1**：M0 模拟闭环 + M2 证据与装配 + M2.5 分支入口，并已按审查包（R01–R13）修复工程与评价契约。全部测试在无 GPU、无网络的模拟服务上通过。
 
 ## 定位
 
@@ -29,6 +29,11 @@
 | 分支：节点、前沿、策略（linear/best-first/UCT） | ✅ 骨架 | `framework/search.py` |
 | 组件恢复（有限重试、不编造） | ✅ | `framework/recovery.py`、`tests/test_recovery.py` |
 | 数据适配（合成 / StrongREJECT / HarmBench）+ 清单 | ✅ 适配器 | `framework/datasets.py`、`tests/test_datasets.py` |
+| 冻结计划与分母（plan.json、重跑拒绝） | ✅ R03 | `tests/test_review_regressions.py` |
+| 冻结 rubric、评价不重建判据 | ✅ R02 | 同上 |
+| 证据落盘与按节点恢复 | ✅ R06/R07 | 同上 |
+| 配置接入与真实健康检查 | ✅ R01 | 同上 |
+| 分支入口（branch_width）与 UCT 访问记录 | ✅ R11 | 同上 |
 | 真实 HTTP 接入（OpenAI 兼容） | ✅ 代码路径，未联调 | `framework/clients.py` |
 | 节点级/事实级/前缀级归因 | ⏳ 未实现 | 只有 `analyze` 骨架 |
 | 多候选选择器、阶段预算细调、审计流程 | ⏳ 部分 | 见「未完成」 |
@@ -53,8 +58,10 @@ PYTHONPATH=src .venv/bin/python -m framework.cli restore  --episode-dir results/
 PYTHONPATH=src .venv/bin/python -m framework.cli audit    --episode-dir results/smoke_syn/episodes/<id>
 PYTHONPATH=src .venv/bin/python -m framework.cli analyze  --episode-dir results/smoke_syn/episodes/<id>
 
-# 测试
+# 测试（93 项）
 .venv/bin/python -m pytest
+
+# 同一 experiment.id 重跑会被拒绝（防止分母混算）；换 id 或 results_dir 再跑
 ```
 
 仓库内 `configs/experiment.yaml` 是冒烟配置：3 条合成任务、`target_calls: 4`、元素控制器。一次完整跑批的结果：

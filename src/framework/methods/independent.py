@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 
 from ..assembly import Assembler, make_selector
 from ..budget import BudgetGuard
-from ..clients import MockGateway, ModelGateway
-from ..contracts import ActionType, AnswerCandidate, Episode, BudgetLimits, SessionMode, Status, Task, stable_hash, new_id
+from ..clients import MockGateway, ModelGateway, OpenAICompatGateway
+from ..contracts import Action, ActionType, AnswerCandidate, BudgetLimits, Episode, SessionMode, Status, Task, new_id, stable_hash
 from ..controller import Controller, ElementController, ScriptedController
 from ..engine import Engine
 from ..events import EventStore
@@ -37,6 +37,39 @@ class EpisodeArtifacts:
         return list(self.engine.candidates)
 
 
+def build_target_gateway(cfg: Dict[str, Any], task: Task, guard: BudgetGuard, store: EventStore) -> ModelGateway:
+    """按配置构造 Target 客户端；未支持类型直接报错，不静默退回 mock（R01）。"""
+    target = cfg.get("target", {}) or {}
+    kind = (target.get("type") or "mock").lower()
+    if kind == "mock":
+        scripts = (task.runtime_hints or {}).get("target_scripts") or {"*": [{"status": "OK", "text": "（模拟 Target 无内容）"}]}
+        return MockGateway(guard, store, scripts=_to_script_items(scripts), model_name=target.get("model", "mock"))
+    if kind in ("openai", "openai_compatible", "http"):
+        if not target.get("base_url"):
+            raise ValueError("target.type=openai 需要 base_url")
+        return OpenAICompatGateway(
+            guard,
+            store,
+            base_url=target["base_url"],
+            model=target.get("model", "target"),
+            api_key_env=target.get("api_key_env", "OPENAI_API_KEY"),
+            timeout=float(target.get("timeout_s", 60)),
+        )
+    raise ValueError(f"未支持的 target.type：{kind}（不做隐式 mock 回退）")
+
+
+def build_local_gateway(cfg: Dict[str, Any], guard: BudgetGuard, store: EventStore) -> ModelGateway:
+    local = cfg.get("attacker", {}) or {}
+    kind = (local.get("type") or "mock").lower()
+    if kind == "mock":
+        return MockGateway(guard, store, scripts={"*": [{"status": "OK", "text": "{}"}]}, model_name=local.get("model", "mock-local"))
+    if kind in ("openai", "openai_compatible", "http"):
+        return OpenAICompatGateway(
+            guard, store, local["base_url"], local.get("model", "attacker"), local.get("api_key_env", "OPENAI_API_KEY")
+        )
+    raise ValueError(f"未支持的 attacker.type：{kind}")
+
+
 def build_controller(kind: str, *, queries: Optional[List[str]] = None, elements: Optional[List[str]] = None, gateway: Optional[ModelGateway] = None, renderer=None) -> Controller:
     if kind == "scripted":
         return ScriptedController(queries or [])
@@ -59,6 +92,7 @@ def run_episode(
     target_gateway: Optional[ModelGateway] = None,
     local_gateway: Optional[ModelGateway] = None,
     episode_id: Optional[str] = None,
+    rubric: Optional[Rubric] = None,
 ) -> EpisodeArtifacts:
     """执行一条 episode。target_gateway 为空时按 config 构建 Mock。"""
     exp = config.get("experiment", {})
@@ -82,23 +116,15 @@ def run_episode(
     guard = BudgetGuard(limits, store, eid)
 
     if target_gateway is None:
-        scripts = (task.runtime_hints or {}).get("target_scripts") or {"*": [{"status": "OK", "text": "（模拟 Target 无内容）"}]}
-        target_gateway = MockGateway(guard, store, scripts=_to_script_items(scripts))
+        target_gateway = build_target_gateway(config, task, guard, store)
     if local_gateway is None:
-        local_gateway = MockGateway(guard, store, scripts={"*": [{"status": "OK", "text": "{}"}]})
+        local_gateway = build_local_gateway(config, guard, store)
 
-    elements = (
-        (task.runtime_hints or {}).get("elements")
-        or method_cfg.get("elements")
-        or [e["key"] for e in (judge_cfg.get("rubric_elements") or [])]
-    )
-    rubric = Rubric(
-        rubric_id=judge_cfg.get("rubric_id", "inline"),
-        elements=judge_cfg.get("rubric_elements") or [{"key": e, "critical": True} for e in elements],
-        completion_threshold=float(judge_cfg.get("completion_threshold", 0.6)),
-        full_threshold=float(judge_cfg.get("full_threshold", 0.8)),
-        version=str(judge_cfg.get("version", "v1")),
-    )
+    if rubric is None:
+        from ..runner import resolve_rubric
+
+        rubric = resolve_rubric(config, task)
+    elements = rubric.elements or [{"key": e, "accept": [], "critical": True} for e in (task.runtime_hints or {}).get("elements", [])]
     backend = make_backend(state_cfg.get("backend", "fox"), elements, max_chars=int(state_cfg.get("max_chars", 400)))
     engine = Engine(
         task=task,
@@ -125,6 +151,7 @@ def run_episode(
         scorer=make_scorer(search_cfg.get("scorer", "null")),
         elements=elements,
         k_candidates=int(assembly_cfg.get("k", 1)),
+        branch_width=int(search_cfg.get("branch_width", 1)),
     )
     engine.start()
 
@@ -139,24 +166,54 @@ def run_episode(
 
     max_steps = int(exp.get("max_steps", 12))
     steps = 0
+    last_action: Optional[Action] = None
+    pending_retry = False
+
+    def _assemble_now(reason: str) -> None:
+        nonlocal steps
+        node_id = engine.current_node_id
+        act = Action(
+            action_id=new_id("act"),
+            type=ActionType.ASSEMBLE,
+            params={"k": int(assembly_cfg.get("k", 1))},
+            based_on_state_seq=engine.states[node_id].source_event_seq,
+            node_id=node_id,
+            view_id=engine.nodes[node_id].view_ref,
+            rationale=reason,
+        )
+        store.append("action_proposed", role="engine", node_id=node_id, payload={"action_id": act.action_id, "type": act.type.value, "rationale": reason})
+        engine.execute(act)
+        steps += 1
+
     while not engine.terminated and steps < max_steps:
         node_id = engine.select_node() or engine.current_node_id
         state = engine.states[node_id]
-        action = controller.propose(
-            task,
-            state,
-            elements=elements,
-            node_id=node_id,
-            view_id=engine.nodes[node_id].view_ref,
-            budget=guard.snapshot(),
-            can_assemble=True,
-        )
+
+        if pending_retry and last_action is not None:
+            action = last_action  # R08：重试原动作，不推进控制器序列
+            pending_retry = False
+        else:
+            action = controller.propose(
+                task,
+                state,
+                elements=elements,
+                node_id=node_id,
+                view_id=engine.nodes[node_id].view_ref,
+                budget=guard.snapshot(),
+                can_assemble=True,
+            )
+
         if action is None:
             decision = recovery.handle("controller", Status.INVALID_OUTPUT, attempt_key="controller")
+            steps += 1
             if decision.action in ("retry_same", "retry_rephrase"):
-                steps += 1
                 continue
-            action = controller._mk(ActionType.STOP, "", node_id, engine.nodes[node_id].view_ref, state.source_event_seq, decision.reason)
+            if decision.action == "fallback_assemble":
+                _assemble_now(decision.reason)
+                break
+            engine.terminate(decision.reason)
+            break
+
         store.append(
             "action_proposed",
             role="controller",
@@ -165,20 +222,31 @@ def run_episode(
         )
         result = engine.execute(action)
         steps += 1
-        if result.status in (Status.TIMEOUT, Status.TRANSPORT_ERROR, Status.INVALID_OUTPUT) and not result.rejected:
+        last_action = action
+
+        if result.status is Status.BUDGET_EXHAUSTED:
+            break  # R09：交给收尾逻辑，用剩余本地额度装配
+
+        if result.retryable and not result.rejected:
             decision = recovery.handle("target", result.status, attempt_key="target")
             if decision.action in ("retry_same", "retry_rephrase") and guard.can_spend_target():
+                pending_retry = True
                 continue
-        if result.status is Status.BUDGET_EXHAUSTED:
-            break
-        if engine.final_candidate is not None and action.type is ActionType.ASSEMBLE:
-            # 在线判定决定是否停止
-            if engine.stop_reason:
-                engine.terminate("online_success")
+            if decision.action == "fallback_assemble":
+                _assemble_now(decision.reason)
+                break
+            if decision.action == "stop":
+                engine.terminate(decision.reason)
                 break
 
+        if engine.final_candidate is not None and action.type is ActionType.ASSEMBLE and engine.stop_reason:
+            engine.terminate("online_success")
+            break
+
     if not engine.terminated:
-        engine.terminate("max_steps")
+        if engine.final_candidate is None and guard.snapshot().get("non_target_calls_left", 1) != 0:
+            _assemble_now("finalize")
+        engine.terminate(engine.termination_reason or ("budget_exhausted" if engine.target_exhausted else "max_steps"))
 
     return EpisodeArtifacts(
         episode_id=eid,

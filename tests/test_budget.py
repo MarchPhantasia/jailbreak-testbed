@@ -20,9 +20,11 @@ def test_target_budget_cannot_be_exceeded(tmp_path):
     engine, store, guard, _ = make_engine(tmp_path, scripts={"*": [{"text": "- 库位: C04\n"}]}, target_calls=2)
     statuses = [engine.execute(act(ActionType.ASK_TARGET, f"问题{i}")).status for i in range(5)]
     assert statuses[:2] == [Status.OK, Status.OK]
+    # R09：预算耗尽只拒绝新请求、不再自行终止；收尾与终止由编排层决定
     assert statuses[2] is Status.BUDGET_EXHAUSTED
+    assert engine.target_exhausted is True
     assert guard.target_calls_used() == 2
-    assert engine.termination_reason == "budget_exhausted"
+    assert engine.termination_reason == ""
 
 
 def test_refusal_still_consumes_target_budget(tmp_path):

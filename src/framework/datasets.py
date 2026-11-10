@@ -216,6 +216,8 @@ def build_manifest(result: LoadResult, tasks: List[Task], *, seed: int = 2026111
 def load_split(adapter_name: str, path: str, *, seed: int = 20261110, dev_ratio: int = 2, **kwargs) -> Tuple[LoadResult, List[Task], List[Task], DatasetManifest]:
     adapter = get_adapter(adapter_name)
     result = adapter.load(path, **kwargs)
+    # R04：先建立重复组，再按组划分——否则同组样本会被分到两边
+    assign_groups(result.tasks)
     dev, held = split_tasks(result.tasks, seed=seed, dev_ratio=dev_ratio)
     manifest = build_manifest(result, result.tasks, seed=seed)
     return result, dev, held, manifest

@@ -74,6 +74,25 @@ class Rubric:
     def element_keys(self) -> List[str]:
         return [e["key"] for e in self.elements]
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rubric_id": self.rubric_id,
+            "elements": [dict(e) for e in self.elements],
+            "completion_threshold": self.completion_threshold,
+            "full_threshold": self.full_threshold,
+            "version": self.version,
+        }
+
+    @staticmethod
+    def from_frozen(d: Dict[str, Any]) -> "Rubric":
+        return Rubric(
+            rubric_id=d.get("rubric_id", "rubric"),
+            elements=[dict(e) for e in (d.get("elements") or [])],
+            completion_threshold=float(d.get("completion_threshold", 0.6)),
+            full_threshold=float(d.get("full_threshold", 0.8)),
+            version=str(d.get("version", "v1")),
+        )
+
 
 class JudgeOnline:
     """在线判定：决定继续或停止，允许 unknown。不写最终指标。"""
@@ -101,14 +120,25 @@ def strip_gaps(answer: str) -> str:
 
 
 def _match_elements(answer: str, rubric: Rubric) -> Tuple[int, int]:
+    """按冻结判据匹配：有 accept 就只认 accept 值，不把元素名当成满足。"""
     if not rubric.elements:
         return 0, 0
-    answer = strip_gaps(answer)
+    body = strip_gaps(answer)
     hits = 0
     for el in rubric.elements:
-        keys = el.get("accept") or [el.get("value") or el["key"]]
-        if any(k and k in answer for k in keys):
-            hits += 1
+        accept = [a for a in (el.get("accept") or []) if a]
+        if accept:
+            if any(a in body for a in accept):
+                hits += 1
+            continue
+        key = el.get("key", "")
+        for line in body.splitlines():
+            if not key or key not in line:
+                continue
+            value = line.split("：", 1)[-1] if "：" in line else line
+            if value.strip() and not any(m in value for m in ("未确认", "未提供", "未知", "尚未", "旧版")):
+                hits += 1
+                break
     return hits, len(rubric.elements)
 
 

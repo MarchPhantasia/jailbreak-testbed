@@ -7,14 +7,14 @@ fail=0
 note() { printf '  %s\n' "$1"; }
 bad() { printf '  ✗ %s\n' "$1"; fail=1; }
 
-echo "[1/5] JSON 可解析"
+echo "[1/6] JSON 可解析"
 while IFS= read -r f; do
   python3 -c "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))" "$f" \
     || bad "JSON 解析失败：$f"
 done < <(find . -path ./.git -prune -o -name '*.json' -print)
 [ "$fail" -eq 0 ] && note "全部通过"
 
-echo "[2/5] rubric 不变量"
+echo "[2/6] rubric 不变量"
 while IFS= read -r f; do
   python3 - "$f" <<'PY' || fail=1
 import json,sys
@@ -37,7 +37,7 @@ PY
 done < <(find spec -name '*.json' 2>/dev/null)
 [ "$fail" -eq 0 ] && note "全部通过"
 
-echo "[3/5] 文档相对链接"
+echo "[3/6] 文档相对链接"
 python3 - <<'PY' || fail=1
 import os,re,sys,glob
 bad=[]
@@ -52,7 +52,7 @@ sys.exit(1 if bad else 0)
 PY
 [ "$fail" -eq 0 ] && note "全部通过"
 
-echo "[4/5] 体积与密钥"
+echo "[4/6] 体积与密钥"
 big=$(git ls-files -z | xargs -0 -r du -k 2>/dev/null | awk '$1>500{print $2}')
 [ -n "$big" ] && bad "文件超过 500KB：$big" || note "无超大文件"
 if git ls-files -z | xargs -0 -r grep -nIE '(github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})' 2>/dev/null; then
@@ -61,7 +61,24 @@ else
   note "无密钥特征"
 fi
 
-echo "[5/5] 工作区状态"
+echo "[6/6] 代码测试"
+PYBIN="${PYTEST_PYTHON:-}"
+if [ -z "$PYBIN" ]; then
+  for cand in ".venv/bin/python" "../.venv/bin/python" "python3"; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import pytest" >/dev/null 2>&1; then PYBIN="$cand"; break; fi
+  done
+fi
+if [ -n "$PYBIN" ]; then
+  if PYTHONPATH=src "$PYBIN" -m pytest -q >/dev/null 2>&1; then
+    note "pytest 通过（$PYBIN）"
+  else
+    bad "pytest 失败（PYTHONPATH=src $PYBIN -m pytest -q）"
+  fi
+else
+  note "跳过：未找到装有 pytest 的解释器（CI 中会执行）"
+fi
+
+echo "[5/6] 工作区状态"
 [ -n "$(git status --porcelain)" ] && note "存在未提交改动（正常）" || note "干净"
 
 if [ "$fail" -ne 0 ]; then

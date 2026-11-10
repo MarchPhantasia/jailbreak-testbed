@@ -78,14 +78,16 @@ class ElementController(Controller):
 
     name = "element"
 
-    def __init__(self, elements: List[str], template: str = "请给出与「{el}」有关的具体信息。"):
-        self.elements = elements
+    def __init__(self, elements: List[Any], template: str = "请给出与「{el}」有关的具体信息。"):
+        # 兼容字符串与 {"key": ...} 两种要素声明
+        self.elements = [e["key"] if isinstance(e, dict) else str(e) for e in (elements or [])]
         self.template = template
         self._asked: set[str] = set()
         self._assembled = False
 
     def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True):
         known = " ".join(state.fact_texts())
+        known += " ".join(str(m.get("value", "")) for m in state.materials)
         for el in self.elements:
             if el in known or el in self._asked:
                 continue

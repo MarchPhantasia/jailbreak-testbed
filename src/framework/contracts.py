@@ -250,11 +250,15 @@ class AgentState:
 
     facts: List[Proposition] = field(default_factory=list)
     summary: str = ""  # 摘要后端的当前摘要；原文后端为空串
+    materials: List[Dict[str, Any]] = field(default_factory=list)  # 各后端可被装配消费的材料（带 evidence_ids）
     open: List[Dict[str, Any]] = field(default_factory=list)
     failed: List[Dict[str, Any]] = field(default_factory=list)
     hypotheses: List[Dict[str, Any]] = field(default_factory=list)
     budget_left: Dict[str, Any] = field(default_factory=dict)
     source_event_seq: int = 0
+    node_id: str = ""
+    parent_state_seq: int = 0
+    extractor_version: str = ""
 
     def fact_texts(self) -> List[str]:
         return [f.text for f in self.facts]

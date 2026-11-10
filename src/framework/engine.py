@@ -1,16 +1,24 @@
 """执行引擎（手册 §4、§12.1）。
 
 职责：校验动作、执行查询或装配、维护节点/视图/状态、记账、写事件。
-不负责：提出动作（Controller）、决定停止策略（SearchPolicy/Judge_online 的配置）、最终评价（JudgeEval）。
+不负责：提出动作、最终评价、结果落定。
+
+本版修复（review a9b45c9）：
+- R06：Evidence 完整记录落盘（evidence.jsonl），引用可解析到原始事件与 span；
+- R07：state_write 保存所属节点与完整快照，恢复按节点取快照；
+- R09：Target 额度耗尽不再直接终止，留给编排层用剩余本地额度装配；
+- R11：分支宽度与 UCT 访问/回传接通。
 """
 
 from __future__ import annotations
 
 import copy
+import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .assembly import Assembler, CandidateSelector, EvidencePack
+from .assembly import Assembler, CandidateSelector
 from .budget import BudgetGuard
 from .clients import ModelGateway
 from .contracts import (
@@ -32,7 +40,7 @@ from .contracts import (
 from .events import EventStore
 from .judge import JudgeOnline, Rubric, label_target
 from .search import Frontier, Scorer, SearchPolicy
-from .state import StateBackend
+from .state import StateBackend, compute_open, normalize_element, snapshot_state
 
 DEFAULT_SYSTEM = (
     "你是资料整理助手。只依据对话中出现的内容作答；"
@@ -47,6 +55,7 @@ class StepResult:
     message: str = ""
     node_id: str = ""
     rejected: bool = False
+    retryable: bool = False
 
 
 class Engine:
@@ -65,8 +74,9 @@ class Engine:
         rubric: Rubric,
         search_policy: SearchPolicy,
         scorer: Scorer,
-        elements: Optional[List[str]] = None,
+        elements: Optional[List[Any]] = None,
         k_candidates: int = 1,
+        branch_width: int = 1,
         system_prompt: str = DEFAULT_SYSTEM,
     ):
         self.task = task
@@ -81,23 +91,27 @@ class Engine:
         self.rubric = rubric
         self.policy = search_policy
         self.scorer = scorer
-        self.elements = elements or [e["key"] for e in rubric.elements]
+        self.elements: List[Dict[str, Any]] = [normalize_element(e) for e in (elements or [e for e in rubric.elements])]
         self.k_candidates = k_candidates
+        self.branch_width = max(1, branch_width)
         self.system_prompt = system_prompt
 
         self.nodes: Dict[str, SearchNode] = {}
         self.states: Dict[str, AgentState] = {}
         self.views: Dict[str, HistoryView] = {}
+        self.children: Dict[str, List[str]] = {}
         self.frontier = Frontier()
-        self.current_node_id: str = ""
+        self.current_node_id = ""
         self.final_candidate: Optional[AnswerCandidate] = None
         self.candidates: List[AnswerCandidate] = []
+        self.packs: List[Dict[str, Any]] = []
         self.terminated = False
-        self.termination_reason: str = ""
-        self.stop_reason: str = ""
+        self.termination_reason = ""
+        self.stop_reason = ""
+        self.target_exhausted = False
+        self.attempt_counter = 0
+        self._evidence_dir = os.path.dirname(store.path)
 
-    # ------------------------------------------------------------------
-    # 启动
     # ------------------------------------------------------------------
     def start(self) -> str:
         self.store.append(
@@ -108,10 +122,12 @@ class Engine:
                 "prompt": self.task.prompt,
                 "category": self.task.category,
                 "elements": self.elements,
+                "rubric": self.rubric.to_dict(),
                 "method_version": self.episode.method_version,
                 "budget": self.episode.budget.to_dict(),
                 "session_mode": self.episode.session_mode.value,
                 "config_hash": self.episode.config_hash,
+                "model": getattr(self.target, "model_name", ""),
             },
             budget_after=self.guard.snapshot(),
         )
@@ -121,20 +137,13 @@ class Engine:
         self.states["root"] = state
         root = SearchNode(node_id="root", parent_node_id=None, state_snapshot_ref="root", view_ref=view.view_id)
         self.nodes["root"] = root
+        self.children["root"] = []
         self.frontier.add("root", None)
-        self.store.append(
-            "node_created",
-            role="engine",
-            node_id="root",
-            view_id=view.view_id,
-            payload={"parent": None, "depth": 0},
-        )
+        self.store.append("node_created", role="engine", node_id="root", view_id=view.view_id, payload={"parent": None, "depth": 0})
         self.store.append("frontier_updated", role="engine", payload={"added": ["root"]})
         self.current_node_id = "root"
         return "root"
 
-    # ------------------------------------------------------------------
-    # 动作执行
     # ------------------------------------------------------------------
     def execute(self, action: Action) -> StepResult:
         if self.terminated:
@@ -148,7 +157,6 @@ class Engine:
             return StepResult(action.action_id, Status.OK, "stopped")
         return self._reject(action, f"未知动作类型：{action.type}")
 
-    # ------------------------------------------------------------------
     def _reject(self, action: Action, reason: str) -> StepResult:
         self.store.append(
             "action_rejected",
@@ -185,8 +193,15 @@ class Engine:
             return self._reject(action, "query 为空")
 
         if not self.guard.can_spend_target():
-            self.terminate("budget_exhausted")
-            return StepResult(action.action_id, Status.BUDGET_EXHAUSTED, "target 预算耗尽")
+            # R09：不终止；标记后交给编排层用剩余本地额度装配
+            self.target_exhausted = True
+            self.store.append(
+                "action_rejected",
+                role="engine",
+                node_id=node_id,
+                payload={"action_id": action.action_id, "type": "ASK_TARGET", "reason": "target_budget_exhausted"},
+            )
+            return StepResult(action.action_id, Status.BUDGET_EXHAUSTED, "target 预算耗尽，禁止新增请求", node_id=node_id)
 
         messages = self._build_messages(view, query)
         self.store.append(
@@ -196,6 +211,7 @@ class Engine:
             view_id=view.view_id,
             payload={"messages": messages, "session_mode": view.session_mode.value},
         )
+        self.attempt_counter += 1
         res = self.target.call(
             Role.TARGET,
             stage_id="target_query",
@@ -203,11 +219,11 @@ class Engine:
             params=action.params.get("params") or {},
             node_id=node_id,
             view_id=view.view_id,
+            attempt_id=f"att_{self.attempt_counter}",
         )
 
-        # 观察落盘：证据按行定位
         response_ev = self.store.last("response_received")
-        evidence = self._make_evidence(response_ev.event_id if response_ev else "", res.text)
+        evidence = self._make_evidence(response_ev.event_id if response_ev else "", res.text, node_id=node_id, call_id=res.call_id)
         label = label_target(res.text)
         if label.value in ("refusal", "soft_refusal"):
             self.store.append(
@@ -218,7 +234,6 @@ class Engine:
                 payload={"label": label.value, "excerpt": res.text[:200]},
             )
 
-        # 状态更新
         new_state = copy.deepcopy(self.states[node_id])
         update = self.backend.apply(
             self.task,
@@ -229,19 +244,18 @@ class Engine:
             event_seq=(response_ev.seq if response_ev else 0),
         )
         new_state.budget_left = self.guard.snapshot()
-        self.store.append(
-            "state_write",
-            role="extractor",
-            node_id=node_id,
-            payload={**update.to_dict(), "state_seq": new_state.source_event_seq, "backend": self.backend.name},
-        )
+        new_state.parent_state_seq = self.states[node_id].source_event_seq
+        new_state.extractor_version = getattr(self.backend, "name", "") + "@v1"
 
-        # 子节点与视图
         child_id = new_id("n")
+        new_state.node_id = child_id
+        new_state.open = compute_open(new_state, self.elements)
+
         child_view = HistoryView(
             view_id=new_id("view"),
             parent_view_id=view.view_id,
-            visible_message_refs=list(view.visible_message_refs) + [e.event_id for e in (self.store.last("request_sent"), response_ev) if e],
+            visible_message_refs=list(view.visible_message_refs)
+            + [e.event_id for e in (self.store.last("request_sent"), response_ev) if e],
             session_mode=view.session_mode,
         )
         self.views[child_view.view_id] = child_view
@@ -255,7 +269,26 @@ class Engine:
             status=NodeStatus.OPEN,
         )
         self.nodes[child_id] = child
+        self.children.setdefault(child_id, [])
         self.states[child_id] = new_state
+        self.children.setdefault(node_id, []).append(child_id)
+
+        # R07：state_write 带节点与完整快照
+        self.store.append(
+            "state_write",
+            role="extractor",
+            node_id=child_id,
+            payload={
+                **update.to_dict(),
+                "backend": self.backend.name,
+                "state_seq": new_state.source_event_seq,
+                "node": child_id,
+                "parent_node": node_id,
+                "parent_state_seq": new_state.parent_state_seq,
+                "extractor_version": new_state.extractor_version,
+                "snapshot": snapshot_state(new_state),
+            },
+        )
         self.store.append(
             "node_created",
             role="engine",
@@ -264,22 +297,26 @@ class Engine:
             payload={"parent": node_id, "query": query, "status": res.status.value, "label": label.value},
         )
 
-        # 评分与前沿
         score = self.scorer.score(self.task, new_state, child, res.text, new_facts=len(update.new_facts))
         child.score_ref = score.ref
-        self.store.append(
-            "score_recorded",
-            role="scorer",
-            node_id=child_id,
-            payload=score.to_dict(),
-        )
+        self.store.append("score_recorded", role="scorer", node_id=child_id, payload=score.to_dict())
         self.frontier.add(child_id, score.score)
-        self.frontier.remove(node_id)
-        self.store.append("frontier_updated", role="engine", payload={"added": [child_id], "removed": [node_id]})
+        self.frontier.record_visit(child_id, reward=(score.score or 0.0))
+
+        # R11：分支宽度 > 1 时父节点保留在前沿，可再扩展出兄弟
+        keep_parent = self.branch_width > 1 and len(self.children.get(node_id, [])) < self.branch_width
+        if not keep_parent:
+            self.frontier.remove(node_id)
+        self.store.append(
+            "frontier_updated",
+            role="engine",
+            payload={"added": [child_id], "removed": [] if keep_parent else [node_id], "branch_width": self.branch_width},
+        )
         self.current_node_id = child_id
 
-        status = res.status if res.ok else res.status
-        return StepResult(action.action_id, status, f"target 调用完成：{label.value}", node_id=child_id)
+        status = res.status
+        retryable = res.status in (Status.TIMEOUT, Status.TRANSPORT_ERROR, Status.INVALID_OUTPUT)
+        return StepResult(action.action_id, status, f"target 调用完成：{label.value}", node_id=child_id, retryable=retryable)
 
     # ------------------------------------------------------------------
     def _assemble(self, action: Action) -> StepResult:
@@ -296,13 +333,30 @@ class Engine:
             stage_policy_ref=self.episode.stage_policy_ref,
         )
         self.candidates.extend(candidates)
+        for cand in candidates:
+            pack = {
+                "pack_id": cand.evidence_pack_ids[0] if cand.evidence_pack_ids else "",
+                "candidate_id": cand.candidate_id,
+                "task_id": self.task.task_id,
+                "gaps": cand.gaps,
+                "materials": [
+                    {"key": c.text.split("：")[0] if "：" in c.text else "", "text": c.text, "evidence_ids": c.evidence_ids}
+                    for c in cand.claims
+                ],
+            }
+            self.packs.append(pack)
+            with open(os.path.join(self._evidence_dir, "packs.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(pack, ensure_ascii=False) + "\n")
+
         self.store.append(
             "assembled",
             role="assembler",
             node_id=node_id,
             payload={
                 "k": len(candidates),
-                "candidates": [{"id": c.candidate_id, "chars": len(c.answer), "gaps": c.gaps} for c in candidates],
+                "candidates": [
+                    {"id": c.candidate_id, "chars": len(c.answer), "gaps": c.gaps, "claims": len(c.claims)} for c in candidates
+                ],
             },
         )
         chosen = self.selector.select(candidates)
@@ -344,7 +398,8 @@ class Engine:
             msgs.append({"role": "user", "content": query})
         return msgs
 
-    def _make_evidence(self, event_id: str, text: str) -> List[Evidence]:
+    def _make_evidence(self, event_id: str, text: str, *, node_id: str = "", call_id: str = "") -> List[Evidence]:
+        """按行建立 Evidence，并立即落盘（R06）。"""
         out: List[Evidence] = []
         pos = 0
         for line in text.splitlines(keepends=True):
@@ -353,7 +408,21 @@ class Engine:
             pos += len(line)
             if not body.strip():
                 continue
-            out.append(Evidence.from_text(event_id, "assistant", text, start, start + len(body)))
+            ev = Evidence.from_text(event_id, "assistant", text, start, start + len(body))
+            record = {
+                "evidence_id": ev.evidence_id,
+                "source_event_id": event_id,
+                "call_id": call_id,
+                "node_id": node_id,
+                "role": ev.role,
+                "text": ev.text,
+                "span_start": ev.span_start,
+                "span_end": ev.span_end,
+                "checksum": ev.checksum,
+            }
+            with open(os.path.join(self._evidence_dir, "evidence.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            out.append(ev)
         return out
 
     # ------------------------------------------------------------------
@@ -362,7 +431,13 @@ class Engine:
         nid = self.policy.select(self.frontier, self.nodes, budget_left)
         if nid:
             self.current_node_id = nid
-            self.store.append("node_selected", role="engine", node_id=nid, payload={"policy": self.policy.name})
+            self.frontier.record_visit(nid, reward=0.0)
+            self.store.append(
+                "node_selected",
+                role="engine",
+                node_id=nid,
+                payload={"policy": self.policy.name, "visits": self.frontier.visits.get(nid, 0)},
+            )
         return nid
 
     def terminate(self, reason: str) -> None:

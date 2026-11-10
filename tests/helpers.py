@@ -64,7 +64,7 @@ def make_engine(
     guard = BudgetGuard(limits, store, episode_id)
     gw = MockGateway(guard, store, scripts=scripted(scripts or {"*": [{"text": "- 库位: C04\n"}]}), cache=cache)
     elements = task.runtime_hints.get("elements") or []
-    rubric = Rubric(rubric_id="r1", elements=[{"key": e, "critical": True, "accept": [e]} for e in elements])
+    rubric = Rubric(rubric_id="r1", elements=[{"key": e, "critical": True, "accept": []} for e in elements])
     engine = Engine(
         task=task,
         episode=Episode(

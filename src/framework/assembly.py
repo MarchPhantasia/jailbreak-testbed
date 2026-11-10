@@ -1,84 +1,76 @@
 """装配与候选选择（手册 §10.1）。
 
 约束：
-- 只用证据包里已有的命题组织答案；缺项保留为缺项，不自由补写；
-- 每条进入答案的主张必须能映射到 evidence_id，否则标为 hypothesis 并不计入来源；
-- 多候选共享同一证据包；记录 k、阶段策略与全部成本；
-- CandidateSelector 只能使用在线标准，不得读取 Judge_eval。
+- 材料来自 StateBackend 提供的 materials（原文行 / 摘要 / 命题），三种后端走同一路径；
+- 缺项由要素关联计算（不是"要素名是否出现在答案里"）；
+- 每条主张必须带 evidence_ids；缺项保留为缺项；
+- 多候选共享同一证据包；选择器只读在线标准。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .contracts import (
-    AgentState,
-    AnswerCandidate,
-    Claim,
-    Evidence,
-    Origin,
-    Proposition,
-    SupportStatus,
-    Task,
-    new_id,
-)
+from .contracts import AgentState, AnswerCandidate, Claim, Origin, SupportStatus, Task, new_id
+from .state import compute_open, element_evidence, normalize_element
 
 
 @dataclass
 class EvidencePack:
     pack_id: str
     task_id: str
-    facts: List[Proposition] = field(default_factory=list)
+    materials: List[Dict[str, Any]] = field(default_factory=list)
     gaps: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
     def evidence_ids(self) -> List[str]:
         out: List[str] = []
-        for f in self.facts:
-            out.extend(f.evidence_ids)
+        for m in self.materials:
+            out.extend(m.get("evidence_ids") or [])
         return out
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class Assembler:
-    """单候选装配是开发起点；k>1 时共享同一证据包。"""
+    name = "material_template"
 
-    name = "template"
-
-    def build_pack(self, task: Task, state: AgentState, elements: Optional[List[str]] = None) -> EvidencePack:
-        gaps: List[str] = []
-        if elements:
-            present = " ".join(f.text for f in state.facts)
-            gaps = [e for e in elements if e not in present]
-        return EvidencePack(pack_id=new_id("pack"), task_id=task.task_id, facts=list(state.facts), gaps=gaps)
+    def build_pack(self, task: Task, state: AgentState, elements: Optional[List[Any]] = None) -> EvidencePack:
+        gaps = [o["goal"] for o in compute_open(state, elements or [])]
+        # 材料去重：同 key 同 value 只保留一次（不同要素同值仍各自保留）
+        seen: set[Tuple[str, str]] = set()
+        materials: List[Dict[str, Any]] = []
+        for m in state.materials:
+            sig = (str(m.get("key", "")), str(m.get("value", m.get("text", ""))))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            materials.append(m)
+        return EvidencePack(pack_id=new_id("pack"), task_id=task.task_id, materials=materials, gaps=gaps)
 
     def render(self, task: Task, pack: EvidencePack) -> Tuple[str, List[Claim], List[str]]:
-        """确定性模板渲染：按 key 分组，保留原文表述与限定条件。"""
         claims: List[Claim] = []
         lines: List[str] = []
-        seen: set[str] = set()
-        for fact in pack.facts:
-            key = str(fact.qualifiers.get("key", "") or "")
-            if fact.text in seen:
+        for m in pack.materials:
+            key = str(m.get("key", "") or "")
+            value = str(m.get("value", m.get("text", "")) or "")
+            if not value:
                 continue
-            seen.add(fact.text)
-            prefix = f"{key}：" if key else ""
-            lines.append(f"- {prefix}{fact.text}")
+            lines.append(f"- {key}：{value}" if key else f"- {value}")
             claims.append(
                 Claim(
                     claim_id=new_id("cl"),
-                    text=fact.text,
-                    evidence_ids=list(fact.evidence_ids),
-                    origin=fact.origin,
-                    support_status=fact.support_status,
+                    text=value,
+                    evidence_ids=list(m.get("evidence_ids") or []),
+                    origin=Origin.TARGET_RESPONSE,
+                    support_status=SupportStatus.ENTAILED,
                 )
             )
         if pack.gaps:
             lines.append("- 未提供：" + "、".join(pack.gaps))
-        body = "\n".join(lines) if lines else "（无可装配材料）"
-        # 不回显原始请求：否则"要素名出现在 prompt 里"会被判据误当成覆盖
-        answer = body
-        return answer, claims, list(pack.gaps)
+        return ("\n".join(lines) if lines else "（无可装配材料）"), claims, list(pack.gaps)
 
     def assemble(
         self,
@@ -86,17 +78,16 @@ class Assembler:
         state: AgentState,
         *,
         k: int = 1,
-        elements: Optional[List[str]] = None,
+        elements: Optional[List[Any]] = None,
         stage_policy_ref: str = "",
     ) -> List[AnswerCandidate]:
         pack = self.build_pack(task, state, elements)
-        candidates: List[AnswerCandidate] = []
+        out: List[AnswerCandidate] = []
         for i in range(max(1, k)):
             answer, claims, gaps = self.render(task, pack)
             if i > 0:
-                # 追加式变体：仅改变组织顺序（不新增内容），用于候选池实验
                 answer = answer + f"\n（排版变体 {i}）"
-            candidates.append(
+            out.append(
                 AnswerCandidate(
                     candidate_id=new_id("cand"),
                     answer=answer,
@@ -108,12 +99,10 @@ class Assembler:
                     end_state="assembled",
                 )
             )
-        return candidates
+        return out
 
 
 class CandidateSelector:
-    """在线选择：按预先声明的标准，不看最终评价。"""
-
     name = "first"
 
     def select(self, candidates: List[AnswerCandidate], scores: Optional[Dict[str, float]] = None) -> Optional[AnswerCandidate]:
@@ -125,8 +114,6 @@ class CandidateSelector:
 
 
 class CoverageSelector(CandidateSelector):
-    """按"有证据的主张数 - 缺项数"选择；仍是确定性在线标准。"""
-
     name = "coverage"
 
     def select(self, candidates: List[AnswerCandidate], scores: Optional[Dict[str, float]] = None):
@@ -134,14 +121,22 @@ class CoverageSelector(CandidateSelector):
             return None
 
         def key(c: AnswerCandidate) -> int:
-            supported = sum(1 for cl in c.claims if cl.evidence_ids)
-            return supported - len(c.gaps)
+            return sum(1 for cl in c.claims if cl.evidence_ids) - len(c.gaps)
 
         return max(candidates, key=key)
 
 
 def make_selector(name: str) -> CandidateSelector:
-    name = (name or "first").lower()
-    if name == "coverage":
-        return CoverageSelector()
-    return CandidateSelector()
+    return CoverageSelector() if (name or "").lower() == "coverage" else CandidateSelector()
+
+
+__all__ = [
+    "Assembler",
+    "CandidateSelector",
+    "CoverageSelector",
+    "EvidencePack",
+    "make_selector",
+    "compute_open",
+    "element_evidence",
+    "normalize_element",
+]

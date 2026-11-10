@@ -44,7 +44,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = runner.load_config(args.config)
     if args.limit is not None:
         cfg.setdefault("datasets", {})["limit"] = args.limit
-    out = runner.run_experiment(cfg, offset=args.offset)
+    try:
+        out = runner.run_experiment(cfg, offset=args.offset)
+    except FileExistsError as exc:
+        _print({"command": "run", "ok": False, "error": str(exc), "hint": "换 experiment.id 或换 results_dir 再跑"})
+        return 2
     _print({"command": "run", "calls_model": True, "phase": "online", **out})
     return 0
 

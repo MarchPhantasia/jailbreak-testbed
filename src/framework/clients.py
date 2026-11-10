@@ -1,9 +1,9 @@
 """模型接入层（手册 §9）。
 
 - 所有调用经 ModelGateway，内部强制走 BudgetGuard；
-- 只适配已有 HTTP 接口，不负责部署（权重、引擎、GPU 在仓库之外）；
-- 保存实际发送的消息、配置、原始文本、finish_reason 与用量；
-- 缓存默认关闭（正式在线实验），开启时记录 cache_hit 且 served=False。
+- 只适配已有 HTTP 接口，不负责部署；
+- usage 缺失记为 None（unknown），不写成实测 0（R12）；
+- 提供 probe() 供 check-services 做真实可达性检查（R01），探针成本单列。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .budget import BudgetGuard, BudgetExhausted
-from .contracts import Role, Status, new_id, stable_hash
+from .contracts import Role, Status, new_id
 from .events import EventStore
 
 
@@ -39,9 +39,18 @@ class CallResult:
         return self.status in (Status.OK, Status.PARTIAL)
 
 
-class ResponseCache:
-    """内容哈希缓存。默认关闭；开启时它只减少 served 调用，不产生新样本。"""
+def usage_field(usage: Dict[str, Any], *names: str) -> Optional[int]:
+    """usage 中取字段；缺失返回 None（unknown），与真实 0 区分。"""
+    for n in names:
+        if n in usage and usage[n] is not None:
+            try:
+                return int(usage[n])
+            except (TypeError, ValueError):
+                return None
+    return None
 
+
+class ResponseCache:
     def __init__(self, enabled: bool = False):
         self.enabled = enabled
         self._store: Dict[str, CallResult] = {}
@@ -79,6 +88,7 @@ class ModelGateway:
         *,
         node_id: str = "",
         view_id: str = "",
+        attempt_id: str = "",
     ) -> CallResult:
         role_name = role.value if isinstance(role, Role) else str(role)
         params = params or {}
@@ -91,6 +101,7 @@ class ModelGateway:
                 stage_id=stage_id,
                 node_id=node_id,
                 view_id=view_id,
+                attempt_id=attempt_id,
                 payload={"key": key},
             )
             return CallResult(
@@ -114,6 +125,7 @@ class ModelGateway:
             call_id=call_id,
             node_id=node_id,
             view_id=view_id,
+            attempt_id=attempt_id,
             payload={
                 "messages": messages,
                 "params": params,
@@ -127,13 +139,14 @@ class ModelGateway:
         try:
             res = self._invoke(role_name, stage_id, messages, params)
             res.call_id = call_id
-        except Exception as exc:  # noqa: BLE001  传输层异常统一降级
+        except Exception as exc:  # noqa: BLE001
             res = CallResult(call_id=call_id, status=Status.TRANSPORT_ERROR, error=str(exc))
         wall_ms = int((time.time() - t0) * 1000)
         cost = {
-            "tokens_in": int(res.usage.get("prompt_tokens") or res.usage.get("input_tokens") or 0),
-            "tokens_out": int(res.usage.get("completion_tokens") or res.usage.get("output_tokens") or 0),
+            "tokens_in": usage_field(res.usage, "prompt_tokens", "input_tokens"),
+            "tokens_out": usage_field(res.usage, "completion_tokens", "output_tokens"),
             "wall_ms": wall_ms,
+            "usage_status": "reported" if res.usage else "unknown",
         }
         self.store.append(
             "response_received",
@@ -142,34 +155,44 @@ class ModelGateway:
             call_id=call_id,
             node_id=node_id,
             view_id=view_id,
+            attempt_id=attempt_id,
             payload={
                 "status": res.status.value,
                 "text": res.text,
                 "finish_reason": res.finish_reason,
                 "usage": res.usage,
+                "usage_status": cost["usage_status"],
                 "error": res.error,
                 "raw": res.raw,
             },
         )
         self.guard.settle(ticket, cost, call_id=call_id)
         self.cache.put(key, res)
-        self.calls.append({"role": role_name, "stage": stage_id, "messages": messages, "params": params, "status": res.status.value})
+        self.calls.append(
+            {
+                "role": role_name,
+                "stage": stage_id,
+                "messages": messages,
+                "params": params,
+                "status": res.status.value,
+                "model": self.model_name,
+            }
+        )
         return res
 
     def _invoke(self, role: str, stage: str, messages: List[Dict[str, str]], params: Dict[str, Any]) -> CallResult:  # pragma: no cover
         raise NotImplementedError
 
+    def probe(self) -> Dict[str, Any]:  # pragma: no cover - 具体客户端实现
+        raise NotImplementedError
+
 
 class MockGateway(ModelGateway):
-    """脚本化客户端：测试与 fixtures 用，不联网。
+    """脚本化客户端：测试与 fixtures 用，不联网。"""
 
-    scripts: {matcher: [CallResult | callable(messages)->CallResult, ...]}
-    matcher 为字符串时按子串匹配（在最后一条 user 消息里），* 为默认。
-    """
-
-    def __init__(self, guard: BudgetGuard, store: EventStore, scripts: Optional[Dict[str, Any]] = None, cache: Optional[ResponseCache] = None):
+    def __init__(self, guard: BudgetGuard, store: EventStore, scripts: Optional[Dict[str, Any]] = None, cache: Optional[ResponseCache] = None, model_name: str = "mock"):
         super().__init__(guard, store, cache)
-        self.model_name = "mock"
+        self.model_name = model_name
         self.scripts = scripts or {"*": [CallResult(call_id="", status=Status.OK, text="ok")]}
         self._cursor: Dict[str, int] = {}
 
@@ -190,20 +213,19 @@ class MockGateway(ModelGateway):
         idx = self._cursor.get(key, 0)
         self._cursor[key] = idx + 1
         item = seq[idx] if idx < len(seq) else seq[-1]
-        if callable(item):
-            res = item(messages)
-        else:
-            res = CallResult(
-                call_id="",
-                status=item.status,
-                text=item.text,
-                finish_reason=item.finish_reason,
-                usage=dict(item.usage),
-                raw=dict(item.raw),
-                error=item.error,
-            )
-        res.served = True
-        return res
+        res = item(messages) if callable(item) else item
+        return CallResult(
+            call_id="",
+            status=res.status,
+            text=res.text,
+            finish_reason=res.finish_reason,
+            usage=dict(res.usage),
+            raw=dict(res.raw),
+            error=res.error,
+        )
+
+    def probe(self) -> Dict[str, Any]:
+        return {"ok": True, "type": "mock", "note": "mock 不产生真实调用"}
 
 
 class OpenAICompatGateway(ModelGateway):
@@ -225,16 +247,19 @@ class OpenAICompatGateway(ModelGateway):
         self.api_key_env = api_key_env
         self.timeout = timeout
 
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ.get(self.api_key_env, '')}",
+        }
+
     def _invoke(self, role: str, stage: str, messages: List[Dict[str, str]], params: Dict[str, Any]) -> CallResult:
         body = {"model": self.model_name, "messages": messages}
         body.update({k: v for k, v in params.items() if k in ("temperature", "top_p", "max_tokens", "stop", "seed")})
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {os.environ.get(self.api_key_env, '')}",
-            },
+            headers=self._headers(),
             method="POST",
         )
         try:
@@ -259,3 +284,31 @@ class OpenAICompatGateway(ModelGateway):
             usage=data.get("usage") or {},
             raw={"id": data.get("id"), "model": data.get("model")},
         )
+
+    def probe(self) -> Dict[str, Any]:
+        """真实可达性检查：GET /models；失败即不健康。"""
+        req = urllib.request.Request(f"{self.base_url}/models", headers=self._headers(), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=min(10.0, self.timeout)) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return {"ok": True, "type": "openai", "models": [m.get("id") for m in (data.get("data") or [])][:5]}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "type": "openai", "error": str(exc)}
+
+
+def probe_openai(base_url: str, api_key_env: str = "OPENAI_API_KEY", timeout: float = 10.0) -> Dict[str, Any]:
+    """独立探针：不占用 episode 预算，结果写入 preflight（R01）。"""
+    if not base_url:
+        return {"ok": False, "error": "empty base_url"}
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/models",
+        headers={"Authorization": f"Bearer {os.environ.get(api_key_env, '')}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        models = [m.get("id") for m in (data.get("data") or [])][:5]
+        return {"ok": True, "models": models}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}

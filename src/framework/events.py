@@ -149,11 +149,13 @@ class EventStore:
 
     # ---- 派生 ----
     def ledger(self) -> Dict[str, Any]:
-        """由事件聚合出账本；不单独维护第二份计数。"""
+        """由事件聚合出账本；未知用量单独计数，不写成实测 0（R12）。"""
         calls: Counter = Counter()
         served = 0
         cached = 0
         tokens_in = tokens_out = 0
+        unknown_in = unknown_out = 0
+        settled_calls = 0
         wall_ms = 0
         for e in self._events:
             if e.type == "request_sent":
@@ -162,10 +164,17 @@ class EventStore:
                     served += 1
             if e.type == "cache_hit":
                 cached += 1
-            if e.type == "budget_settled":
+            if e.type == "budget_settled" and not e.payload.get("released"):
+                settled_calls += 1
                 c = e.cost or {}
-                tokens_in += int(c.get("tokens_in") or 0)
-                tokens_out += int(c.get("tokens_out") or 0)
+                if c.get("tokens_in") is None:
+                    unknown_in += 1
+                else:
+                    tokens_in += int(c["tokens_in"])
+                if c.get("tokens_out") is None:
+                    unknown_out += 1
+                else:
+                    tokens_out += int(c["tokens_out"])
                 wall_ms += int(c.get("wall_ms") or 0)
         return {
             "calls": dict(calls),
@@ -174,6 +183,10 @@ class EventStore:
             "cache_hits": cached,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
+            "tokens_in_unknown_calls": unknown_in,
+            "tokens_out_unknown_calls": unknown_out,
+            "settled_calls": settled_calls,
+            "usage_coverage": (settled_calls - unknown_in) / settled_calls if settled_calls else None,
             "wall_ms": wall_ms,
         }
 
