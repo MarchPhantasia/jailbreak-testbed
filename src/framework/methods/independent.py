@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..assembly import Assembler, make_selector
-from ..budget import BudgetGuard
+from ..budget import BudgetExhausted, BudgetGuard
 from ..clients import MockGateway, ModelGateway, OpenAICompatGateway
 from ..contracts import Action, ActionType, AnswerCandidate, BudgetLimits, Episode, SessionMode, Status, Task, new_id, stable_hash
 from ..controller import Controller, ElementController, ScriptedController
@@ -193,18 +193,27 @@ def run_episode(
             action = last_action  # R08：重试原动作，不推进控制器序列
             pending_retry = False
         else:
-            action = controller.propose(
-                task,
-                state,
-                elements=elements,
-                node_id=node_id,
-                view_id=engine.nodes[node_id].view_ref,
-                budget=guard.snapshot(),
-                can_assemble=True,
-            )
+            try:
+                action = controller.propose(
+                    task,
+                    state,
+                    elements=elements,
+                    node_id=node_id,
+                    view_id=engine.nodes[node_id].view_ref,
+                    budget=guard.snapshot(),
+                    can_assemble=True,
+                )
+            except BudgetExhausted:
+                # S07：本地额度耗尽属于常规停止，必须记账收尾而非抛出
+                store.append("action_rejected", role="controller", node_id=node_id,
+                             payload={"reason": "local_budget_exhausted"})
+                engine.terminate("local_budget_exhausted")
+                break
 
         if action is None:
-            decision = recovery.handle("controller", Status.INVALID_OUTPUT, attempt_key="controller")
+            # S07：保留组件真实状态（拒答 ≠ 格式错误）
+            status = getattr(controller, "last_status", Status.INVALID_OUTPUT)
+            decision = recovery.handle("controller", status, attempt_key="controller")
             steps += 1
             if decision.action in ("retry_same", "retry_rephrase"):
                 continue

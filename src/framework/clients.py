@@ -33,6 +33,9 @@ class CallResult:
     error: str = ""
     served: bool = True
     from_cache: bool = False
+    # S12：来源关联——缓存命中时仍指向最初那次真实调用的响应事件
+    response_event_id: str = ""
+    source_call_id: str = ""
 
     @property
     def ok(self) -> bool:
@@ -102,7 +105,9 @@ class ModelGateway:
                 node_id=node_id,
                 view_id=view_id,
                 attempt_id=attempt_id,
-                payload={"key": key},
+                payload={"key": key, "original_call_id": cached.call_id,
+                         "original_response_event_id": cached.response_event_id,
+                         "served": False},
             )
             return CallResult(
                 call_id=new_id("call"),
@@ -114,6 +119,8 @@ class ModelGateway:
                 error=cached.error,
                 served=False,
                 from_cache=True,
+                response_event_id=cached.response_event_id,
+                source_call_id=cached.call_id,
             )
 
         ticket = self.guard.reserve(role_name)
@@ -148,7 +155,7 @@ class ModelGateway:
             "wall_ms": wall_ms,
             "usage_status": "reported" if res.usage else "unknown",
         }
-        self.store.append(
+        response_ev = self.store.append(
             "response_received",
             role=role_name,
             stage_id=stage_id,
@@ -167,6 +174,7 @@ class ModelGateway:
             },
         )
         self.guard.settle(ticket, cost, call_id=call_id)
+        res.response_event_id = response_ev.event_id if response_ev is not None else ""
         self.cache.put(key, res)
         self.calls.append(
             {

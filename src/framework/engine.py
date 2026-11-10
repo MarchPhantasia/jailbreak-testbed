@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -223,7 +224,8 @@ class Engine:
         )
 
         response_ev = self.store.last("response_received")
-        evidence = self._make_evidence(response_ev.event_id if response_ev else "", res.text, node_id=node_id, call_id=res.call_id)
+        source_event_id = res.response_event_id or (response_ev.event_id if response_ev else "")
+        evidence = self._make_evidence(source_event_id, res.text, node_id=node_id, call_id=res.call_id)
         label = label_target(res.text)
         if label.value in ("refusal", "soft_refusal"):
             self.store.append(
@@ -301,7 +303,16 @@ class Engine:
         child.score_ref = score.ref
         self.store.append("score_recorded", role="scorer", node_id=child_id, payload=score.to_dict())
         self.frontier.add(child_id, score.score)
-        self.frontier.record_visit(child_id, reward=(score.score or 0.0))
+        reward = score.score if score.score is not None else 0.0
+        self.frontier.record_visit(child_id, reward=reward)
+        # 平均回传：一次完成的扩展对其路径上每个祖先各贡献一次访问与同一 reward
+        ancestor = parent.node_id if parent is not None else None
+        while ancestor:
+            node = self.nodes.get(ancestor)
+            if node is None:
+                break
+            self.frontier.record_visit(ancestor, reward=reward)
+            ancestor = node.parent_node_id
 
         # R11：分支宽度 > 1 时父节点保留在前沿，可再扩展出兄弟
         keep_parent = self.branch_width > 1 and len(self.children.get(node_id, [])) < self.branch_width
@@ -325,28 +336,34 @@ class Engine:
             return self._reject(action, err)
         node_id = action.node_id or self.current_node_id
         state = self.states[node_id]
-        candidates = self.assembler.assemble(
+        built = self.assembler.build_pack(self.task, state, self.elements)
+        candidates = self.assembler.assemble_from_pack(
             self.task,
-            state,
+            built,
             k=int(action.params.get("k") or self.k_candidates),
-            elements=self.elements,
             stage_policy_ref=self.episode.stage_policy_ref,
         )
         self.candidates.extend(candidates)
-        for cand in candidates:
-            pack = {
-                "pack_id": cand.evidence_pack_ids[0] if cand.evidence_pack_ids else "",
-                "candidate_id": cand.candidate_id,
-                "task_id": self.task.task_id,
-                "gaps": cand.gaps,
-                "materials": [
-                    {"key": c.text.split("：")[0] if "：" in c.text else "", "text": c.text, "evidence_ids": c.evidence_ids}
-                    for c in cand.claims
-                ],
-            }
-            self.packs.append(pack)
-            with open(os.path.join(self._evidence_dir, "packs.jsonl"), "a", encoding="utf-8") as f:
-                f.write(json.dumps(pack, ensure_ascii=False) + "\n")
+        # 包定义先于候选落盘：保存真实装配输入（含 key/value/support/fidelity），一个 pack_id 只定义一次
+        pack_row = {
+            "pack_id": built.pack_id,
+            "task_id": built.task_id,
+            "materials": built.materials,
+            "gaps": built.gaps,
+            "notes": built.notes,
+            "view": {
+                "backend": self.backend.name,
+                "state_seq": state.source_event_seq,
+                "node_id": node_id,
+            },
+            "input_hash": hashlib.sha256(
+                json.dumps(built.materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+            "candidates": [c.candidate_id for c in candidates],
+        }
+        self.packs.append(pack_row)
+        with open(os.path.join(self._evidence_dir, "packs.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(pack_row, ensure_ascii=False, default=str) + "\n")
 
         self.store.append(
             "assembled",
@@ -431,7 +448,7 @@ class Engine:
         nid = self.policy.select(self.frontier, self.nodes, budget_left)
         if nid:
             self.current_node_id = nid
-            self.frontier.record_visit(nid, reward=0.0)
+            # 选择不是样本：不在这里增加访问次数（否则会稀释均值）
             self.store.append(
                 "node_selected",
                 role="engine",

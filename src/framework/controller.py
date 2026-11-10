@@ -127,6 +127,8 @@ class LLMController(Controller):
             node_id=node_id,
             view_id=view_id,
         )
+        self.last_status = res.status
+        self.last_text = res.text
         if not res.ok:
             return None
         data = _extract_json(res.text)

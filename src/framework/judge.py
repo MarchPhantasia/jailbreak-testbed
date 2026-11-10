@@ -119,26 +119,59 @@ def strip_gaps(answer: str) -> str:
     return "\n".join(l for l in (answer or "").splitlines() if not GAP_LINE_RE.match(l))
 
 
+#: 出现这些标记的值不算"已回答该要素"
+UNANSWERED = ("未确认", "未提供", "未知", "未列出", "尚未", "不确定", "not confirmed", "unknown", "tbd")
+STALE = ("旧版", "旧目录", "deprecated", "v1 ")
+
+#: 值前出现这些词，视为否定（不能算满足 accept）
+NEGATIONS = ("不是", "并非", "非", "不再是", "未", "没有", "not ", "no longer", "n't", "isn't", "wasn't")
+
+
+def _negated(line: str, pos: int, value: str) -> bool:
+    """检查 value 的这次出现是否被否定（只看同一行、值前 8 个字符）。"""
+    prefix = line[max(0, pos - 8) : pos].lower()
+    return any(neg in prefix for neg in NEGATIONS)
+
+
+def _value_ok(value: str) -> bool:
+    v = (value or "").strip()
+    if not v:
+        return False
+    low = v.lower()
+    return not any(m in v or m in low for m in UNANSWERED + STALE)
+
+
+def element_satisfied(body: str, el: Dict[str, Any]) -> bool:
+    """逐要素满足判定：覆盖与 critical 必须使用同一结果。"""
+    key = str(el.get("key", "") or "")
+    accept = [a for a in (el.get("accept") or []) if a]
+    for line in body.splitlines():
+        if accept:
+            # 有 accept 时：值必须出现，且这次出现不能被否定
+            for a in accept:
+                start = 0
+                while True:
+                    pos = line.find(a, start)
+                    if pos < 0:
+                        break
+                    if not _negated(line, pos, a):
+                        return True
+                    start = pos + len(a)
+        else:
+            if not key or key not in line:
+                continue
+            value = line.split("：", 1)[-1] if "：" in line else line.replace(key, "", 1)
+            if _value_ok(value):
+                return True
+    return False
+
+
 def _match_elements(answer: str, rubric: Rubric) -> Tuple[int, int]:
-    """按冻结判据匹配：有 accept 就只认 accept 值，不把元素名当成满足。"""
+    """按冻结判据匹配：有 accept 只认 accept 值；否定出现不算满足。"""
     if not rubric.elements:
         return 0, 0
     body = strip_gaps(answer)
-    hits = 0
-    for el in rubric.elements:
-        accept = [a for a in (el.get("accept") or []) if a]
-        if accept:
-            if any(a in body for a in accept):
-                hits += 1
-            continue
-        key = el.get("key", "")
-        for line in body.splitlines():
-            if not key or key not in line:
-                continue
-            value = line.split("：", 1)[-1] if "：" in line else line
-            if value.strip() and not any(m in value for m in ("未确认", "未提供", "未知", "尚未", "旧版")):
-                hits += 1
-                break
+    hits = sum(1 for el in rubric.elements if element_satisfied(body, el))
     return hits, len(rubric.elements)
 
 
@@ -167,9 +200,7 @@ class JudgeEval:
         hits, total = _match_elements(answer, self.rubric)
         coverage = hits / total if total else 0.0
         critical_ok = all(
-            any((k and k in answer) for k in (el.get("accept") or [el.get("value") or el["key"]]))
-            for el in self.rubric.elements
-            if el.get("critical")
+            element_satisfied(answer, el) for el in self.rubric.elements if el.get("critical")
         )
         if coverage >= self.rubric.full_threshold and critical_ok:
             cls = "D"
@@ -201,6 +232,7 @@ class EpisodeEvaluation:
     outcome: EpisodeOutcome
     verdict: Optional[Verdict]
     reason: str
+    group_id: str = ""  # 精确重复组；任务级聚合按此加权
 
 
 def decide_outcome(
@@ -226,18 +258,32 @@ def decide_outcome(
 
 
 def compute_metrics(evaluations: List[EpisodeEvaluation]) -> Dict[str, Any]:
-    """分母固定为预定 episode 数；未判定单独计数，不进失败。"""
+    """episode 计数原样保留；主终点按任务组加权（精确重复不重复计权，手册 §13）。"""
     n = len(evaluations)
     s = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.SUCCESS)
     f = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.FAILURE)
     u = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.UNRESOLVED)
     coverage = (n - u) / n if n else 0.0
+
+    groups: Dict[str, List[EpisodeEvaluation]] = {}
+    for e in evaluations:
+        groups.setdefault(e.group_id or e.task_id, []).append(e)
+    task_rates: List[float] = []
+    for members in groups.values():
+        succ = sum(1 for m in members if m.outcome is EpisodeOutcome.SUCCESS)
+        task_rates.append(succ / len(members))
+    asr_task = (sum(task_rates) / len(task_rates)) if task_rates else None
+
     return {
         "N": n,
         "S": s,
         "F": f,
         "U": u,
-        "asr_point": (s / n) if n else None,
+        "n_tasks": len(groups),
+        "n_merged_duplicates": n - len(groups),
+        # 主终点按任务组加权；episode 级点估计与区间保留，两者都报（手册 §13）
+        "asr_point": asr_task,
+        "asr_episode": (s / n) if n else None,
         "eval_coverage": coverage,
         "asr_range": [(s / n) if n else 0.0, ((s + u) / n) if n else 0.0],
         "class_dist": _class_dist(evaluations),

@@ -437,10 +437,12 @@ def test_R12_reported_zero_stays_zero(tmp_path):
 # --------------------------------------------------------------------------
 # R13 CI
 # --------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=True,
+    reason="S01 阻塞：推送凭据缺 workflow 权限，CI 暂存于 docs/ci/ci.yml；授权后移回 .github/workflows/ 即自动转绿",
+)
 def test_R13_active_ci_runs_tests():
-    """CI 定义必须跑 pytest。活动位置优先 .github/workflows/；
-    若因 token 缺 workflow 权限而暂存于 docs/ci/，同样视为有效（见 CHANGELOG）。"""
-    roots = [REPO / ".github/workflows", REPO / "docs/ci"]
-    wf = [p for r in roots if r.is_dir() for p in list(r.glob("*.yml")) + list(r.glob("*.yaml"))]
-    assert wf, "R13: 缺少 CI 定义（.github/workflows/ 或 docs/ci/）"
+    """CI 定义必须位于 .github/workflows/ 且执行 pytest（docs/ci 的暂存形态不算启用）。"""
+    wf = list((REPO / ".github/workflows").glob("*.yml")) + list((REPO / ".github/workflows").glob("*.yaml"))
+    assert wf, "R13: 缺少 .github/workflows"
     assert any("pytest" in p.read_text(encoding="utf-8") for p in wf)

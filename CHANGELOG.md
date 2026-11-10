@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### 第二轮审查修复（S01–S14）
+
+按审查包 `review2-4a5c50d` 的 14 组问题修复，16 个文件涉及；新增 `tests/test_round2_invariants.py`（8 项）作仓库内回归保护。
+
+| 问题 | 结论 | 主要落点 |
+|---|---|---|
+| S01 | **阻塞**：凭据缺 `workflow` 权限，CI 仍暂存 `docs/ci/ci.yml`；仓库断言恢复严格并标 `xfail(strict=True)`，授权后移回即自动转绿 | `docs/ci/ci.yml`、`tests/test_review_regressions.py` |
+| S02 | 原文后端向控制器与装配提供完整原文；截断改为显式 `window_chars`（默认不截断） | `state.py` |
+| S03 | 摘要历史快照归档为 `summary_archive`，活跃材料只保留当前摘要 | `state.py`、`assembly.py` |
+| S04 | 行/键/值联合绑定来源；合并摘要累积全部贡献 evidence；主张继承 support/fidelity，不再一律 ENTAILED | `state.py`、`assembly.py` |
+| S05 | EvidencePack 在装配前冻结落盘（含 materials/input_hash/candidates），一个 pack_id 只定义一次 | `engine.py`、`assembly.py` |
+| S06 | 逐要素满足结果统一供覆盖率与 critical 使用；否定出现不算满足 | `judge.py` |
+| S07 | 控制器保留真实状态（REFUSED ≠ 格式错误）；本地额度耗尽进入正常收尾 | `controller.py`、`methods/independent.py` |
+| S08 | `evaluate` 读取被评价目录自己的 `plan.json` | `runner.py` |
+| S09 | `split_seed` 与 `episode_seed` 分离；episode 身份由采样种子决定 | `runner.py` |
+| S10 | `final.json` 先校验必需字段与权威 `terminate`，缺字段记 U 而非 F | `runner.py` |
+| S11 | `usage_coverage` 要求输入与输出都已知，另报 in/out 分项 | `events.py` |
+| S12 | 缓存命中保留原始 call/response 关联；证据按 CallResult 关联解析 | `clients.py`、`engine.py` |
+| S13 | 指标按重复组做任务级加权；`asr_point` 为主终点，`asr_episode` 与区间同时保留 | `judge.py`、`runner.py` |
+| S14 | UCT 完成扩展后沿声明路径回传 reward；选择动作不再增加零样本访问 | `engine.py` |
+
+结果：仓库测试 102 项（含 1 项 S01 `xfail`）；上轮原始验收 17/17；本轮验收 18/19（S01 为凭据阻塞，测试本身断言有效目录）。
+
 ### 版本管理侧改动（本轮）
 
 - `.github/workflows/ci.yml` 暂存为 `docs/ci/ci.yml`：当前 token 缺 `workflow` 权限，推送会被远端拒绝。内容为 install + pytest + precheck，补齐权限后一条 `git mv` 即生效。

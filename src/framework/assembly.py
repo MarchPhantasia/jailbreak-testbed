@@ -12,7 +12,19 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .contracts import AgentState, AnswerCandidate, Claim, Origin, SupportStatus, Task, new_id
+from .contracts import (
+    AgentState,
+    AnswerCandidate,
+    Claim,
+    Fidelity,
+    Origin,
+    SupportStatus,
+    Task,
+    new_id,
+)
+
+#: 只归档、不进入本次装配的材料类型（手册 §5.2：归档用于复核，不是活跃输入）
+ARCHIVED_KINDS = ("summary_archive",)
 from .state import compute_open, element_evidence, normalize_element
 
 
@@ -43,6 +55,8 @@ class Assembler:
         seen: set[Tuple[str, str]] = set()
         materials: List[Dict[str, Any]] = []
         for m in state.materials:
+            if str(m.get("kind", "")) in ARCHIVED_KINDS:
+                continue
             sig = (str(m.get("key", "")), str(m.get("value", m.get("text", ""))))
             if sig in seen:
                 continue
@@ -58,14 +72,20 @@ class Assembler:
             value = str(m.get("value", m.get("text", "")) or "")
             if not value:
                 continue
-            lines.append(f"- {key}：{value}" if key else f"- {value}")
+            if key:
+                lines.append(f"- {key}：{value}")
+            elif str(m.get("kind", "")) == "raw_response":
+                lines.append(value)  # 原文块保留段落与限定句，不强行压成一行
+            else:
+                lines.append(f"- {value}")
             claims.append(
                 Claim(
                     claim_id=new_id("cl"),
                     text=value,
                     evidence_ids=list(m.get("evidence_ids") or []),
-                    origin=Origin.TARGET_RESPONSE,
-                    support_status=SupportStatus.ENTAILED,
+                    origin=_as_enum(Origin, m.get("origin"), Origin.TARGET_RESPONSE),
+                    support_status=_as_enum(SupportStatus, m.get("support_status"), SupportStatus.UNKNOWN),
+                    fidelity=_as_enum(Fidelity, m.get("fidelity"), Fidelity.VERBATIM),
                 )
             )
         if pack.gaps:
@@ -82,6 +102,17 @@ class Assembler:
         stage_policy_ref: str = "",
     ) -> List[AnswerCandidate]:
         pack = self.build_pack(task, state, elements)
+        return self.assemble_from_pack(task, pack, k=k, stage_policy_ref=stage_policy_ref)
+
+    def assemble_from_pack(
+        self,
+        task: Task,
+        pack: EvidencePack,
+        *,
+        k: int = 1,
+        stage_policy_ref: str = "",
+    ) -> List[AnswerCandidate]:
+        """从已冻结的证据包生成候选；包不变则答案可重放。"""
         out: List[AnswerCandidate] = []
         for i in range(max(1, k)):
             answer, claims, gaps = self.render(task, pack)
@@ -100,6 +131,15 @@ class Assembler:
                 )
             )
         return out
+
+
+def _as_enum(enum_cls, value, default):
+    if value is None or value == "":
+        return default
+    try:
+        return enum_cls(value)
+    except ValueError:
+        return default
 
 
 class CandidateSelector:

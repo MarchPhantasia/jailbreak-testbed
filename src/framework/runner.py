@@ -64,8 +64,9 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
     ds = cfg.get("datasets", {}) or {}
     name = ds.get("adapter", "synthetic_library")
     path = ds.get("path", "fixtures/synthetic_library/tasks.jsonl")
-    seed = int(ds.get("split_seed", (cfg.get("experiment", {}) or {}).get("seed", 20261110)))
-    result, dev, held, manifest = load_split(name, path, seed=seed, dev_ratio=int(ds.get("dev_ratio", 2)))
+    exp_seed = int((cfg.get("experiment", {}) or {}).get("seed", 20261110))
+    split_seed = int(ds.get("split_seed", exp_seed))
+    result, dev, held, manifest = load_split(name, path, seed=split_seed, dev_ratio=int(ds.get("dev_ratio", 2)))
     pool = dev if ds.get("split", "dev") == "dev" else held
     n = limit if limit is not None else ds.get("limit")
     tasks = pool[offset : offset + n] if n is not None else pool[offset:]
@@ -75,7 +76,7 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
         rubric = resolve_rubric(cfg, t)
         entries.append(
             {
-                "episode_id": _episode_id(t.task_id, seed, method),
+                "episode_id": _episode_id(t.task_id, exp_seed, method),
                 "task_id": t.task_id,
                 "task": {
                     "task_id": t.task_id,
@@ -86,7 +87,8 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
                     "runtime_hints": t.runtime_hints,
                 },
                 "rubric": rubric.to_dict(),
-                "seed": seed,
+                "seed": exp_seed,
+                "duplicate_group_id": getattr(t, "duplicate_group_id", "") or t.task_id,
             }
         )
     return {
@@ -95,6 +97,8 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
         "dataset": name,
         "split": ds.get("split", "dev"),
         "dataset_manifest": manifest.to_dict(),
+        "split_seed": split_seed,
+        "episode_seed": exp_seed,
         "episodes": entries,
         "n_episodes": len(entries),
     }
@@ -269,12 +273,38 @@ def write_final(art: EpisodeArtifacts, path: str, outcome: Optional[str] = None,
     return payload
 
 
+REQUIRED_FINAL_FIELDS = ("episode_id", "task_id", "final_candidate_id", "termination_reason")
+
+
+def _has_authoritative_terminate(ep_dir: str) -> bool:
+    path = os.path.join(ep_dir, "events.jsonl")
+    if not os.path.exists(path):
+        return False
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                if json.loads(line).get("type") == "terminate":
+                    return True
+            except json.JSONDecodeError:
+                continue
+    return False
+
+
 # --------------------------------------------------------------------------
 # 评价（按计划对账，不重跑 Target）
 # --------------------------------------------------------------------------
+def load_plan_from_root(root: str) -> Dict[str, Any]:
+    path = os.path.join(root, "plan.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"缺少计划文件：{path}")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict[str, Any]:
     root = root or results_root(cfg)
-    plan = load_plan(cfg)
+    # S08：评价必须使用被评价目录自己的冻结计划；config 只用于定位默认 root
+    plan = load_plan_from_root(root)
     eval_run_id = new_id("eval")
     eval_dir = os.path.join(root, "evaluations", eval_run_id)
     os.makedirs(eval_dir, exist_ok=True)
@@ -300,28 +330,42 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
             basis = "missing_final:artifact_unavailable"
             outcome = EpisodeOutcome.UNRESOLVED
         else:
-            final = json.load(open(final_path, "r", encoding="utf-8"))
-            cand_id = final.get("final_candidate_id")
-            if cand_id:
-                candidate = _load_final_candidate(ep_dir, cand_id)
-                if candidate is None:
-                    basis = "missing_candidate:artifact_unavailable"
-                    outcome = EpisodeOutcome.UNRESOLVED
-                else:
-                    verdict = judge.evaluate(task, candidate, eval_run_id)
+            try:
+                final = json.load(open(final_path, "r", encoding="utf-8"))
+            except json.JSONDecodeError:
+                final = None
+            missing = [k for k in REQUIRED_FINAL_FIELDS if not isinstance(final, dict) or k not in final]
+            if missing:
+                # 字段缺失 ≠ 已证实的"正常结束无答案"：记 U，不写进 F
+                basis = "incomplete_final:missing_" + ",".join(missing or ["json"])
+                outcome = EpisodeOutcome.UNRESOLVED
+                final = None
+            else:
+                cand_id = final.get("final_candidate_id")
+                if cand_id:
+                    candidate = _load_final_candidate(ep_dir, cand_id)
+                    if candidate is None:
+                        basis = "missing_candidate:artifact_unavailable"
+                        outcome = EpisodeOutcome.UNRESOLVED
+                    else:
+                        verdict = judge.evaluate(task, candidate, eval_run_id)
+                        ev = decide_outcome(
+                            episode_id=ep_id, task_id=task_id, final_answer=candidate, verdict=verdict, failure_established=False
+                        )
+                        outcome, basis = ev.outcome, ev.reason
+                elif _has_authoritative_terminate(ep_dir):
+                    # 只有权威 terminate 事件确认"正常结束且无答案"才计失败
+                    failure_established = True
                     ev = decide_outcome(
-                        episode_id=ep_id, task_id=task_id, final_answer=candidate, verdict=verdict, failure_established=False
+                        episode_id=ep_id, task_id=task_id, final_answer=None, verdict=None, failure_established=True
                     )
                     outcome, basis = ev.outcome, ev.reason
-            else:
-                # 正常终止且确实没有答案 → 冻结协议判定失败
-                failure_established = True
-                ev = decide_outcome(
-                    episode_id=ep_id, task_id=task_id, final_answer=None, verdict=None, failure_established=True
-                )
-                outcome, basis = ev.outcome, ev.reason
+                else:
+                    outcome, basis = EpisodeOutcome.UNRESOLVED, "no_answer_without_terminate_event"
 
-        evaluation = EpisodeEvaluation(ep_id, task_id, outcome, verdict, basis)
+        evaluation = EpisodeEvaluation(
+            ep_id, task_id, outcome, verdict, basis, group_id=entry.get("duplicate_group_id", "") or task_id
+        )
         evaluations.append(evaluation)
         records.append(
             {

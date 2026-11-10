@@ -126,6 +126,24 @@ def compute_open(state: AgentState, elements: List[Any]) -> List[Dict[str, Any]]
     return open_items
 
 
+def _resolve_evidence(line: str, key: str, value: str, evidence: List[Evidence]) -> Optional[str]:
+    """把一行绑定到具体证据：先整行相等，再键+值同现，最后才退回值匹配。
+
+    同值不同要素（库位 R8 / 登记 R8）不能互相顶替，因此不直接按值取第一条。
+    """
+    target = line.strip()
+    for e in evidence:
+        if e.text.strip() == target:
+            return e.evidence_id
+    for e in evidence:
+        if key and key in e.text and value in e.text:
+            return e.evidence_id
+    for e in evidence:
+        if value and value in e.text:
+            return e.evidence_id
+    return None
+
+
 # --------------------------------------------------------------------------
 # 后端
 # --------------------------------------------------------------------------
@@ -172,28 +190,42 @@ class StateBackend:
 
 
 class RawHistoryBackend(StateBackend):
-    """原文组：不抽事实；材料是原文行，可按路径回查。"""
+    """原文组：不抽事实；材料是完整原文，控制器与装配都读同一份。
+
+    window_chars=None 表示不截断（默认）。若研究协议要求窗口，必须显式配置并记录，
+    名称与报告要如实反映该限制——不能默认静默截断。
+    """
 
     name = "raw_history"
+
+    def __init__(self, elements: Optional[List[Any]] = None, window_chars: Optional[int] = None):
+        super().__init__(elements)
+        self.window_chars = window_chars
 
     def apply(self, task, state, *, response_text, evidence, status, event_seq, extractor_ref="rule@v1") -> StateUpdate:
         state.source_event_seq = event_seq
         if status in (Status.REFUSED, Status.TIMEOUT, Status.TRANSPORT_ERROR, Status.INVALID_OUTPUT):
             return self._fail(state, status, event_seq, response_text)
-        materials = self._line_materials(response_text, evidence)
-        # 原文组保留整段原文引用（即使没有键值行，也能在装配时被消费）
-        if not materials and response_text.strip():
-            materials = [
-                {
-                    "kind": "raw_response",
-                    "key": "",
-                    "value": response_text.strip()[:2000],
-                    "text": response_text.strip()[:2000],
-                    "evidence_ids": [e.evidence_id for e in evidence],
-                }
-            ]
-        state.materials.extend(materials)
-        return StateUpdate(backend=self.name, materials=materials)
+        text = response_text.strip()
+        notes: List[str] = []
+        if self.window_chars is not None and len(text) > self.window_chars:
+            text = text[: self.window_chars]
+            notes.append(f"raw 窗口截断 @{self.window_chars}")
+        material = {
+            "kind": "raw_response",
+            "key": "",
+            "value": text,
+            "text": text,
+            "evidence_ids": [e.evidence_id for e in evidence],
+            "support_status": SupportStatus.UNKNOWN.value,
+            "fidelity": Fidelity.VERBATIM.value,
+        }
+        state.materials.append(material)
+        return StateUpdate(backend=self.name, materials=[material], notes=notes)
+
+    def render_for_controller(self, task: Task, state: AgentState) -> str:
+        blocks = [m.get("text", "") for m in state.materials if m.get("kind") == "raw_response" and m.get("text")]
+        return "\n".join(blocks)
 
 
 class SummaryBackend(StateBackend):
@@ -212,12 +244,29 @@ class SummaryBackend(StateBackend):
         snippet = " ".join(response_text.split())
         merged = (state.summary + " " + snippet).strip() if state.summary else snippet
         state.summary = merged[-self.max_chars :]
+        # 合并摘要依赖全部贡献轮次：evidence 取历史活跃摘要与新观察的并集
+        contributed: List[str] = []
+        for m in state.materials:
+            if m.get("kind") == "summary":
+                contributed.extend(m.get("evidence_ids") or [])
+        contributed.extend(e.evidence_id for e in evidence)
+        evidence_ids = list(dict.fromkeys(contributed))
+        # 旧快照归档（不参与装配），活跃材料只保留当前摘要
+        archived: List[Dict[str, Any]] = []
+        for m in state.materials:
+            if m.get("kind") == "summary":
+                clone = dict(m)
+                clone["kind"] = "summary_archive"
+                archived.append(clone)
+        state.materials = [m for m in state.materials if m.get("kind") != "summary"] + archived
         material = {
             "kind": "summary",
             "key": "",
             "value": state.summary,
             "text": state.summary,
-            "evidence_ids": [e.evidence_id for e in evidence],
+            "evidence_ids": evidence_ids,
+            "support_status": SupportStatus.UNKNOWN.value,
+            "fidelity": Fidelity.PARAPHRASE.value,
         }
         state.materials.append(material)
         return StateUpdate(backend=self.name, summary=state.summary, materials=[material], notes=["summary 截断"])
@@ -242,26 +291,38 @@ class FoxBackend(StateBackend):
             key, value = m.group(1).strip(), m.group(2).strip()
             if not value:
                 continue
-            evid = next((eid for text, eid in by_text.items() if value in text), None)
+            evid = _resolve_evidence(line, key, value, evidence)
             if evid is None:
                 state.hypotheses.append({"text": f"{key}: {value}", "reason": "no_evidence"})
                 update.notes.append(f"{key} 无出处，记为 hypothesis")
                 continue
             if any(p.text == value and (p.qualifiers or {}).get("key") == key for p in state.facts):
                 continue
+            src_text = next((e.text for e in evidence if e.evidence_id == evid), "")
+            verbatim = bool(src_text) and value in src_text
             prop = Proposition(
                 fact_id=new_id("f"),
                 text=value,
                 origin=Origin.TARGET_RESPONSE,
                 evidence_ids=[evid],
                 fidelity=Fidelity.VERBATIM,
-                support_status=SupportStatus.ENTAILED,
+                support_status=SupportStatus.ENTAILED if verbatim else SupportStatus.UNKNOWN,
                 qualifiers={"key": key},
                 extractor_ref=extractor_ref,
             )
             state.facts.append(prop)
             update.new_facts.append({"fact_id": prop.fact_id, "key": key, "text": prop.text, "evidence_ids": prop.evidence_ids})
-            state.materials.append({"kind": "fact", "key": key, "value": value, "text": f"{key}：{value}", "evidence_ids": [evid]})
+            state.materials.append(
+                {
+                    "kind": "fact",
+                    "key": key,
+                    "value": value,
+                    "text": f"{key}：{value}",
+                    "evidence_ids": [evid],
+                    "support_status": prop.support_status.value,
+                    "fidelity": prop.fidelity.value,
+                }
+            )
         return update
 
     def render_for_controller(self, task: Task, state: AgentState) -> str:
@@ -273,10 +334,15 @@ class FoxBackend(StateBackend):
         return "\n".join(parts)
 
 
-def make_backend(name: str, elements: Optional[List[Any]] = None, max_chars: int = 400) -> StateBackend:
+def make_backend(
+    name: str,
+    elements: Optional[List[Any]] = None,
+    max_chars: int = 400,
+    window_chars: Optional[int] = None,
+) -> StateBackend:
     key = (name or "raw_history").lower()
     if key in ("raw", "raw_history", "original"):
-        return RawHistoryBackend(elements)
+        return RawHistoryBackend(elements, window_chars=window_chars)
     if key == "summary":
         return SummaryBackend(elements, max_chars=max_chars)
     if key in ("fox", "f_o_x", "structured"):

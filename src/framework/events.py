@@ -154,7 +154,7 @@ class EventStore:
         served = 0
         cached = 0
         tokens_in = tokens_out = 0
-        unknown_in = unknown_out = 0
+        unknown_in = unknown_out = unknown_any = 0
         settled_calls = 0
         wall_ms = 0
         for e in self._events:
@@ -167,14 +167,18 @@ class EventStore:
             if e.type == "budget_settled" and not e.payload.get("released"):
                 settled_calls += 1
                 c = e.cost or {}
-                if c.get("tokens_in") is None:
+                in_known = c.get("tokens_in") is not None
+                out_known = c.get("tokens_out") is not None
+                if not in_known:
                     unknown_in += 1
                 else:
                     tokens_in += int(c["tokens_in"])
-                if c.get("tokens_out") is None:
+                if not out_known:
                     unknown_out += 1
                 else:
                     tokens_out += int(c["tokens_out"])
+                if not (in_known and out_known):
+                    unknown_any += 1
                 wall_ms += int(c.get("wall_ms") or 0)
         return {
             "calls": dict(calls),
@@ -185,8 +189,12 @@ class EventStore:
             "tokens_out": tokens_out,
             "tokens_in_unknown_calls": unknown_in,
             "tokens_out_unknown_calls": unknown_out,
+            "usage_unknown_calls": unknown_any,
             "settled_calls": settled_calls,
-            "usage_coverage": (settled_calls - unknown_in) / settled_calls if settled_calls else None,
+            # 完整覆盖要求输入与输出都已知；任一侧缺失都不算满额
+            "usage_coverage": (settled_calls - unknown_any) / settled_calls if settled_calls else None,
+            "usage_coverage_in": (settled_calls - unknown_in) / settled_calls if settled_calls else None,
+            "usage_coverage_out": (settled_calls - unknown_out) / settled_calls if settled_calls else None,
             "wall_ms": wall_ms,
         }
 
