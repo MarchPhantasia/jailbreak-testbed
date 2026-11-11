@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from .clients import ModelGateway
 from .contracts import Action, ActionType, AgentState, Role, Status, Task, new_id
+from .state import compute_open
 
 ACTION_SCHEMA = """只输出一个 JSON 对象：
 {"type": "ASK_TARGET" | "ASSEMBLE" | "STOP", "query": "……", "rationale": "一句话"}
@@ -86,10 +87,10 @@ class ElementController(Controller):
         self._assembled = False
 
     def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True):
-        known = " ".join(state.fact_texts())
-        known += " ".join(str(m.get("value", "")) for m in state.materials)
+        # U04：只读活跃视图（归档不算已知），并把"已问过"与"已满足"分开
+        open_goals = {o["goal"] for o in compute_open(state, self.elements)}
         for el in self.elements:
-            if el in known or el in self._asked:
+            if el in self._asked or el not in open_goals:
                 continue
             self._asked.add(el)
             return self._mk(ActionType.ASK_TARGET, self.template.format(el=el), node_id, view_id, state.source_event_seq, f"missing:{el}")
@@ -134,19 +135,25 @@ class LLMController(Controller):
             self.last_failure = res.status
             return None
         data = _extract_json(res.text)
-        if not data or data.get("type") not in ("ASK_TARGET", "ASSEMBLE", "STOP"):
+        if not isinstance(data, dict) or data.get("type") not in ("ASK_TARGET", "ASSEMBLE", "STOP"):
             # T02：服务返回 OK 不等于解析出动作；格式失败必须显式进入格式恢复
             self.last_failure = Status.INVALID_OUTPUT
             return None
+        if data["type"] == "ASK_TARGET":
+            query = data.get("query")
+            if not isinstance(query, str) or not query.strip():
+                # U03：合法 JSON 但缺必需字段/空查询，同样属于格式失败
+                self.last_failure = Status.INVALID_OUTPUT
+                return None
         self.last_failure = None
         t = ActionType(data["type"])
         return self._mk(
             t,
-            str(data.get("query", "")),
+            str(data.get("query") or ""),
             node_id,
             view_id,
             state.source_event_seq,
-            str(data.get("rationale", ""))[:200],
+            str(data.get("rationale") or "")[:200],
         )
 
 

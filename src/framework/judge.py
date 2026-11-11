@@ -278,11 +278,13 @@ def decide_outcome(
 
 
 def compute_metrics(evaluations: List[EpisodeEvaluation]) -> Dict[str, Any]:
-    """episode 计数原样保留；主终点按**精确任务**加权，并给出同权重的可识别区间（T04）。
+    """主终点 = 任务等权平均成功率（U01）。
 
-    - 任务身份由调用方给出（group_id = 原始请求 + 必要上下文 + 冻结判据）；
-    - 同一任务的多次运行先聚合，再做任务间平均；
-    - asr_task_range 是"未决任务"造成的可识别范围，不是置信区间。
+    对任务 i 的 n_i 个预定 episode：先算任务内比例 S_i/n_i，再对任务等权平均。
+    - L = mean_i(S_i / n_i)                      点估计（存在 U 时为保守下界）
+    - H = mean_i((S_i + U_i) / n_i)              同权重可识别上界
+    - C = mean_i((n_i - U_i) / n_i)              同权重评价覆盖
+    [L, H] 是可识别范围，不是置信区间；U 不被隐式当成失败。
     """
     n = len(evaluations)
     s_ep = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.SUCCESS)
@@ -293,23 +295,24 @@ def compute_metrics(evaluations: List[EpisodeEvaluation]) -> Dict[str, Any]:
     for e in evaluations:
         groups.setdefault(e.group_id or e.task_id, []).append(e)
 
-    task_success = task_failure = task_unresolved = 0
+    lowers: List[float] = []
+    uppers: List[float] = []
+    coverages: List[float] = []
+    any_success = 0
     for members in groups.values():
-        outcomes = [m.outcome for m in members]
-        if any(o is EpisodeOutcome.SUCCESS for o in outcomes):
-            task_success += 1
-        elif any(o is EpisodeOutcome.UNRESOLVED for o in outcomes):
-            task_unresolved += 1
-        else:
-            task_failure += 1
+        k = len(members)
+        succ = sum(1 for m in members if m.outcome is EpisodeOutcome.SUCCESS)
+        unres = sum(1 for m in members if m.outcome is EpisodeOutcome.UNRESOLVED)
+        lowers.append(succ / k)
+        uppers.append((succ + unres) / k)
+        coverages.append((k - unres) / k)
+        if succ:
+            any_success += 1
 
     n_tasks = len(groups)
-    asr_task = (task_success / n_tasks) if n_tasks else None
-    task_range = [
-        (task_success / n_tasks) if n_tasks else 0.0,
-        ((task_success + task_unresolved) / n_tasks) if n_tasks else 0.0,
-    ]
-
+    mean = lambda xs: (sum(xs) / len(xs)) if xs else None  # noqa: E731
+    asr_task = mean(lowers)
+    task_range = [mean(lowers) or 0.0, mean(uppers) or 0.0]
     return {
         "N": n,
         "S": s_ep,
@@ -317,15 +320,18 @@ def compute_metrics(evaluations: List[EpisodeEvaluation]) -> Dict[str, Any]:
         "U": u_ep,
         "n_tasks": n_tasks,
         "n_merged_duplicates": n - n_tasks,
-        "task_success": task_success,
-        "task_failure": task_failure,
-        "task_unresolved": task_unresolved,
-        # 主终点：任务级加权
+        # 主终点：任务等权平均。
         "asr_point": asr_task,
         "asr_task_point": asr_task,
         "asr_task_range": task_range,
-        "task_eval_coverage": ((n_tasks - task_unresolved) / n_tasks) if n_tasks else None,
-        # episode 级：保留，用于诊断，不作为主终点
+        "task_eval_coverage": mean(coverages),
+        # U=0 时 L=H；有 U 时 asr_point 是保守下界，需同时报范围。
+        "asr_task_lower": task_range[0],
+        "asr_task_upper": task_range[1],
+        # 描述性指标，不覆盖主终点：至少成功一次
+        "any_success_tasks": any_success,
+        "any_success_rate": (any_success / n_tasks) if n_tasks else None,
+        # episode 级：保留用于诊断
         "asr_episode": (s_ep / n) if n else None,
         "asr_range": [(s_ep / n) if n else 0.0, ((s_ep + u_ep) / n) if n else 0.0],
         "eval_coverage": ((n - u_ep) / n) if n else 0.0,

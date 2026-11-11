@@ -78,6 +78,7 @@ class Engine:
         elements: Optional[List[Any]] = None,
         k_candidates: int = 1,
         branch_width: int = 1,
+        stopping_policy: str = "after_assembly",
         system_prompt: str = DEFAULT_SYSTEM,
     ):
         self.task = task
@@ -95,6 +96,7 @@ class Engine:
         self.elements: List[Dict[str, Any]] = [normalize_element(e) for e in (elements or [e for e in rubric.elements])]
         self.k_candidates = k_candidates
         self.branch_width = max(1, branch_width)
+        self.stopping_policy = stopping_policy
         self.system_prompt = system_prompt
 
         self.nodes: Dict[str, SearchNode] = {}
@@ -127,6 +129,7 @@ class Engine:
                 "method_version": self.episode.method_version,
                 "budget": self.episode.budget.to_dict(),
                 "session_mode": self.episode.session_mode.value,
+                "stopping_policy": self.stopping_policy,
                 "config_hash": self.episode.config_hash,
                 "model": getattr(self.target, "model_name", ""),
             },

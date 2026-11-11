@@ -51,6 +51,31 @@
   计划在把 recompute 迁入 analysis 层后删除。
 - `.gitignore` 中的 `../.venv/` 是无效模式（git 忽略含 `..` 的规则），已移除；虚拟环境应放在仓库内并由 `.venv/` 覆盖。
 
+## [code-v0.3.0] — 2026-11-12
+
+按第四轮审查（`ad300ee`，U01–U04）修复；仓库 141 项、历轮验收 48 项 + 本轮 8 项全过。
+
+### 修复
+
+- **U01** 任务级主终点改为"任务内先求比例、任务间等权"：`asr_point = mean(S_i/n_i)`，
+  可识别范围与覆盖率同权重；`any_success_rate` 单列，不覆盖主终点。
+- **U02** 评价前统一核对 final 身份、唯一 terminate、候选 ID 双向一致；候选文件逐行容错；
+  每个 episode 异常隔离，单个坏产物不影响分母。
+- **U03** 控制器校验动作 schema（`ASK_TARGET.query` 必须为非空字符串）；编排层预校验 +
+  Engine 拒绝的 `INVALID_OUTPUT` 共同进入有界格式恢复。
+- **U04** `ElementController` 改用 `compute_open` 活跃视图，归档不再让未询问要素被跳过。
+
+### 新增
+
+- `method.stopping.policy`：`after_assembly`（默认）/ `online`；写入 `episode_started` 事件；
+  `online` 下重复装配同一材料判为 `no_progress_assembly`。
+
+### 契约变化
+
+- `metrics` 新增 `asr_task_lower` / `asr_task_upper` / `any_success_rate` / `any_success_tasks`；
+  `asr_point` 恒为任务内比例的等权均值（存在 U 时是保守下界）。
+- 新增诊断串：`terminate_ambiguous` / `terminate_candidate_conflict` / `identity_mismatch` / `artifact_error:*`。
+
 ## [code-v0.2.2] — 2026-11-12
 
 按第三轮审查（`3e531e3`，T01–T08）修复；仓库 122 项、三轮验收 48 项全过。

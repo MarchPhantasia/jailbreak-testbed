@@ -286,11 +286,11 @@ def write_final(art: EpisodeArtifacts, path: str, outcome: Optional[str] = None,
 REQUIRED_FINAL_FIELDS = ("episode_id", "task_id", "final_candidate_id", "termination_reason")
 
 
-def _authoritative_terminate(ep_dir: str) -> Optional[Dict[str, Any]]:
-    """读取唯一的 terminate 事件；多个或缺失都视为不可用（T01）。"""
+def _authoritative_terminate(ep_dir: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """读取 terminate：必须恰好一条；缺失/多条都返回 (None, 诊断)。"""
     path = os.path.join(ep_dir, "events.jsonl")
     if not os.path.exists(path):
-        return None
+        return None, "terminate_missing"
     found: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -298,11 +298,16 @@ def _authoritative_terminate(ep_dir: str) -> Optional[Dict[str, Any]]:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if ev.get("type") == "terminate":
+            if isinstance(ev, dict) and ev.get("type") == "terminate":
                 found.append(ev)
-    if len(found) != 1:
-        return None
-    return found[0].get("payload") or {}
+    if not found:
+        return None, "terminate_missing"
+    if len(found) > 1:
+        return None, "terminate_ambiguous:multiple_events"
+    payload = found[0].get("payload")
+    if not isinstance(payload, dict):
+        return None, "terminate_malformed:payload"
+    return payload, ""
 
 
 def _read_final_object(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -359,44 +364,51 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
         basis = ""
 
         final_obj: Optional[Dict[str, Any]] = None
-        if not os.path.exists(final_path):
-            outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_final:artifact_unavailable"
-        else:
-            final_obj, error = _read_final_object(final_path)
-            terminate = _authoritative_terminate(ep_dir)
-            if final_obj is None:
-                # 损坏/不完整产物不得进入回写分支，也不得缩小分母（T01）
-                outcome, basis = EpisodeOutcome.UNRESOLVED, error or "malformed_final"
+        try:
+            if not os.path.exists(final_path):
+                outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_final:artifact_unavailable"
             else:
-                cand_id = final_obj.get("final_candidate_id")
-                term_candidate = (terminate or {}).get("final_candidate_id")
-                mismatch = bool(term_candidate) and term_candidate != cand_id
-                if mismatch:
-                    # terminate 指名了候选，而 final 说没有（或指向别人）：不得当作确证无答案
-                    outcome, basis = EpisodeOutcome.UNRESOLVED, "terminate_candidate_conflict"
-                elif cand_id:
-                    candidate = _load_final_candidate(ep_dir, cand_id)
-                    if candidate is None:
-                        outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_candidate:artifact_unavailable"
+                final_obj, error = _read_final_object(final_path)
+                terminate, term_reason = _authoritative_terminate(ep_dir)
+                if final_obj is None:
+                    # 损坏/不完整产物不得进入回写分支，也不得缩小分母
+                    outcome, basis = EpisodeOutcome.UNRESOLVED, error or "malformed_final"
+                elif final_obj.get("episode_id") != ep_id or final_obj.get("task_id") != task_id:
+                    # 身份错配：目录里的产物不是这个预定 episode 的
+                    outcome, basis = EpisodeOutcome.UNRESOLVED, "identity_mismatch"
+                else:
+                    cand_id = final_obj.get("final_candidate_id")
+                    term_candidate = (terminate or {}).get("final_candidate_id")
+                    if terminate is None:
+                        # 缺失或多条 terminate 都是歧义：不能据此证明成功或无答案
+                        outcome, basis = EpisodeOutcome.UNRESOLVED, term_reason or "terminate_ambiguous"
+                    elif term_candidate != cand_id:
+                        # 双向核对：terminate 与 final 对候选的说法必须一致
+                        outcome, basis = EpisodeOutcome.UNRESOLVED, "terminate_candidate_conflict"
+                    elif cand_id:
+                        candidate = _load_final_candidate(ep_dir, cand_id)
+                        if candidate is None:
+                            outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_candidate:artifact_unavailable"
+                        else:
+                            verdict = judge.evaluate(task, candidate, eval_run_id)
+                            ev = decide_outcome(
+                                episode_id=ep_id,
+                                task_id=task_id,
+                                final_answer=candidate,
+                                verdict=verdict,
+                                failure_established=False,
+                            )
+                            outcome, basis = ev.outcome, ev.reason
                     else:
-                        verdict = judge.evaluate(task, candidate, eval_run_id)
+                        # 唯一 terminate、双方都未指名候选 → 确证无答案
+                        failure_established = True
                         ev = decide_outcome(
-                            episode_id=ep_id,
-                            task_id=task_id,
-                            final_answer=candidate,
-                            verdict=verdict,
-                            failure_established=False,
+                            episode_id=ep_id, task_id=task_id, final_answer=None, verdict=None, failure_established=True
                         )
                         outcome, basis = ev.outcome, ev.reason
-                elif terminate is not None and not term_candidate:
-                    # 唯一 terminate 且未指名候选 → 按冻结协议确证无答案
-                    failure_established = True
-                    ev = decide_outcome(
-                        episode_id=ep_id, task_id=task_id, final_answer=None, verdict=None, failure_established=True
-                    )
-                    outcome, basis = ev.outcome, ev.reason
-                else:
-                    outcome, basis = EpisodeOutcome.UNRESOLVED, "no_answer_without_authoritative_terminate"
+        except Exception as exc:  # noqa: BLE001 单 episode 异常隔离：不拖垮整批分母
+            outcome, basis = EpisodeOutcome.UNRESOLVED, f"artifact_error:{exc.__class__.__name__}"
+            final_obj = None
 
         evaluation = EpisodeEvaluation(
             ep_id, task_id, outcome, verdict, basis, group_id=entry.get("exact_task_id") or task_id
@@ -430,13 +442,28 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
 
 
 def _load_final_candidate(ep_dir: str, candidate_id: Optional[str]) -> Optional[AnswerCandidate]:
+    """读取选中候选；文件损坏/记录非法都返回 None（由调用方记 U，不抛异常）。"""
     path = os.path.join(ep_dir, "candidates.jsonl")
     if not candidate_id or not os.path.exists(path):
         return None
-    for line in open(path, "r", encoding="utf-8"):
-        d = json.loads(line)
-        if d.get("candidate_id") == candidate_id:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(d, dict) or d.get("candidate_id") != candidate_id:
+            continue
+        try:
             return AnswerCandidate(**{k: v for k, v in d.items() if k in AnswerCandidate.__dataclass_fields__})
+        except TypeError:
+            return None
     return None
 
 

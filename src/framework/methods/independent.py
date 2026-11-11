@@ -110,6 +110,10 @@ def run_episode(
     search_cfg = method_cfg.get("search", {}) or {}
     judge_cfg = method_cfg.get("judge", {}) or {}
     recovery_cfg = method_cfg.get("recovery", {}) or {}
+    stopping_cfg = method_cfg.get("stopping", {}) or {}
+    stop_policy = str(stopping_cfg.get("policy", "after_assembly")).lower()
+    if stop_policy not in ("after_assembly", "online"):
+        raise ValueError(f"未支持的 stopping.policy：{stop_policy}（可选 after_assembly / online）")
 
     eid = episode_id or new_id("ep")
     store = EventStore(results_root, eid)
@@ -166,6 +170,7 @@ def run_episode(
         elements=elements,
         k_candidates=int(assembly_cfg.get("k", 1)),
         branch_width=int(search_cfg.get("branch_width", 1)),
+        stopping_policy=stop_policy,
     )
     engine.start()
 
@@ -182,6 +187,8 @@ def run_episode(
     steps = 0
     last_action: Optional[Action] = None
     pending_retry = False
+    last_pack_hash = ""
+    target_calls_at_last_pack = -1
 
     def _assemble_now(reason: str) -> None:
         nonlocal steps
@@ -233,9 +240,30 @@ def run_episode(
                 continue
             if decision.action == "fallback_assemble":
                 _assemble_now(decision.reason)
+                engine.terminate("fallback_assembled")
                 break
             engine.terminate(decision.reason)
             break
+
+        if action.type is ActionType.ASK_TARGET:
+            q = action.params.get("query")
+            if not isinstance(q, str) or not q.strip():
+                # U03：空/非字符串查询属于格式失败，必须走有限恢复而不是反复执行
+                decision = recovery.handle("controller", Status.INVALID_OUTPUT, attempt_key="controller")
+                store.append(
+                    "action_rejected",
+                    role="controller",
+                    node_id=node_id,
+                    payload={"reason": "empty_query", "action_id": action.action_id},
+                )
+                steps += 1
+                if decision.action in ("retry_same", "retry_rephrase"):
+                    continue
+                if decision.action == "fallback_assemble":
+                    _assemble_now(decision.reason)
+                    break
+                engine.terminate(decision.reason)
+                break
 
         store.append(
             "action_proposed",
@@ -250,6 +278,17 @@ def run_episode(
         if result.status is Status.BUDGET_EXHAUSTED:
             break  # R09：交给收尾逻辑，用剩余本地额度装配
 
+        if result.rejected and result.status is Status.INVALID_OUTPUT:
+            decision = recovery.handle("controller", Status.INVALID_OUTPUT, attempt_key="engine_reject")
+            if decision.action in ("retry_same", "retry_rephrase"):
+                continue
+            if decision.action == "fallback_assemble":
+                _assemble_now(decision.reason)
+                engine.terminate("fallback_assembled")
+                break
+            engine.terminate(decision.reason)
+            break
+
         if result.retryable and not result.rejected:
             decision = recovery.handle("target", result.status, attempt_key="target")
             if decision.action in ("retry_same", "retry_rephrase") and guard.can_spend_target():
@@ -263,12 +302,19 @@ def run_episode(
                 break
 
         if action.type is ActionType.ASSEMBLE and engine.final_candidate is not None:
-            # 装配即冻结答案（默认）；需要继续询问时由 method.assembly.continue_after_assemble 打开
             if engine.stop_reason:
                 engine.terminate("online_success")
-            else:
+                break
+            if stop_policy == "after_assembly":
                 engine.terminate("assembled")
-            break
+                break
+            # online：候选已冻结，但允许继续取证；材料与调用都没变时重复装配视为无进展
+            pack_hash = (engine.packs[-1].get("input_hash") if engine.packs else "") or ""
+            target_calls = guard.snapshot().get("target_calls_used", 0)
+            if pack_hash and pack_hash == last_pack_hash and target_calls == target_calls_at_last_pack:
+                engine.terminate("no_progress_assembly")
+                break
+            last_pack_hash, target_calls_at_last_pack = pack_hash, target_calls
 
     if not engine.terminated:
         if engine.final_candidate is None and guard.snapshot().get("non_target_calls_left", 1) != 0:
