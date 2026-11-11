@@ -55,6 +55,8 @@
 
 按第三轮审查（`3e531e3`，T01–T08）修复；仓库 122 项、三轮验收 48 项全过。
 
+远端 CI：[run 43064220847](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43064220847) success（13s）。
+
 ### 修复
 
 - **T01** 评价只解析一次 final；损坏/非对象/缺字段记 `unresolved` 且不回写；核对唯一 terminate 与候选 ID 的一致性，冲突不再算失败。
