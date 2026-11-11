@@ -2,6 +2,14 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.2.1] — 2026-11-11
+
+### 变更
+
+- 完成 S01：CI 进入 `.github/workflows/ci.yml`，R13 断言恢复严格；
+  首次远端运行 [run 43019024263](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43019024263) 结论 success（job `test`，9 步）。
+- 第二轮审查 14 组问题至此全部关闭；仓库测试 103 项、上轮验收 17/17、本轮验收 19/19。
+
 ## [Unreleased]
 
 （下一轮）
