@@ -25,7 +25,7 @@ from .contracts import (
 
 #: 只归档、不进入本次装配的材料类型（手册 §5.2：归档用于复核，不是活跃输入）
 ARCHIVED_KINDS = ("summary_archive",)
-from .state import compute_open, element_evidence, normalize_element
+from .state import active_materials, compute_open, element_evidence, normalize_element
 
 
 @dataclass
@@ -54,8 +54,8 @@ class Assembler:
         # 材料去重：同 key 同 value 只保留一次（不同要素同值仍各自保留）
         seen: set[Tuple[str, str]] = set()
         materials: List[Dict[str, Any]] = []
-        for m in state.materials:
-            if str(m.get("kind", "")) in ARCHIVED_KINDS:
+        for m in active_materials(state):
+            if str(m.get("kind", "")) in ARCHIVED_KINDS:  # 双保险：归档永不进入装配
                 continue
             sig = (str(m.get("key", "")), str(m.get("value", m.get("text", ""))))
             if sig in seen:

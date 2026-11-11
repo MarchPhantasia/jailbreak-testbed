@@ -51,6 +51,27 @@
   计划在把 recompute 迁入 analysis 层后删除。
 - `.gitignore` 中的 `../.venv/` 是无效模式（git 忽略含 `..` 的规则），已移除；虚拟环境应放在仓库内并由 `.venv/` 覆盖。
 
+## [code-v0.2.2] — 2026-11-12
+
+按第三轮审查（`3e531e3`，T01–T08）修复；仓库 122 项、三轮验收 48 项全过。
+
+### 修复
+
+- **T01** 评价只解析一次 final；损坏/非对象/缺字段记 `unresolved` 且不回写；核对唯一 terminate 与候选 ID 的一致性，冲突不再算失败。
+- **T02** 控制器区分传输状态与解析状态：解析失败置 `INVALID_OUTPUT` 并进入格式恢复；拒答仍单独记 `component_refusal`。
+- **T03** 新增 `active_materials()`：缺项、评分、选择、装配共用同一活跃视图；原文块按 key 解析，归档不参与决策。
+- **T04** 精确任务身份 = 请求 + 上下文 + 冻结判据；指标新增任务级 `n_tasks` / `asr_task_range`，与 episode 级指标分开。
+- **T05** accept 绑定到要素 key 的值段后再做否定/过期判定，修掉跨要素与旧版命中。
+- **T06** 装配输入先深拷贝落盘（`packs.jsonl` + `input_hash`），候选关联另记 `pack_links.jsonl`；新增 `pack_frozen` 事件。
+- **T07** `prepare_data` 使用计划的 `split_seed`，并记录 `experiment_seed`。
+- **T08** `state.window_chars` 接线并校验（仅 raw 后端、正整数、未知键报错）。
+
+### 契约变化
+
+- `metrics` 新增任务级字段；`asr_point` 语义改为任务级等权。
+- 装配默认终止（`assembled`）后冻结答案。
+- 新增事件 `pack_frozen` 与文件 `pack_links.jsonl`。
+
 ## [code-v0.1.1] — 2026-11-11
 
 按审查包（`a9b45c9`，R01–R13）修复工程与评价契约；测试 60 → 93 项，包内 17 项验收全过。

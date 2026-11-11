@@ -330,6 +330,46 @@ class Engine:
         return StepResult(action.action_id, status, f"target 调用完成：{label.value}", node_id=child_id, retryable=retryable)
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    def _freeze_pack(self, pack, node_id: str, state):
+        """深拷贝材料并落盘；返回冻结后的包（输入不可被后续状态改写）。"""
+        from .assembly import EvidencePack
+
+        materials = json.loads(json.dumps(pack.materials, ensure_ascii=False, default=str))
+        frozen = EvidencePack(
+            pack_id=pack.pack_id,
+            task_id=pack.task_id,
+            materials=materials,
+            gaps=list(pack.gaps),
+            notes=list(pack.notes),
+        )
+        row = {
+            "pack_id": frozen.pack_id,
+            "task_id": frozen.task_id,
+            "materials": materials,
+            "gaps": frozen.gaps,
+            "notes": frozen.notes,
+            "view": {"backend": self.backend.name, "state_seq": state.source_event_seq, "node_id": node_id},
+            "input_hash": hashlib.sha256(
+                json.dumps(materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+        }
+        self.packs.append(row)
+        with open(os.path.join(self._evidence_dir, "packs.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        self.store.append(
+            "pack_frozen",
+            role="assembler",
+            node_id=node_id,
+            payload={"pack_id": frozen.pack_id, "input_hash": row["input_hash"], "materials": len(materials), "gaps": frozen.gaps},
+        )
+        return frozen
+
+    def _link_pack_candidates(self, pack, candidates) -> None:
+        row = {"pack_id": pack.pack_id, "candidate_ids": [c.candidate_id for c in candidates]}
+        with open(os.path.join(self._evidence_dir, "pack_links.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
     def _assemble(self, action: Action) -> StepResult:
         err = self._validate(action)
         if err:
@@ -337,33 +377,16 @@ class Engine:
         node_id = action.node_id or self.current_node_id
         state = self.states[node_id]
         built = self.assembler.build_pack(self.task, state, self.elements)
+        # T06：先冻结并落盘装配输入，再调用装配器；候选关联另记，不改写已冻结的包定义
+        frozen = self._freeze_pack(built, node_id, state)
         candidates = self.assembler.assemble_from_pack(
             self.task,
-            built,
+            frozen,
             k=int(action.params.get("k") or self.k_candidates),
             stage_policy_ref=self.episode.stage_policy_ref,
         )
         self.candidates.extend(candidates)
-        # 包定义先于候选落盘：保存真实装配输入（含 key/value/support/fidelity），一个 pack_id 只定义一次
-        pack_row = {
-            "pack_id": built.pack_id,
-            "task_id": built.task_id,
-            "materials": built.materials,
-            "gaps": built.gaps,
-            "notes": built.notes,
-            "view": {
-                "backend": self.backend.name,
-                "state_seq": state.source_event_seq,
-                "node_id": node_id,
-            },
-            "input_hash": hashlib.sha256(
-                json.dumps(built.materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-            ).hexdigest(),
-            "candidates": [c.candidate_id for c in candidates],
-        }
-        self.packs.append(pack_row)
-        with open(os.path.join(self._evidence_dir, "packs.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps(pack_row, ensure_ascii=False, default=str) + "\n")
+        self._link_pack_candidates(frozen, candidates)
 
         self.store.append(
             "assembled",

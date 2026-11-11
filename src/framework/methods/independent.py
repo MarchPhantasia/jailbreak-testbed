@@ -125,7 +125,21 @@ def run_episode(
 
         rubric = resolve_rubric(config, task)
     elements = rubric.elements or [{"key": e, "accept": [], "critical": True} for e in (task.runtime_hints or {}).get("elements", [])]
-    backend = make_backend(state_cfg.get("backend", "fox"), elements, max_chars=int(state_cfg.get("max_chars", 400)))
+    allowed_state_keys = {"backend", "max_chars", "window_chars"}
+    unknown_state_keys = set(state_cfg) - allowed_state_keys
+    if unknown_state_keys:
+        raise ValueError(f"未支持的 method.state 配置：{sorted(unknown_state_keys)}")
+    backend_name = state_cfg.get("backend", "fox")
+    window_chars = state_cfg.get("window_chars")
+    if window_chars is not None:
+        if backend_name not in ("raw_history", "raw", "original"):
+            raise ValueError("window_chars 仅适用于 raw_history 后端；其他后端请用 max_chars")
+        window_chars = int(window_chars)
+        if window_chars <= 0:
+            raise ValueError("window_chars 必须为正整数")
+    backend = make_backend(
+        backend_name, elements, max_chars=int(state_cfg.get("max_chars", 400)), window_chars=window_chars
+    )
     engine = Engine(
         task=task,
         episode=Episode(
@@ -212,7 +226,7 @@ def run_episode(
 
         if action is None:
             # S07：保留组件真实状态（拒答 ≠ 格式错误）
-            status = getattr(controller, "last_status", Status.INVALID_OUTPUT)
+            status = getattr(controller, "last_failure", None) or getattr(controller, "last_status", Status.INVALID_OUTPUT)
             decision = recovery.handle("controller", status, attempt_key="controller")
             steps += 1
             if decision.action in ("retry_same", "retry_rephrase"):
@@ -248,8 +262,12 @@ def run_episode(
                 engine.terminate(decision.reason)
                 break
 
-        if engine.final_candidate is not None and action.type is ActionType.ASSEMBLE and engine.stop_reason:
-            engine.terminate("online_success")
+        if action.type is ActionType.ASSEMBLE and engine.final_candidate is not None:
+            # 装配即冻结答案（默认）；需要继续询问时由 method.assembly.continue_after_assemble 打开
+            if engine.stop_reason:
+                engine.terminate("online_success")
+            else:
+                engine.terminate("assembled")
             break
 
     if not engine.terminated:

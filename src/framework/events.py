@@ -29,6 +29,7 @@ EVENT_TYPES = (
     "frontier_updated",
     "node_selected",
     "score_recorded",
+    "pack_frozen",
     "assembled",
     "candidate_selected",
     "online_verdict",

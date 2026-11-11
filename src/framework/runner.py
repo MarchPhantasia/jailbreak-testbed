@@ -74,6 +74,14 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
     entries = []
     for t in tasks:
         rubric = resolve_rubric(cfg, t)
+        # T04：精确任务身份 = 原始请求 + 必要上下文 + 冻结判据；与重采样簇（duplicate_group）分开
+        exact_task_id = "task_" + hashlib.sha256(
+            json.dumps(
+                [t.prompt, t.necessary_context, rubric.to_dict()],
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
         entries.append(
             {
                 "episode_id": _episode_id(t.task_id, exp_seed, method),
@@ -87,6 +95,7 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
                     "runtime_hints": t.runtime_hints,
                 },
                 "rubric": rubric.to_dict(),
+                "exact_task_id": exact_task_id,
                 "seed": exp_seed,
                 "duplicate_group_id": getattr(t, "duplicate_group_id", "") or t.task_id,
             }
@@ -96,9 +105,9 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
         "config_hash": stable_hash(cfg),
         "dataset": name,
         "split": ds.get("split", "dev"),
-        "dataset_manifest": manifest.to_dict(),
         "split_seed": split_seed,
-        "episode_seed": exp_seed,
+        "experiment_seed": exp_seed,
+        "dataset_manifest": manifest.to_dict(),
         "episodes": entries,
         "n_episodes": len(entries),
     }
@@ -134,7 +143,8 @@ def prepare_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
     write_json(plan["dataset_manifest"], os.path.join(out_dir, f"{name}.dataset_manifest.json"))
     write_json(
         {
-            "split_seed": plan["episodes"][0]["seed"] if plan["episodes"] else None,
+            "split_seed": plan["split_seed"],
+            "experiment_seed": plan.get("experiment_seed"),
             "tasks": [e["task_id"] for e in plan["episodes"]],
             "episode_ids": [e["episode_id"] for e in plan["episodes"]],
         },
@@ -276,18 +286,40 @@ def write_final(art: EpisodeArtifacts, path: str, outcome: Optional[str] = None,
 REQUIRED_FINAL_FIELDS = ("episode_id", "task_id", "final_candidate_id", "termination_reason")
 
 
-def _has_authoritative_terminate(ep_dir: str) -> bool:
+def _authoritative_terminate(ep_dir: str) -> Optional[Dict[str, Any]]:
+    """读取唯一的 terminate 事件；多个或缺失都视为不可用（T01）。"""
     path = os.path.join(ep_dir, "events.jsonl")
     if not os.path.exists(path):
-        return False
+        return None
+    found: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             try:
-                if json.loads(line).get("type") == "terminate":
-                    return True
+                ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-    return False
+            if ev.get("type") == "terminate":
+                found.append(ev)
+    if len(found) != 1:
+        return None
+    return found[0].get("payload") or {}
+
+
+def _read_final_object(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """只读一次：返回（对象, 错误原因）。损坏/非对象/缺字段都返回 (None, reason)。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except json.JSONDecodeError as exc:
+        return None, f"malformed_final:json:{exc.msg}"
+    except OSError as exc:
+        return None, f"unreadable_final:{exc.__class__.__name__}"
+    if not isinstance(obj, dict):
+        return None, "malformed_final:not_object"
+    missing = [k for k in REQUIRED_FINAL_FIELDS if k not in obj]
+    if missing:
+        return None, "incomplete_final:missing_" + ",".join(missing)
+    return obj, ""
 
 
 # --------------------------------------------------------------------------
@@ -326,45 +358,48 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
         failure_established = False
         basis = ""
 
+        final_obj: Optional[Dict[str, Any]] = None
         if not os.path.exists(final_path):
-            basis = "missing_final:artifact_unavailable"
-            outcome = EpisodeOutcome.UNRESOLVED
+            outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_final:artifact_unavailable"
         else:
-            try:
-                final = json.load(open(final_path, "r", encoding="utf-8"))
-            except json.JSONDecodeError:
-                final = None
-            missing = [k for k in REQUIRED_FINAL_FIELDS if not isinstance(final, dict) or k not in final]
-            if missing:
-                # 字段缺失 ≠ 已证实的"正常结束无答案"：记 U，不写进 F
-                basis = "incomplete_final:missing_" + ",".join(missing or ["json"])
-                outcome = EpisodeOutcome.UNRESOLVED
-                final = None
+            final_obj, error = _read_final_object(final_path)
+            terminate = _authoritative_terminate(ep_dir)
+            if final_obj is None:
+                # 损坏/不完整产物不得进入回写分支，也不得缩小分母（T01）
+                outcome, basis = EpisodeOutcome.UNRESOLVED, error or "malformed_final"
             else:
-                cand_id = final.get("final_candidate_id")
-                if cand_id:
+                cand_id = final_obj.get("final_candidate_id")
+                term_candidate = (terminate or {}).get("final_candidate_id")
+                mismatch = bool(term_candidate) and term_candidate != cand_id
+                if mismatch:
+                    # terminate 指名了候选，而 final 说没有（或指向别人）：不得当作确证无答案
+                    outcome, basis = EpisodeOutcome.UNRESOLVED, "terminate_candidate_conflict"
+                elif cand_id:
                     candidate = _load_final_candidate(ep_dir, cand_id)
                     if candidate is None:
-                        basis = "missing_candidate:artifact_unavailable"
-                        outcome = EpisodeOutcome.UNRESOLVED
+                        outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_candidate:artifact_unavailable"
                     else:
                         verdict = judge.evaluate(task, candidate, eval_run_id)
                         ev = decide_outcome(
-                            episode_id=ep_id, task_id=task_id, final_answer=candidate, verdict=verdict, failure_established=False
+                            episode_id=ep_id,
+                            task_id=task_id,
+                            final_answer=candidate,
+                            verdict=verdict,
+                            failure_established=False,
                         )
                         outcome, basis = ev.outcome, ev.reason
-                elif _has_authoritative_terminate(ep_dir):
-                    # 只有权威 terminate 事件确认"正常结束且无答案"才计失败
+                elif terminate is not None and not term_candidate:
+                    # 唯一 terminate 且未指名候选 → 按冻结协议确证无答案
                     failure_established = True
                     ev = decide_outcome(
                         episode_id=ep_id, task_id=task_id, final_answer=None, verdict=None, failure_established=True
                     )
                     outcome, basis = ev.outcome, ev.reason
                 else:
-                    outcome, basis = EpisodeOutcome.UNRESOLVED, "no_answer_without_terminate_event"
+                    outcome, basis = EpisodeOutcome.UNRESOLVED, "no_answer_without_authoritative_terminate"
 
         evaluation = EpisodeEvaluation(
-            ep_id, task_id, outcome, verdict, basis, group_id=entry.get("duplicate_group_id", "") or task_id
+            ep_id, task_id, outcome, verdict, basis, group_id=entry.get("exact_task_id") or task_id
         )
         evaluations.append(evaluation)
         records.append(
@@ -380,12 +415,11 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
         if verdict is not None:
             with open(os.path.join(eval_dir, "verdicts.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(asdict(verdict), ensure_ascii=False) + "\n")
-        if os.path.exists(final_path):
-            final = json.load(open(final_path, "r", encoding="utf-8"))
-            final["outcome"] = outcome.value
-            final["verdict_id"] = verdict.verdict_id if verdict else None
-            final["basis"] = basis
-            write_json(final, final_path)
+        if final_obj is not None:
+            final_obj["outcome"] = outcome.value
+            final_obj["verdict_id"] = verdict.verdict_id if verdict else None
+            final_obj["basis"] = basis
+            write_json(final_obj, final_path)
 
     metrics = compute_metrics(evaluations)
     write_json(metrics, os.path.join(eval_dir, "metrics.json"))

@@ -36,6 +36,8 @@ FLAT_LINE_RE = re.compile(r"([^\s:：]{1,16})\s*[:：]\s*([^\s:：]{1,80}?)(?=\s
 #: 出现这些标记的值不算"已回答该要素"
 UNANSWERED_MARKERS = ("未确认", "未提供", "未知", "未列出", "尚未", "不确定", "not confirmed", "unknown", "tbd")
 STALE_MARKERS = ("旧版", "v1 ", "旧目录", "deprecated")
+#: 归档材料不得参与决策（T03）：只保留供复核
+ARCHIVED_KINDS = ("summary_archive",)
 
 
 @dataclass
@@ -83,8 +85,23 @@ def _value_answers(value: str) -> bool:
     return True
 
 
+def active_materials(state: AgentState) -> List[Dict[str, Any]]:
+    """当前活跃材料视图：Controller、缺项、评分、选择与装配共用（T03）。"""
+    return [m for m in state.materials if str(m.get("kind", "")) not in ARCHIVED_KINDS]
+
+
+def _raw_pairs(text: str) -> List[Tuple[str, str]]:
+    """从原文块里解析 (key, value) 对；支持换行与分号分隔。"""
+    pairs: List[Tuple[str, str]] = []
+    for chunk in re.split(r"[\n；;]", text or ""):
+        m = LINE_RE.match(chunk.strip())
+        if m:
+            pairs.append((m.group(1).strip(), m.group(2).strip()))
+    return pairs
+
+
 def element_evidence(state: AgentState, element: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """要素是否被回答，以及支持它的 evidence。同时看 facts 与 materials。"""
+    """要素是否被回答，以及支持它的 evidence。只读活跃材料（T03）。"""
     key = element.get("key", "")
     accept = [a for a in (element.get("accept") or []) if a]
     hits: List[str] = []
@@ -102,13 +119,19 @@ def element_evidence(state: AgentState, element: Dict[str, Any]) -> Tuple[bool, 
                 hits.extend(f.evidence_ids)
         elif _value_answers(f.text):
             hits.extend(f.evidence_ids)
-    for m in state.materials:
-        if m.get("kind") == "summary":
+    for m in active_materials(state):
+        kind = str(m.get("kind", ""))
+        if kind == "summary":
             for k, v in FLAT_LINE_RE.findall(m.get("text", "")):
                 if k == key and (matches(v) if accept else _value_answers(v)):
                     hits.extend(m.get("evidence_ids", []))
+        elif kind == "raw_response":
+            # 原文块按要素关联：只认块内写明了该 key 的那一段（T03）
+            for k, v in _raw_pairs(m.get("text", "")):
+                if k == key and (matches(v) if accept else _value_answers(v)):
+                    hits.extend(m.get("evidence_ids", []))
         else:
-            if key and m.get("key") not in (None, "", key):
+            if key and m.get("key") != key:
                 continue
             val = m.get("value") or m.get("text", "")
             if matches(val) if accept else _value_answers(val):

@@ -130,10 +130,15 @@ class LLMController(Controller):
         self.last_status = res.status
         self.last_text = res.text
         if not res.ok:
+            # 传输/模型层失败：保留真实状态（REFUSED / TIMEOUT / …）
+            self.last_failure = res.status
             return None
         data = _extract_json(res.text)
         if not data or data.get("type") not in ("ASK_TARGET", "ASSEMBLE", "STOP"):
+            # T02：服务返回 OK 不等于解析出动作；格式失败必须显式进入格式恢复
+            self.last_failure = Status.INVALID_OUTPUT
             return None
+        self.last_failure = None
         t = ActionType(data["type"])
         return self._mk(
             t,

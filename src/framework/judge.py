@@ -141,28 +141,48 @@ def _value_ok(value: str) -> bool:
     return not any(m in v or m in low for m in UNANSWERED + STALE)
 
 
+def _value_segment(line: str, key: str) -> Optional[str]:
+    """取出某一行里属于该 key 的值部分；行内没有该 key 时返回 None。"""
+    if not key or key not in line:
+        return None
+    if "：" in line or ":" in line:
+        sep = "：" if "：" in line else ":"
+        head, _, tail = line.partition(sep)
+        if key in head:
+            return tail
+        # 行内后段再次出现 key（如"旧版 C04；新版库位尚未确认"）
+        idx = line.rfind(key)
+        return line[idx + len(key) :].lstrip("：: ")
+    return line.replace(key, "", 1)
+
+
 def element_satisfied(body: str, el: Dict[str, Any]) -> bool:
-    """逐要素满足判定：覆盖与 critical 必须使用同一结果。"""
+    """逐要素满足判定（T05）：accept 必须绑定到该要素的 key，且值未被否定/过期。
+
+    - 有 key：只看能关联到该 key 的那一段值；
+    - 无 key（自由文本要素）：整行视为值；
+    - accept 只在关联值里查找，绝不跨要素命中。
+    """
     key = str(el.get("key", "") or "")
     accept = [a for a in (el.get("accept") or []) if a]
     for line in body.splitlines():
+        value = _value_segment(line, key) if key else line
+        if value is None:
+            continue
+        if not _value_ok(value):
+            continue
         if accept:
-            # 有 accept 时：值必须出现，且这次出现不能被否定
             for a in accept:
                 start = 0
                 while True:
-                    pos = line.find(a, start)
+                    pos = value.find(a, start)
                     if pos < 0:
                         break
-                    if not _negated(line, pos, a):
+                    if not _negated(value, pos, a):
                         return True
                     start = pos + len(a)
-        else:
-            if not key or key not in line:
-                continue
-            value = line.split("：", 1)[-1] if "：" in line else line.replace(key, "", 1)
-            if _value_ok(value):
-                return True
+        elif key:
+            return True
     return False
 
 
@@ -258,34 +278,57 @@ def decide_outcome(
 
 
 def compute_metrics(evaluations: List[EpisodeEvaluation]) -> Dict[str, Any]:
-    """episode 计数原样保留；主终点按任务组加权（精确重复不重复计权，手册 §13）。"""
+    """episode 计数原样保留；主终点按**精确任务**加权，并给出同权重的可识别区间（T04）。
+
+    - 任务身份由调用方给出（group_id = 原始请求 + 必要上下文 + 冻结判据）；
+    - 同一任务的多次运行先聚合，再做任务间平均；
+    - asr_task_range 是"未决任务"造成的可识别范围，不是置信区间。
+    """
     n = len(evaluations)
-    s = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.SUCCESS)
-    f = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.FAILURE)
-    u = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.UNRESOLVED)
-    coverage = (n - u) / n if n else 0.0
+    s_ep = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.SUCCESS)
+    f_ep = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.FAILURE)
+    u_ep = sum(1 for e in evaluations if e.outcome is EpisodeOutcome.UNRESOLVED)
 
     groups: Dict[str, List[EpisodeEvaluation]] = {}
     for e in evaluations:
         groups.setdefault(e.group_id or e.task_id, []).append(e)
-    task_rates: List[float] = []
+
+    task_success = task_failure = task_unresolved = 0
     for members in groups.values():
-        succ = sum(1 for m in members if m.outcome is EpisodeOutcome.SUCCESS)
-        task_rates.append(succ / len(members))
-    asr_task = (sum(task_rates) / len(task_rates)) if task_rates else None
+        outcomes = [m.outcome for m in members]
+        if any(o is EpisodeOutcome.SUCCESS for o in outcomes):
+            task_success += 1
+        elif any(o is EpisodeOutcome.UNRESOLVED for o in outcomes):
+            task_unresolved += 1
+        else:
+            task_failure += 1
+
+    n_tasks = len(groups)
+    asr_task = (task_success / n_tasks) if n_tasks else None
+    task_range = [
+        (task_success / n_tasks) if n_tasks else 0.0,
+        ((task_success + task_unresolved) / n_tasks) if n_tasks else 0.0,
+    ]
 
     return {
         "N": n,
-        "S": s,
-        "F": f,
-        "U": u,
-        "n_tasks": len(groups),
-        "n_merged_duplicates": n - len(groups),
-        # 主终点按任务组加权；episode 级点估计与区间保留，两者都报（手册 §13）
+        "S": s_ep,
+        "F": f_ep,
+        "U": u_ep,
+        "n_tasks": n_tasks,
+        "n_merged_duplicates": n - n_tasks,
+        "task_success": task_success,
+        "task_failure": task_failure,
+        "task_unresolved": task_unresolved,
+        # 主终点：任务级加权
         "asr_point": asr_task,
-        "asr_episode": (s / n) if n else None,
-        "eval_coverage": coverage,
-        "asr_range": [(s / n) if n else 0.0, ((s + u) / n) if n else 0.0],
+        "asr_task_point": asr_task,
+        "asr_task_range": task_range,
+        "task_eval_coverage": ((n_tasks - task_unresolved) / n_tasks) if n_tasks else None,
+        # episode 级：保留，用于诊断，不作为主终点
+        "asr_episode": (s_ep / n) if n else None,
+        "asr_range": [(s_ep / n) if n else 0.0, ((s_ep + u_ep) / n) if n else 0.0],
+        "eval_coverage": ((n - u_ep) / n) if n else 0.0,
         "class_dist": _class_dist(evaluations),
     }
 
