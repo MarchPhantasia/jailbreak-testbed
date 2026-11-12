@@ -2,6 +2,34 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.4.1] — 2026-11-12
+
+用 StrongREJECT 真实切片（30 条，固定 revision）在本地 vLLM 上跑通全链路后修复的问题。
+这一轮不改变目标函数，也不产生可报告的 ASR（Target 是未对齐的本地模型、裁判同源）。
+
+### 修复
+
+- **Target 系统指令**：`target_system_prompt` 显式可配（空串=不注入），字符数与 SHA-256 写入
+  `episode_started`；`real_dev` 默认不注入，合成 baseline 保留旧提示。
+- **装配覆盖检查**：`line-ngram-evidence@v1`，长段落与 claims + 证据包原文做 4-gram 覆盖，
+  短引导句豁免；修掉"描述性 claim + 引用式答案"被误判为无依据而整体降级。
+- **评价证据范围**：`Judge_eval` 读取该 episode 的全部 Target 材料（不再只取 claims 引用子集），
+  并单独记录 `cited_evidence_ids`；同一批候选由此前的 2/1/0 变为 3/0/0（伪失败）。
+- **配置相对路径**：`datasets.path` / `manifests_dir` / `results_dir` 支持"工作目录优先、
+  配置文件目录兜底"。
+- **划分顺序**：`split` 按 task_id 排序返回，切片前 N 条与源文件顺序一致。
+
+### 新增
+
+- `configs/real-dev.local-smoke.yaml`：真实数据 + 本地服务的联调配置（Target/Judge 同源，非 ASR）。
+- `tests/test_execution1_r2.py` 增加真实切片计划、Target 系统提示、裁判证据范围等回归；
+  真实切片存在时才运行（`data/slices` 不入库）。
+
+### 已知限制
+
+- 冒烟里的 Target 未对齐、裁判同源，S/F/U 不能当作方法效果。
+- claims 与 evidence 的对齐质量目前只是记录，不作为成功门槛。
+
 ## [code-v0.4.0] — 2026-11-12
 
 最小真实闭环（执行包 `execution1-r2`，E01–E05）：按组件路由模型、请求产物、模型装配、独立语义裁判、

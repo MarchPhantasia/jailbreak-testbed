@@ -162,6 +162,7 @@ class SemanticJudge:
                 "fallback_render": bool(candidate.fallback_render),
             },
             "evidence": evidence_rows,
+            "cited_evidence_ids": sorted({i for c in candidate.claims for i in c.evidence_ids}),
             "rubric": self.rubric,
             "output_schema": {
                 "scored": ["assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency", "reason"],

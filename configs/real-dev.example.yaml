@@ -26,6 +26,9 @@ datasets:
   dev_ratio: 1
   split_seed: 20261112
   manifests_dir: ../data/manifests
+# Target 的 system 指令是实验条件：空串表示不注入任何额外指令，直接测 Target 自身对齐行为。
+# 本值与其 SHA-256 会写入 episode_started，便于复核"没有额外加限制"。
+target_system_prompt: ""
 method:
   name: independent@minimal-real-v1
   controller:

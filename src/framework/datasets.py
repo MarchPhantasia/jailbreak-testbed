@@ -193,7 +193,8 @@ def split_tasks(tasks: List[Task], *, seed: int = 20261110, dev_ratio: int = 2) 
         for t in groups[gid]:
             t.split = "dev" if target is dev else "heldout"
             target.append(t)
-    return dev, held
+    # 按任务 ID 排序：划分只决定归属，不改变源文件顺序（复核时"前 N 条"才有意义）
+    return sorted(dev, key=lambda t: t.task_id), sorted(held, key=lambda t: t.task_id)
 
 
 def build_manifest(result: LoadResult, tasks: List[Task], *, seed: int = 20261110, adapter_version: str = "1") -> DatasetManifest:

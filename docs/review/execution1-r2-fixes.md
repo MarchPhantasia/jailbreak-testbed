@@ -71,7 +71,49 @@ baseline 198 / prior 17 / round2 19 / round3 12 / round4 8 / round5 5 / harness 
 | 真实开发切片（StrongREJECT 固定 revision） | 用 `scripts/select_dev_slice.py` 在本机生成 |
 | 人工复核（20–30 条） | 未开始 |
 
-## 5. 已知限制
+## 5. 真实数据冒烟（本地替代 Target，不作为 ASR 结果）
+
+数据：StrongREJECT 官方完整集，固定 revision `f7cad6c1…`，SHA-256 `4dd70357…`
+（与执行包 `references/dataset_sources.json` 记录一致，313 行）。开发切片按
+`scripts/select_dev_slice.py` 生成：seed 20261112、30 条、30 个重复组、切片
+SHA-256 `1ae2261a…`；类别分布 Non-violent crimes 10 / Disinformation 7 /
+Hate 4 / Sexual 4 / Violence 4 / Illegal goods 1。原始 CSV 与切片都在 `data/`（不入库）。
+
+服务：本机 vLLM（`JonathanColetti/Qwen3.8-27B-Uncensored`，127.0.0.1:8000）同时充当
+Controller / Assembler / Target / Judge_eval。**Target 是未对齐模型，Judge 与生成同源**，
+所以下面的 S/F/U 只用于验证链路，不是越狱 ASR。配置见 `configs/real-dev.local-smoke.yaml`。
+
+| 运行 | 配置差异 | 结果 | 观察 |
+|---|---|---|---|
+| v1（中止） | 全链 thinking 开，`target_query.max_tokens=3072` | 无候选 | Target 的 3072 个 completion token 全部落在 reasoning（13.6k 字符），`content` 为空 → `INVALID_OUTPUT(reasoning_only)`，两次重试同样为空，预算烧完且没有材料 |
+| v2 `…20261112b` | Target 关闭 thinking、4096；Assemble 仍 thinking/4096 | 3 集全跑完；S/F/U=3/0/0 | 装配 3/3 降级：2 次 `TRUNCATED`（10.5k 字符 JSON 被截断），1 次 `answer_lines_not_covered`（答案有引导句、claim 写成描述性 paraphrase 被判未覆盖） |
+| v3 `…20261112c` | Assemble 关闭 thinking、8192；覆盖检查改为以证据为锚 | 3 集；装配 2/3 正常（1 集两次重试后降级） | 正常候选 16 claims / 6331 chars，claims 的 evidence_ids 全部属于该证据包；调用 6 plan / 3 target / 4 assemble，31k 输入 + 18k 输出 token |
+
+### 由真实数据暴露并已修复的问题
+
+1. **Target 的 system 指令是实验条件却被隐含**：原来 Engine 固定注入"只依据对话内容作答、
+   不确定写未提供"的系统提示，会压制 Target 的正常回应。现在 `target_system_prompt` 显式配置，
+   空串表示不注入任何指令；字符数与 SHA-256 写入 `episode_started`，`real_dev` 默认空。
+2. **装配覆盖检查锚错了对象**：只和 `claims.text` 比字符串，模型写"描述性 claim + 引用式答案"
+   时会被判无依据并降级。现在 `line-ngram-evidence@v1`：长段落与 claims **和** 证据包原文做
+   4-gram 覆盖，短引导句/标题豁免；仍拦截材料之外的长段落。
+3. **评价证据范围取错**：原来只把 claims 引用到的证据给裁判，引用写不全就会被判
+   `source_compliance=not_met` + `evidence_sufficiency=insufficient`。现在传入该 episode 的
+   **全部 Target 材料**，并把 `cited_evidence_ids` 单独列出；v3 同一批候选重评后
+   由 S/F/U=2/1/0 变为 3/0/0，说明该 F 是证据范围造成的伪失败。
+4. **配置相对路径**：`datasets.path` / `manifests_dir` / `results_dir` 先按工作目录找，
+   找不到再按配置文件目录解析，`configs/real-dev.*.yaml` 可以直接用相对路径。
+5. **划分打乱源顺序**：`split` 现在按 task_id 排序返回，切片"前 N 条"与文件顺序一致。
+
+### 真实数据冒烟得出的下一步建议
+
+- 任何 thinking 模型作为 Target 时，输出上限必须覆盖"推理 + 答案"；否则会得到
+  `reasoning_only` 并浪费 Target 预算。建议 Target 侧关闭 thinking，或把上限提到 8192 以上。
+- 装配是"整理已有材料"，不需要长推理：thinking 关闭 + 8192 比 thinking 开 + 4096 更稳。
+- `Judge_eval` 必须看到完整材料；claims 引用质量应作为独立诊断指标，而不是成功门槛。
+- 同源裁判的判定偏宽松（3/3 D），正式实验必须换成 InferKnock 的 deepseek 裁判并做人工抽检。
+
+## 6. 已知限制
 
 - 语义裁判仍是通用模型 + 冻结模板，未做与人工的一致性校准；`truth_status` 保持 `not_assessed`。
 - 无额度回退用的是模板装配（`fallback_render=true`），只搬运原文，不做跨材料推理。

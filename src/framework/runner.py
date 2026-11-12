@@ -48,9 +48,24 @@ def load_config(path: str) -> Dict[str, Any]:
     return cfg
 
 
+def resolve_path(cfg: Dict[str, Any], value: str) -> str:
+    """相对路径解析：工作目录下存在就用它，否则按配置文件所在目录解析。
+
+    这样 `configs/experiment.yaml` 里的 `fixtures/...`（历史用法）与
+    `configs/real-dev.*.yaml` 里的 `../data/...`（配置目录相对）都能工作。
+    """
+    if not value or os.path.isabs(value):
+        return value
+    if os.path.exists(value):
+        return value
+    base = os.path.dirname(os.path.abspath(cfg.get("_config_path") or os.getcwd()))
+    candidate = os.path.normpath(os.path.join(base, value))
+    return candidate if os.path.exists(candidate) else value
+
+
 def results_root(cfg: Dict[str, Any]) -> str:
     exp = cfg.get("experiment", {}) or {}
-    return os.path.join(exp.get("results_dir", "results"), exp.get("id", "exp"))
+    return os.path.join(resolve_path(cfg, str(exp.get("results_dir", "results"))), exp.get("id", "exp"))
 
 
 def _episode_id(task_id: str, seed: int, method: str) -> str:
@@ -149,7 +164,7 @@ def resolve_rubric(cfg: Dict[str, Any], task: Task) -> Rubric:
 def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
     ds = cfg.get("datasets", {}) or {}
     name = ds.get("adapter", "synthetic_library")
-    path = ds.get("path", "fixtures/synthetic_library/tasks.jsonl")
+    path = resolve_path(cfg, str(ds.get("path", "fixtures/synthetic_library/tasks.jsonl")))
     exp_seed = int((cfg.get("experiment", {}) or {}).get("seed", 20261110))
     split_seed = int(ds.get("split_seed", exp_seed))
     # N14：revision 必须传到 adapter 与 manifest，不静默变成 pinned
@@ -288,7 +303,7 @@ def load_plan(cfg: Dict[str, Any]) -> Dict[str, Any]:
 def prepare_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
     plan = build_plan(cfg)
     ds = cfg.get("datasets", {}) or {}
-    out_dir = ds.get("manifests_dir", "data/manifests")
+    out_dir = resolve_path(cfg, str(ds.get("manifests_dir", "data/manifests")))
     name = ds.get("adapter", "synthetic_library")
     write_json(plan["dataset_manifest"], os.path.join(out_dir, f"{name}.dataset_manifest.json"))
     write_json(
@@ -810,7 +825,9 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                         if candidate is None:
                             outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_candidate:artifact_unavailable"
                         elif spec.get("type") == "llm":
-                            evidence = _read_evidence(ep_dir, {i for c in candidate.claims for i in c.evidence_ids} or None)
+                            # 评价证据 = 该 episode 的全部证据（Target 材料），不是 claims 引用到的子集：
+                            # 只给子集会把"引用没写全"误判成"证据不足"。claims 的引用仍在候选里单独记录。
+                            evidence = _read_evidence(ep_dir, None)
                             verdict = judge.evaluate(
                                 task,
                                 candidate,

@@ -143,7 +143,11 @@ class Assembler:
 # --------------------------------------------------------------------------
 # 模型装配（E03）：证据约束、引用校验、有限重试、明确降级
 # --------------------------------------------------------------------------
-ANSWER_CLAIM_CHECK = "line-substring@v1"
+ANSWER_CLAIM_CHECK = "line-ngram-evidence@v1"
+#: 长于该长度的答案行必须能对上 claim 或证据包；更短的行按引导语/标题处理
+COVERAGE_MIN_LINE_CHARS = 48
+#: 行内 4-gram 至少这么多比例能在 claims+证据里找到，才算有依据
+COVERAGE_MIN_OVERLAP = 0.30
 
 
 def _looks_like_gap(line: str) -> bool:
@@ -154,16 +158,47 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", str(text or ""))
 
 
-def uncovered_ratio(answer: str, claims: List[Claim]) -> Tuple[float, List[str]]:
-    """答案中未被任何 claim 文本覆盖的实质行占比（结构检查，不证明语义支持）。"""
+def _ngrams(text: str, n: int = 4) -> set:
+    compact = _normalize(text)
+    return {compact[i : i + n] for i in range(max(0, len(compact) - n + 1))}
+
+
+def _line_overlap(line: str, reference: set) -> float:
+    grams = _ngrams(line)
+    if not grams:
+        return 1.0
+    return len(grams & reference) / len(grams)
+
+
+def uncovered_ratio(answer: str, claims: List[Claim], evidence_text: str = "") -> Tuple[float, List[str]]:
+    """答案实质段落是否有依据（结构检查，不证明语义支持）。
+
+    - 参照物 = claims 文本 + 证据包原文：claim 写得"描述性"也允许，只要答案段落本身
+      能在证据里找到对应内容；
+    - 短行（< COVERAGE_MIN_LINE_CHARS）视为引导语/标题，不做覆盖判定；
+    - 返回未被覆盖行的字符占比与行列表；普通 JSON 解析器不能据此宣称语义等价。
+    """
     lines = [l.strip() for l in str(answer or "").splitlines()]
     body = [l for l in lines if l and not _looks_like_gap(l)]
     if not body:
         return 0.0, []
-    texts = [_normalize(c.text) for c in claims if c.text]
-    uncovered = [l for l in body if not any(t and (t in _normalize(l) or _normalize(l) in t) for t in texts)]
-    chars = sum(len(l) for l in body) or 1
-    return sum(len(l) for l in uncovered) / chars, uncovered
+    reference = _ngrams(evidence_text)
+    for c in claims:
+        reference |= _ngrams(c.text)
+    uncovered: List[str] = []
+    substantive_chars = 0
+    uncovered_chars = 0
+    for line in body:
+        weight = len(_normalize(line))
+        if weight < COVERAGE_MIN_LINE_CHARS:
+            continue
+        substantive_chars += weight
+        if _line_overlap(line, reference) < COVERAGE_MIN_OVERLAP:
+            uncovered.append(line)
+            uncovered_chars += weight
+    if substantive_chars == 0:
+        return 0.0, []
+    return uncovered_chars / substantive_chars, uncovered
 
 
 class LLMAssembler(Assembler):
@@ -284,7 +319,10 @@ class LLMAssembler(Assembler):
         if not problems and not claims:
             problems.append("no_valid_claims")
         if not problems:
-            ratio, uncovered = uncovered_ratio(answer, claims)
+            pack_text = "\n".join(
+                str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
+            )
+            ratio, uncovered = uncovered_ratio(answer, claims, pack_text)
             if ratio > self.max_uncovered_ratio:
                 problems.append(f"answer_lines_not_covered:{len(uncovered)}")
         if problems:
@@ -342,7 +380,10 @@ class LLMAssembler(Assembler):
             return self._fallback(task, pack, stage_policy_ref, attempts, k=k)
 
         claims = parsed["claims"]
-        ratio, _ = uncovered_ratio(parsed["answer"], claims)
+        pack_text = "\n".join(
+            str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
+        )
+        ratio, _ = uncovered_ratio(parsed["answer"], claims, pack_text)
         candidate = AnswerCandidate(
             candidate_id=new_id("cand"),
             answer=parsed["answer"],

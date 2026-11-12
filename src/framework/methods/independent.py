@@ -20,7 +20,7 @@ from ..budget import BudgetExhausted, BudgetGuard
 from ..clients import MockGateway, ModelGateway, OpenAICompatGateway
 from ..contracts import Action, ActionType, AnswerCandidate, BudgetLimits, Episode, SessionMode, Status, Task, new_id, stable_hash
 from ..controller import Controller, ElementController, ScriptedController
-from ..engine import Engine
+from ..engine import DEFAULT_SYSTEM, Engine
 from ..events import EventStore
 from ..judge import JudgeOnline, Rubric
 from ..prompts import PromptRegistry
@@ -205,6 +205,15 @@ def run_episode(
     else:
         assembler = Assembler()
 
+    # Target 的 system 配置是实验条件，必须显式可查（hash 写入 episode_started）
+    if "target_system_prompt" in config:
+        target_system_prompt = str(config.get("target_system_prompt") or "")
+    elif "system_prompt" in (config.get("target") or {}):
+        target_system_prompt = str((config.get("target") or {}).get("system_prompt") or "")
+    else:
+        # 真实实验默认不注入额外系统指令；合成 baseline 保留旧的数据整理助手提示
+        target_system_prompt = "" if str((exp.get("profile") or "")) == "real_dev" else DEFAULT_SYSTEM
+
     engine = Engine(
         task=task,
         episode=Episode(
@@ -232,6 +241,7 @@ def run_episode(
         k_candidates=int(assembly_cfg.get("k", 1)),
         branch_width=int(search_cfg.get("branch_width", 1)),
         stopping_policy=stop_policy,
+        system_prompt=target_system_prompt,
     )
     engine.start()
 

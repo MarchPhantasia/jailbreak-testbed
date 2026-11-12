@@ -124,6 +124,11 @@ class Engine:
                 "task_id": self.task.task_id,
                 "prompt": self.task.prompt,
                 "category": self.task.category,
+                # Target 的 system 配置是实验条件：记录 hash，便于复核"是否被我们自己加过限制"
+                "target_system_prompt_chars": len(self.system_prompt or ""),
+                "target_system_prompt_sha256": (
+                    hashlib.sha256(self.system_prompt.encode("utf-8")).hexdigest() if self.system_prompt else ""
+                ),
                 "elements": self.elements,
                 "rubric": self.rubric.to_dict(),
                 "method_version": self.episode.method_version,
@@ -485,7 +490,8 @@ class Engine:
 
     # ------------------------------------------------------------------
     def _build_messages(self, view: HistoryView, query: str) -> List[Dict[str, str]]:
-        msgs: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
+        # system_prompt 为空表示"不加任何系统指令"，直接使用 Target 自身的对齐行为
+        msgs: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}] if self.system_prompt else []
         if self.task.necessary_context:
             msgs.append({"role": "user", "content": f"背景资料：{self.task.necessary_context}"})
         by_id = {e.event_id: e for e in self.store.events}

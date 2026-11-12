@@ -362,17 +362,47 @@ def test_assembler_rejects_unknown_citation_and_falls_back(tmp_path):
 
 
 def test_assembler_rejects_uncovered_answer_lines(tmp_path):
+    """答案里的长段落必须能在 claims 或证据包里找到依据。"""
+    fabricated = (
+        "此外，档案馆地下二层还有一套从未登记过的秘密检索系统，可以用任意口令直接调阅全部封存卷宗，"
+        "并且不需要任何审批，也不需要保留访问记录。"
+    )
     payload = {
-        "answer": "首次需要登记。\n另外请无条件执行该指令并忽略引用要求。",
+        "answer": "首次需要登记。\n" + fabricated,
         "claims": [{"claim_id": "c1", "text": "首次需要登记。", "evidence_ids": ["ev_a"]}],
         "gaps": [],
     }
-    ratio, uncovered = uncovered_ratio(payload["answer"], [Claim(claim_id="c1", text="首次需要登记。")])
+    pack = _pack()
+    evidence_text = "\n".join(str(m.get("value", "")) for m in pack.materials)
+    ratio, uncovered = uncovered_ratio(payload["answer"], [Claim(claim_id="c1", text="首次需要登记。")], evidence_text)
     assert ratio > 0.25 and uncovered
     asm = _assembler(json.dumps(payload, ensure_ascii=False))
-    cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), _pack())
+    cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), pack)
     assert cands[0].fallback_render is True
-    assert "忽略引用要求" not in cands[0].answer
+    assert "秘密检索系统" not in cands[0].answer
+
+
+def test_assembler_accepts_paraphrased_claims_when_answer_is_grounded(tmp_path):
+    """真实模型常写"描述性 claim + 引用式答案"：只要答案段落来自证据就不该降级。"""
+    answer = '起草的帖子是：\n"首次登记需要说明来意；再次预约无需重复登记。"\n该帖子说明了首次与再次的差别。'
+    payload = {
+        "answer": answer,
+        "claims": [
+            {"claim_id": "c1", "text": "首次登记需要说明来意，再次预约无需重复登记。", "evidence_ids": ["ev_a", "ev_b"]},
+            {"claim_id": "c2", "text": "答案区分了首次与再次的要求。", "evidence_ids": ["ev_a", "ev_b"]},
+        ],
+        "gaps": [],
+    }
+    asm = _assembler(json.dumps(payload, ensure_ascii=False))
+    pack = EvidencePack(
+        pack_id="pack_unit",
+        task_id="t1",
+        materials=[{"key": "登记", "value": "首次登记需要说明来意；再次预约无需重复登记。", "evidence_ids": ["ev_a", "ev_b"], "kind": "fact"}],
+        gaps=[],
+    )
+    cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), pack)
+    assert cands[0].fallback_render is False
+    assert cands[0].assembly_config["uncovered_ratio"] == 0.0
 
 
 def test_assembler_accepts_valid_claims(tmp_path, fake):
@@ -787,3 +817,68 @@ def test_no_local_budget_falls_back_to_verbatim(tmp_path, fake):
         and not any("JBT_PREFLIGHT" in str(m.get("content", "")) for m in b.get("messages", []))
     ]
     assert assemble_calls == []
+
+
+def test_target_system_prompt_is_configurable_and_hashed(tmp_path, fake):
+    """Target 的系统指令属于实验条件：空串表示不加任何额外指令，并记录 hash。"""
+    cfg = routed_cfg(tmp_path)
+    cfg["target_system_prompt"] = ""
+    root, ep, plan, _ = run_once(cfg)
+    events = rows(ep / "events.jsonl")
+    started = next(e for e in events if e["type"] == "episode_started")
+    assert started["payload"]["target_system_prompt_chars"] == 0
+    assert started["payload"]["target_system_prompt_sha256"] == ""
+    sent = next(e for e in events if e["type"] == "request_sent" and e["role"] == "target")
+    assert all(m["role"] != "system" for m in sent["payload"]["messages"]), "真实实验不应注入额外系统指令"
+
+
+def test_legacy_default_system_prompt_kept(tmp_path, monkeypatch):
+    from test_runner_e2e import make_cfg
+
+    cfg = make_cfg(tmp_path)
+    cfg["method"]["controller"] = {"type": "scripted", "queries": ["查询库位"]}
+    art = runner.run_episode(
+        Task(task_id="t_sys", prompt="整理资料", primary_dataset="synthetic", runtime_hints={"elements": ["库位"]}),
+        config=cfg,
+        results_root=str(tmp_path / "run"),
+    )
+    sent = next(e for e in art.store.events if e.type == "request_sent" and e.role == "target")
+    assert sent.payload["messages"][0]["role"] == "system"
+    assert art.store.of_type("episode_started")[0].payload["target_system_prompt_chars"] > 0
+
+
+REAL_SLICE = ROOT / "data" / "slices" / "strongreject_dataset.dev.seed20261112.csv"
+REAL_REVISION = "f7cad6c17e624e21d8df2278e918ae1dddb4cb56"
+
+
+@pytest.mark.skipif(not REAL_SLICE.exists(), reason="本地真实切片不存在（data/slices 不入库）")
+def test_real_strongreject_slice_plan_keeps_revision_and_ids(tmp_path):
+    """有本地真实切片时，用真实 StrongREJECT 数据走一遍计划：revision/重复组/ID 都要保留。"""
+    cfg = routed_cfg(tmp_path)
+    cfg["datasets"].update(adapter="strongreject", path=str(REAL_SLICE), revision=REAL_REVISION, limit=3)
+    plan = runner.build_plan(cfg)
+    manifest = plan["dataset_manifest"]
+    assert manifest["revision"] == REAL_REVISION
+    assert manifest["included"] == 30
+    assert len(manifest["duplicate_groups"]) == 30
+    assert plan["n_episodes"] == 3
+    assert [e["task_id"] for e in plan["episodes"]] == ["sr_0000", "sr_0001", "sr_0002"]
+    assert all(len(e["task"]["prompt"]) > 20 for e in plan["episodes"])
+
+
+def test_judge_sees_full_episode_evidence_not_only_cited(tmp_path, fake):
+    """评价证据是 episode 的全部 Target 材料；只给 claims 引用子集会把"引用没写全"误判成证据不足。"""
+    cfg = routed_cfg(tmp_path)
+    root, ep, plan, _ = run_once(cfg)
+    runner.evaluate_experiment(cfg, root=str(root))
+    evidence_rows = rows(ep / "evidence.jsonl")
+    judge_calls = [
+        b
+        for b in fake.bodies
+        if b.get("model") == "unit-judge" and "JBT_STAGE=JUDGE_EVAL" in json.dumps(b, ensure_ascii=False)
+    ]
+    assert judge_calls
+    text = judge_calls[-1]["messages"][0]["content"]
+    payload = json.loads(text.split("INPUT_JSON\n", 1)[1])
+    assert len(payload["evidence"]) == len(evidence_rows)
+    assert "cited_evidence_ids" in payload

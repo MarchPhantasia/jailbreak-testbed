@@ -13,6 +13,7 @@ results/
 data/episodes/
 data/results/
 data/manifests/
+data/slices/
 data/raw/
 data/normalized/
 *.jsonl.bak
