@@ -2,7 +2,7 @@
 
 - 基线：`d6f325a`（源码快照 `56a3356`，V01/V02 已关闭）
 - 本轮任务包：`jailbreak-testbed-execution1-r2-d6f325a`
-- 交付提交：见 `git log` 最新一条（本轮不推送；远端推送由另一会话负责）
+- 交付提交：`8a2d9f7`（本轮不推送；远端推送由另一会话负责）
 - 结论：**offline_ready = 是**；**real_pilot_complete = 否**（本会话未连接任何真实服务，未产生真实 ASR）
 
 ## 1. 做了什么
@@ -53,7 +53,11 @@ PATH=/home/pha/sci-deepseek/.venv/bin:$PATH \
 | next（N01–N15） | 16 passed |
 | routing（M01–M07） | 8 passed |
 
-`--transport http`（仅绑定 127.0.0.1 的临时服务）另跑一次，结论一致。
+`--transport http`（仅绑定 127.0.0.1 的临时服务）另跑一次，结论一致：
+
+```
+baseline 198 / prior 17 / round2 19 / round3 12 / round4 8 / round5 5 / harness 2 / next 16 / routing 8
+```
 
 ## 4. 与真实实验的距离
 
