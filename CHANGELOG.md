@@ -55,6 +55,8 @@
 
 按第五轮审查（`9c1157a`，V01–V02）修复；仓库 152 项、历轮 48 项 + 本轮 5 项全过。
 
+远端 CI：[run 43132708275](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43132708275) success（21s）。
+
 ### 修复
 
 - **V01** online 策略下自动收尾冻结旧候选：新增材料指纹比较，收尾时若活跃材料已变化且本地额度充足，
