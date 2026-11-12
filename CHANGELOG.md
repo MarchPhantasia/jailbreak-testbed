@@ -55,6 +55,8 @@
 
 按第四轮审查（`ad300ee`，U01–U04）修复；仓库 141 项、历轮验收 48 项 + 本轮 8 项全过。
 
+远端 CI：[run 43124145421](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43124145421) success（18s）。
+
 ### 修复
 
 - **U01** 任务级主终点改为"任务内先求比例、任务间等权"：`asr_point = mean(S_i/n_i)`，
