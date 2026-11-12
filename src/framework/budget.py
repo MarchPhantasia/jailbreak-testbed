@@ -28,6 +28,7 @@ class Ticket:
     dispatched: bool = False
     settled: bool = False
     estimate: int = 1
+    stage_id: str = ""
 
 
 class BudgetGuard:
@@ -43,6 +44,10 @@ class BudgetGuard:
         self._settled_calls: set[str] = set()
         self._tokens = 0
         self._wall_ms = 0
+        # 阶段限额：只统计被配置约束的阶段，未配置阶段只受总额约束
+        self._stage_caps: Dict[str, int] = {str(k): int(v) for k, v in (limits.stage_calls or {}).items()}
+        self._stage_used: Dict[str, int] = {k: 0 for k in self._stage_caps}
+        self._stage_reserved: Dict[str, int] = {k: 0 for k in self._stage_caps}
 
     # ---- 分类 ----
     @staticmethod
@@ -53,18 +58,29 @@ class BudgetGuard:
         return self.limits.target_calls if bucket == "target" else self.limits.non_target_calls
 
     # ---- 生命周期 ----
-    def reserve(self, kind: str, estimate: int = 1) -> str:
+    def reserve(self, kind: str, estimate: int = 1, stage_id: str = "") -> str:
         bucket = self._bucket(kind)
         limit = self._limit(bucket)
         if limit is not None and self._used[bucket] + self._reserved[bucket] + estimate > limit:
             raise BudgetExhausted(f"{bucket} 预算不足：used={self._used[bucket]} reserved={self._reserved[bucket]} limit={limit}")
-        ticket = Ticket(ticket_id=new_id("tk"), kind=kind, estimate=estimate)
+        stage = str(stage_id or "")
+        if stage in self._stage_caps:
+            cap = self._stage_caps[stage]
+            if self._stage_used[stage] + self._stage_reserved[stage] + estimate > cap:
+                raise BudgetExhausted(
+                    f"阶段预算不足：stage={stage} used={self._stage_used[stage]} "
+                    f"reserved={self._stage_reserved[stage]} limit={cap}"
+                )
+        ticket = Ticket(ticket_id=new_id("tk"), kind=kind, estimate=estimate, stage_id=stage)
         self._tickets[ticket.ticket_id] = ticket
         self._reserved[bucket] += estimate
+        if stage in self._stage_reserved:
+            self._stage_reserved[stage] += estimate
         self.store.append(
             "budget_reserved",
             role=kind,
-            payload={"ticket": ticket.ticket_id, "kind": kind, "estimate": estimate},
+            stage_id=stage,
+            payload={"ticket": ticket.ticket_id, "kind": kind, "estimate": estimate, "stage_id": stage},
             budget_after=self.snapshot(),
         )
         return ticket.ticket_id
@@ -84,6 +100,8 @@ class BudgetGuard:
             raise RuntimeError("已发出的请求不退款")
         bucket = self._bucket(t.kind)
         self._reserved[bucket] = max(0, self._reserved[bucket] - t.estimate)
+        if t.stage_id in self._stage_reserved:
+            self._stage_reserved[t.stage_id] = max(0, self._stage_reserved[t.stage_id] - t.estimate)
         t.settled = True
         self.store.append(
             "budget_settled",
@@ -101,6 +119,9 @@ class BudgetGuard:
             raise RuntimeError(f"调用重复结算：{call_id}")
         bucket = self._bucket(t.kind)
         self._reserved[bucket] = max(0, self._reserved[bucket] - t.estimate)
+        if t.stage_id in self._stage_reserved:
+            self._stage_reserved[t.stage_id] = max(0, self._stage_reserved[t.stage_id] - t.estimate)
+            self._stage_used[t.stage_id] += 1
         self._used[bucket] += 1
         if call_id:
             self._settled_calls.add(call_id)
@@ -111,8 +132,9 @@ class BudgetGuard:
         self.store.append(
             "budget_settled",
             role=t.kind,
+            stage_id=t.stage_id,
             call_id=call_id,
-            payload={"ticket": ticket_id},
+            payload={"ticket": ticket_id, "stage_id": t.stage_id},
             cost=cost,
             budget_after=snap,
         )
@@ -130,7 +152,18 @@ class BudgetGuard:
             "non_target_reserved": self._reserved["non_target"],
             "tokens_used": self._tokens,
             "wall_ms": self._wall_ms,
+            "stage_calls_used": {k: self._stage_used[k] for k in sorted(self._stage_used)},
+            "stage_calls_left": {
+                k: max(0, self._stage_caps[k] - self._stage_used[k] - self._stage_reserved[k]) for k in sorted(self._stage_caps)
+            },
         }
+
+    def stage_left(self, stage_id: str) -> Optional[int]:
+        """阶段剩余额度；未配置该阶段返回 None（只受总额约束）。"""
+        stage = str(stage_id or "")
+        if stage not in self._stage_caps:
+            return None
+        return max(0, self._stage_caps[stage] - self._stage_used[stage] - self._stage_reserved[stage])
 
     def can_spend_target(self) -> bool:
         limit = self.limits.target_calls

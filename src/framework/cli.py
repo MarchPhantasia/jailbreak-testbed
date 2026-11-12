@@ -36,8 +36,9 @@ def cmd_check_data(args: argparse.Namespace) -> int:
 def cmd_check_services(args: argparse.Namespace) -> int:
     cfg = runner.load_config(args.config)
     out = runner.check_services(cfg)
-    _print({"command": "check-services", "calls_model": False, "phase": "preflight", **out})
-    return 0
+    _print({"command": "check-services", "calls_model": True, "phase": "preflight", **out})
+    # 不可达/未生成时非零退出（探针成本单独记账，不进 episode 预算）
+    return 0 if out.get("healthy") else 1
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -49,14 +50,38 @@ def cmd_run(args: argparse.Namespace) -> int:
     except FileExistsError as exc:
         _print({"command": "run", "ok": False, "error": str(exc), "hint": "换 experiment.id 或换 results_dir 再跑"})
         return 2
+    except (RuntimeError, ValueError) as exc:
+        _print({"command": "run", "ok": False, "error": str(exc), "phase": "preflight_or_validation"})
+        return 1
     _print({"command": "run", "calls_model": True, "phase": "online", **out})
     return 0
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
     cfg = runner.load_config(args.config)
+    root = args.root or runner.results_root(cfg)
+    try:
+        spec = runner.load_plan_from_root(root).get("evaluation_spec") or {"type": "rule"}
+    except FileNotFoundError:
+        spec = {"type": "rule"}
     out = runner.evaluate_experiment(cfg, root=args.root)
-    _print({"command": "evaluate", "calls_model": False, "phase": "analysis", **out})
+    _print({"command": "evaluate", "calls_model": spec.get("type") == "llm", "phase": "analysis", **out})
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    out = runner.report_run(args.root)
+    if args.csv:
+        import csv
+
+        with open(args.csv, "w", encoding="utf-8", newline="") as f:
+            fields = ["episode_id", "task_id", "outcome", "basis", "verdict_id", "class", "judge_ref", "fallback_render"]
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for row in out["per_episode"]:
+                writer.writerow({k: row.get(k) for k in fields})
+        out["csv"] = args.csv
+    _print({"command": "report", "calls_model": False, "phase": "analysis", **{k: out[k] for k in ("experiment_id", "episodes", "eval_run_id", "metrics", "calls_by_role", "calls_by_stage")}})
     return 0
 
 
@@ -127,6 +152,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "evaluate":
             sp.add_argument("--root", default=None)
         sp.set_defaults(func=fn)
+
+    sp = sub.add_parser("report", help="导出逐题结果与汇总（不调用模型）")
+    sp.add_argument("--root", required=True, help="results/<experiment_id>")
+    sp.add_argument("--csv", default="", help="额外写出逐题 CSV")
+    sp.set_defaults(func=cmd_report)
 
     for name, fn, help_text in (
         ("restore", cmd_restore, "从事件恢复 episode（不调用模型）"),

@@ -1,9 +1,12 @@
-"""实验编排与产物（手册 §12、§13、§17）。
+"""实验编排与产物（手册 §12、§13、§17、E01–E05）。
 
-修复要点（review a9b45c9）：
-- R02：每题 rubric 在计划阶段冻结并落盘；评价只读冻结对象，不重建 accept/critical；
-- R03：计划先冻结 episode 清单，评价按清单对账；同 ID 重跑拒绝；产物缺失记未决而非失败；
-- R01：按配置构造 Target 客户端；未支持类型直接报错，不静默退回 mock；健康检查做真实探测。
+本版（R2 / E01–E05）在保留历轮不变量之上接入：
+
+- E01：services/components 路由、阶段参数实际下发、模板冻结、三角色生成探针；
+- E02：``request_generated`` 权威事件 + 派生 ``requests.jsonl`` + Target request_id 关联；
+- E03：``assembly.type=llm`` 实际调用 Assembler，引用校验与声明降级；
+- E04：独立语义 Judge_eval（自带 EvaluationPlan/事件/账本），程序按冻结规则算 S/F/U；
+- E05：真实 CSV 形态、revision 透传、运行报告入口。
 """
 
 from __future__ import annotations
@@ -11,15 +14,28 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import asdict
+import tempfile
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .contracts import AnswerCandidate, EpisodeOutcome, Task, new_id, stable_hash
+from .contracts import (
+    AnswerCandidate,
+    BudgetLimits,
+    Claim,
+    EpisodeOutcome,
+    Phase,
+    Task,
+    new_id,
+    stable_hash,
+)
 from .datasets import load_split, write_json
+from .evaluation import SemanticJudge
 from .judge import EpisodeEvaluation, JudgeEval, Rubric, compute_metrics, decide_outcome
 from .methods.independent import EpisodeArtifacts, run_episode
+from .prompts import PromptError, PromptRegistry
+from .routing import PROFILE_OPENAI, RoutingError, RoutingPlan, build_gateway, probe_params, resolve_routing, validate_budget, validate_evaluation
 
 
 # --------------------------------------------------------------------------
@@ -43,7 +59,77 @@ def _episode_id(task_id: str, seed: int, method: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# 计划：先冻结 episode 清单与每题 rubric
+# 启动前校验：路由、阶段参数、预算、评价契约、模板
+# --------------------------------------------------------------------------
+@dataclass
+class RunContext:
+    routing: RoutingPlan
+    limits: BudgetLimits
+    evaluation_spec: Dict[str, Any]
+    prompts: Optional[PromptRegistry] = None
+    real_profile: bool = False
+
+    def template(self, stage_id: str):
+        if self.prompts is None:
+            return None
+        return self.prompts.get(stage_id)
+
+
+def build_run_context(cfg: Dict[str, Any]) -> RunContext:
+    """任何模型调用之前完成全部校验；非法配置直接抛错，不回退 mock。"""
+    routing = resolve_routing(cfg)
+    limits = validate_budget(cfg)
+    spec = validate_evaluation(cfg)
+    profile = str(((cfg.get("experiment") or {}).get("profile")) or "")
+    real = profile == "real_dev"
+
+    prompts_cfg = cfg.get("prompts")
+    registry: Optional[PromptRegistry] = None
+    required: List[str] = []
+    method = cfg.get("method") or {}
+    if str(((method.get("controller") or {}).get("type")) or "").lower() == "llm":
+        route = routing.components.get("controller")
+        if route is not None and route.enabled:
+            required.append(route.stage_id)
+    if str(((method.get("assembly") or {}).get("type")) or "").lower() == "llm":
+        route = routing.components.get("assembler")
+        if route is not None and route.enabled:
+            required.append(route.stage_id)
+    if spec.get("type") == "llm":
+        required.append(str(spec.get("stage_id") or "judge_eval"))
+
+    if prompts_cfg:
+        registry = PromptRegistry.from_config(cfg, required=sorted(set(required)))
+    elif real:
+        raise PromptError("experiment.profile=real_dev 需要 prompts.plan/assemble/judge_eval 的显式模板")
+    elif spec.get("type") == "llm":
+        raise PromptError("evaluation.type=llm 需要冻结的 judge_eval 模板；不能退回规则裁判")
+
+    # 禁用组件不得被本轮"顺手启用"：raw_history 不产出语义事实，抽取/摘要没有输入
+    backend = str(((method.get("state") or {}).get("backend")) or "fox").lower()
+    for role in ("extractor", "summarizer"):
+        route = routing.components.get(role)
+        if backend in ("raw_history", "raw", "original") and route is not None and route.enabled:
+            raise RoutingError(
+                f"state.backend={backend} 时 {role} 必须 disabled（R2 不实现语义抽取/摘要，不能凭配置宣称生效）"
+            )
+    # 装配降级必须显式声明；本轮只支持 verbatim
+    fallback = str((method.get("assembly") or {}).get("fallback") or "verbatim").lower()
+    if str((method.get("assembly") or {}).get("type") or "").lower() == "llm" and fallback not in ("verbatim", ""):
+        raise RoutingError(f"method.assembly.fallback 本轮只支持 verbatim：{fallback!r}")
+    if int((cfg.get("evaluation") or {}).get("max_format_retries", 1)) < 0:
+        raise RoutingError("evaluation.max_format_retries 不能为负")
+
+    if real:
+        if spec.get("type") != "llm":
+            raise RoutingError("experiment.profile=real_dev 需要 evaluation.type=llm（语义裁判是必需件）")
+        if registry is None:
+            raise PromptError("experiment.profile=real_dev 缺少模板注册表")
+    return RunContext(routing=routing, limits=limits, evaluation_spec=spec, prompts=registry, real_profile=real)
+
+
+# --------------------------------------------------------------------------
+# 计划：先冻结 episode 清单、每题判据、模板、路由与评价契约
 # --------------------------------------------------------------------------
 def resolve_rubric(cfg: Dict[str, Any], task: Task) -> Rubric:
     """判据冻结：显式 rubric_elements 优先；否则用任务要求要素（accept=要素名）。"""
@@ -66,7 +152,15 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
     path = ds.get("path", "fixtures/synthetic_library/tasks.jsonl")
     exp_seed = int((cfg.get("experiment", {}) or {}).get("seed", 20261110))
     split_seed = int(ds.get("split_seed", exp_seed))
-    result, dev, held, manifest = load_split(name, path, seed=split_seed, dev_ratio=int(ds.get("dev_ratio", 2)))
+    # N14：revision 必须传到 adapter 与 manifest，不静默变成 pinned
+    result, dev, held, manifest = load_split(
+        name,
+        path,
+        seed=split_seed,
+        dev_ratio=int(ds.get("dev_ratio", 2)),
+        revision=ds.get("revision"),
+        filter_spec=ds.get("filters"),
+    )
     pool = dev if ds.get("split", "dev") == "dev" else held
     n = limit if limit is not None else ds.get("limit")
     tasks = pool[offset : offset + n] if n is not None else pool[offset:]
@@ -100,6 +194,13 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
                 "duplicate_group_id": getattr(t, "duplicate_group_id", "") or t.task_id,
             }
         )
+    manifest_dict = manifest.to_dict()
+    manifest_dict["slice"] = {
+        "limit": limit,
+        "offset": offset,
+        "n": len(entries),
+        "task_ids": [e["task_id"] for e in entries],
+    }
     return {
         "experiment_id": (cfg.get("experiment", {}) or {}).get("id"),
         "config_hash": stable_hash(cfg),
@@ -107,17 +208,66 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
         "split": ds.get("split", "dev"),
         "split_seed": split_seed,
         "experiment_seed": exp_seed,
-        "dataset_manifest": manifest.to_dict(),
+        "dataset_manifest": manifest_dict,
         "episodes": entries,
         "n_episodes": len(entries),
     }
 
 
-def write_plan(cfg: Dict[str, Any], root: str, *, limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
+def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str) -> None:
+    """把路由、阶段参数、评价契约与模板快照写进计划（可复核、不可后台改写）。"""
+    routing = ctx.routing
+    plan["routing"] = {
+        "new_registry": routing.new_registry,
+        "stage_ref": routing.stage_ref,
+        "services": {sid: svc.to_dict() for sid, svc in routing.services.items()},
+        "components": {role: route.to_dict() for role, route in routing.components.items()},
+    }
+    plan["stages"] = {
+        role: {
+            "stage_id": routing.components[role].stage_id,
+            "service_id": routing.components[role].service_ref,
+            "parameter_profile": routing.service(routing.components[role]).parameter_profile,
+            "resolved_params": routing.resolved_params(role),
+        }
+        for role in routing.enabled_roles()
+    }
+    plan["model_manifest"] = routing.manifest()
+    spec = dict(ctx.evaluation_spec)
+    if spec.get("type") == "llm":
+        route = routing.components["judge_eval"]
+        svc = routing.service(route)
+        spec.update(
+            {
+                "stage_id": route.stage_id,
+                "service": {
+                    "service_id": svc.service_id,
+                    "base_url": svc.base_url,
+                    "model": svc.model,
+                    "api_key_env": svc.api_key_env,
+                    "auth_required": svc.auth_required,
+                    "timeout_s": svc.timeout_s,
+                    "parameter_profile": svc.parameter_profile,
+                    # raw_params 保留阶段解析前的形态（含 extra_body）；发送前由 profile 展开
+                    "raw_params": routing.raw_stage_params(route.stage_id),
+                    "resolved_params": routing.resolved_params("judge_eval"),
+                },
+            }
+        )
+    plan["evaluation_spec"] = spec
+    plan["budget"] = ctx.limits.to_dict()
+    if ctx.prompts is not None:
+        plan["prompt_manifest"] = ctx.prompts.freeze(root)
+    plan["profile"] = "real_dev" if ctx.real_profile else "offline_or_synthetic"
+
+
+def write_plan(cfg: Dict[str, Any], root: str, *, limit: Optional[int] = None, offset: int = 0, ctx: Optional[RunContext] = None) -> Dict[str, Any]:
     if os.path.exists(os.path.join(root, "plan.json")):
         raise FileExistsError(f"实验已存在：{root}（同 ID 重跑会污染分母，拒绝执行）")
+    ctx = ctx or build_run_context(cfg)
     plan = build_plan(cfg, limit=limit, offset=offset)
     os.makedirs(root, exist_ok=True)
+    _freeze_routing(plan, ctx, root)
     write_json(plan, os.path.join(root, "plan.json"))
     write_json({e["task_id"]: e["rubric"] for e in plan["episodes"]}, os.path.join(root, "rubrics.json"))
     return plan
@@ -145,6 +295,7 @@ def prepare_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
         {
             "split_seed": plan["split_seed"],
             "experiment_seed": plan.get("experiment_seed"),
+            "revision": plan["dataset_manifest"].get("revision"),
             "tasks": [e["task_id"] for e in plan["episodes"]],
             "episode_ids": [e["episode_id"] for e in plan["episodes"]],
         },
@@ -155,6 +306,7 @@ def prepare_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "loaded": plan["dataset_manifest"]["included"],
         "planned": plan["n_episodes"],
         "excluded": len(plan["dataset_manifest"]["excluded"]),
+        "revision": plan["dataset_manifest"].get("revision"),
         "raw_sha256": plan["dataset_manifest"]["raw_sha256"],
         "groups": len(plan["dataset_manifest"]["duplicate_groups"]),
     }
@@ -177,12 +329,15 @@ def check_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
         problems.append("计划为空：开发池不足")
     if any(not e["task"]["prompt"] for e in plan["episodes"]):
         problems.append("存在空 prompt")
+    if str(manifest.get("revision") or "") in ("", "pinned", "None"):
+        problems.append("datasets.revision 未显式固定（不接受 pinned 作为版本号）")
     return {
         "adapter": name,
         "loaded": manifest["included"],
         "planned": plan["n_episodes"],
         "groups": len(groups),
         "excluded": manifest["excluded"],
+        "revision": manifest.get("revision"),
         "ok": not problems,
         "problems": problems,
         "raw_sha256": manifest["raw_sha256"],
@@ -190,32 +345,134 @@ def check_data(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
-# 服务检查（真实探测；探针成本独立）
+# 服务检查（真实生成探针；探针成本独立，不进 episode）
 # --------------------------------------------------------------------------
-def check_services(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    from .clients import probe_openai
+def _probe_group(ctx: RunContext, cfg: Dict[str, Any], role: str, stage_id: str) -> Dict[str, Any]:
+    routing = ctx.routing
+    route = routing.components[role]
+    svc = routing.service(route)
+    preflight = cfg.get("preflight") or {}
+    info: Dict[str, Any] = {
+        "service_id": svc.service_id,
+        "model": svc.model,
+        "base_url": svc.base_url,
+        "parameter_profile": svc.parameter_profile,
+        "stage_id": stage_id,
+        "auth_required": svc.auth_required,
+    }
+    if svc.type == "mock":
+        return {"ok": True, "generation_ok": True, "probed": False, "type": "mock", "note": "显式 mock；不产生真实调用", **info}
+    try:
+        params = probe_params(svc.parameter_profile, preflight)
+    except RoutingError as exc:
+        return {"ok": False, "generation_ok": False, "probed": False, "error": f"probe_params:{exc}", **info}
 
-    target = cfg.get("target", {}) or {}
-    kind = (target.get("type") or "mock").lower()
-    if kind == "mock":
-        return {"target": {"type": "mock", "ok": True, "probed": False, "note": "显式配置 mock；不产生真实调用"}}
-    if kind == "openai":
-        probe = probe_openai(
-            target.get("base_url", ""),
-            target.get("api_key_env", "OPENAI_API_KEY"),
-            float(target.get("timeout_s", 10)),
-        )
-        probe.update({"type": "openai", "model": target.get("model", ""), "probed": True})
-        return {"target": probe}
-    return {"target": {"type": kind, "ok": False, "probed": False, "error": "unsupported target type"}}
+    tmp = tempfile.mkdtemp(prefix="jbt_preflight_")
+    from .budget import BudgetGuard
+    from .events import EventStore
+
+    store = EventStore(tmp, "preflight", path=os.path.join(tmp, "events.jsonl"))
+    guard = BudgetGuard(BudgetLimits(target_calls=1, non_target_calls=1), store, "preflight")
+    prompt = str(preflight.get("prompt") or "JBT_PREFLIGHT: return OK.")
+    try:
+        gateway = build_gateway(routing, role, guard, store)
+        # 探针只用轻量档位，不继承实验阶段的采样参数（否则探针会变成一次真实生成）
+        gateway.default_params = {}
+        res = gateway.call(role, stage_id, [{"role": "user", "content": prompt}], params, phase=Phase.PREFLIGHT)
+    except Exception as exc:  # noqa: BLE001 探针失败不能拖垮整个检查
+        return {"ok": False, "generation_ok": False, "probed": False, "error": f"{exc.__class__.__name__}:{exc}", **info}
+    text = (res.text or "").strip()
+    healthy = bool(res.ok and text) and res.status.value in ("OK", "PARTIAL")
+    response_ev = store.last("response_received")
+    response_model = ((response_ev.payload.get("raw") or {}).get("model") if response_ev else None) or ""
+    return {
+        # 核对部署别名：服务实际返回的 model 与配置不一致时只记录差异，不擅自改写配置
+        "response_model": response_model,
+        "model_alias_match": (response_model == svc.model) if response_model else None,
+        "ok": healthy,
+        "generation_ok": healthy,
+        "probed": True,
+        "status": res.status.value,
+        "error": res.error,
+        "finish_reason": res.finish_reason,
+        "usage": res.usage,
+        "sent_params": (store.last("request_sent").payload.get("sent_params") if store.last("request_sent") else {}),
+        "probe_event_count": len(store.events),
+        **info,
+    }
+
+
+def check_services(cfg: Dict[str, Any], ctx: Optional[RunContext] = None) -> Dict[str, Any]:
+    """target / attacker(controller+assembler) / judge_eval 三角色都做真实生成探针。"""
+    ctx = ctx or build_run_context(cfg)
+    routing = ctx.routing
+    result: Dict[str, Any] = {"probes": [], "roles": {}}
+    probed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for role in routing.enabled_roles():
+        route = routing.components[role]
+        key = (route.service_ref, routing.service(route).parameter_profile)
+        if key not in probed:
+            probed[key] = _probe_group(ctx, cfg, role, route.stage_id)
+            probed[key]["probe_id"] = f"probe_{len(result['probes']) + 1}"
+            probed[key]["roles"] = [role]
+            result["probes"].append(probed[key])
+        else:
+            probed[key]["roles"].append(role)
+        result["roles"][role] = {**probed[key], "probe_id": probed[key]["probe_id"]}
+
+    def entry(role: str) -> Dict[str, Any]:
+        row = result["roles"].get(role)
+        if row is None:
+            return {"ok": True, "generation_ok": True, "probed": False, "enabled": False, "note": "该角色未启用，不产生调用"}
+        return {**row, "enabled": True}
+
+    result["target"] = entry("target")
+    controller, assembler = entry("controller"), entry("assembler")
+    local_ok = all(x["ok"] for x in (controller, assembler) if x.get("enabled"))
+    result["attacker"] = {
+        "ok": local_ok,
+        "generation_ok": local_ok,
+        "probed": bool(controller.get("probed") or assembler.get("probed")),
+        "roles": [r for r in ("controller", "assembler") if result["roles"].get(r)],
+        "controller": controller,
+        "assembler": assembler,
+    }
+    if ctx.evaluation_spec.get("type") == "llm":
+        result["judge_eval"] = entry("judge_eval")
+    else:
+        result["judge_eval"] = {
+            "ok": True,
+            "generation_ok": True,
+            "probed": False,
+            "type": "rule",
+            "note": "显式规则评价；不产生模型调用（不能替代真实语义 ASR）",
+        }
+    result["healthy"] = bool(result["target"]["ok"] and result["attacker"]["ok"] and result["judge_eval"]["ok"])
+    result["capability_note"] = (
+        "HTTP 200 只证明接受请求；effort/采样/限额是否生效保持 unknown，"
+        "除非部署方给出模板 hash 或运营说明。"
+    )
+    return result
 
 
 # --------------------------------------------------------------------------
 # 运行
 # --------------------------------------------------------------------------
 def run_experiment(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
+    ctx = build_run_context(cfg)  # 校验先于任何 dispatch（N09/M04/M05/M06）
     root = results_root(cfg)
-    plan = write_plan(cfg, root, limit=limit, offset=offset)
+    if os.path.exists(os.path.join(root, "plan.json")):
+        raise FileExistsError(f"实验已存在：{root}（同 ID 重跑会污染分母，拒绝执行）")
+    preflight = check_services(cfg, ctx=ctx)
+    if not preflight.get("healthy"):
+        raise RuntimeError(
+            "preflight 不健康，未启动 episode（也未冻结计划，修复后可重跑）："
+            + json.dumps(
+                {k: (preflight.get(k) or {}).get("error") for k in ("target", "attacker", "judge_eval")},
+                ensure_ascii=False,
+            )
+        )
+    plan = write_plan(cfg, root, limit=limit, offset=offset, ctx=ctx)
     write_json(
         {
             "experiment_id": plan["experiment_id"],
@@ -223,20 +480,30 @@ def run_experiment(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: 
             "n_episodes": plan["n_episodes"],
             "dataset": plan["dataset"],
             "split": plan["split"],
+            "prompt_stages": [row["stage_id"] for row in plan.get("prompt_manifest", [])],
+            "model_roles": [row["role"] for row in plan.get("model_manifest", [])],
         },
         os.path.join(root, "manifest.json"),
     )
     with open(os.path.join(root, "config.resolved.yaml"), "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=True)
     write_json(plan["dataset_manifest"], os.path.join(root, "dataset_manifest.json"))
-    write_json(check_services(cfg), os.path.join(root, "preflight.json"))
+    write_json(preflight, os.path.join(root, "preflight.json"))
+    write_json(_observed_manifest(plan, preflight), os.path.join(root, "model_manifest_observed.json"))
     write_json(cfg.get("deployment", {}) or {"note": "部署由研究者提供；此处只记录可得信息"}, os.path.join(root, "deployment_manifest.json"))
 
     artifacts: List[EpisodeArtifacts] = []
     for entry in plan["episodes"]:
         task = Task(**entry["task"])
         rubric = Rubric.from_frozen(entry["rubric"])
-        art = run_episode(task, config=cfg, results_root=root, episode_id=entry["episode_id"], rubric=rubric)
+        art = run_episode(
+            task,
+            config=cfg,
+            results_root=root,
+            episode_id=entry["episode_id"],
+            rubric=rubric,
+            ctx=ctx,
+        )
         ep_dir = os.path.join(root, "episodes", art.episode_id)
         os.makedirs(ep_dir, exist_ok=True)
         _write_candidates(art, os.path.join(ep_dir, "candidates.jsonl"))
@@ -244,10 +511,18 @@ def run_experiment(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: 
         artifacts.append(art)
 
     ledgers = [a.store.ledger() for a in artifacts]
+    by_role: Dict[str, int] = {}
+    by_stage: Dict[str, int] = {}
+    for a in artifacts:
+        for ev in a.store.of_type("request_sent"):
+            by_role[ev.role] = by_role.get(ev.role, 0) + 1
+            by_stage[ev.stage_id] = by_stage.get(ev.stage_id, 0) + 1
     summary = {
         "experiment_id": plan["experiment_id"],
         "episodes": len(artifacts),
         "target_calls": [l["target_calls"] for l in ledgers],
+        "calls_by_role": by_role,
+        "calls_by_stage": by_stage,
         "ledger_total": {
             "target_calls": sum(l["target_calls"] for l in ledgers),
             "served_calls": sum(l["served_calls"] for l in ledgers),
@@ -259,6 +534,35 @@ def run_experiment(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: 
     }
     write_json(summary, os.path.join(root, "ledger.json"))
     return summary
+
+
+def _observed_manifest(plan: Dict[str, Any], preflight: Dict[str, Any]) -> Dict[str, Any]:
+    """把"请求已接受"与"参数语义已生效"分开记录；HTTP 200 不等于后方已确认。"""
+    roles = preflight.get("roles") or {}
+    rows = []
+    for row in plan.get("model_manifest", []):
+        role = row.get("role")
+        probe = roles.get(role) or {}
+        capability = dict(row.get("capability_status") or {})
+        if probe.get("probed"):
+            capability["transport_accepted"] = "accepted" if probe.get("ok") else "rejected"
+            capability["status"] = "transport_only"
+        rows.append(
+            {
+                "role": role,
+                "service_id": row.get("service_id"),
+                "model": row.get("model"),
+                "parameter_profile": row.get("parameter_profile"),
+                "resolved_params": row.get("resolved_params"),
+                "probe_id": probe.get("probe_id", ""),
+                "probe_status": probe.get("status", ""),
+                "sent_params": probe.get("sent_params", {}),
+                "usage": probe.get("usage", {}),
+                "capability_status": capability,
+                "note": "transport_accepted 只说明服务接受了请求；effort/采样是否生效保持 unknown",
+            }
+        )
+    return {"roles": rows, "probes": preflight.get("probes", []), "note": preflight.get("capability_note", "")}
 
 
 def _write_candidates(art: EpisodeArtifacts, path: str) -> None:
@@ -328,7 +632,7 @@ def _read_final_object(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
 
 
 # --------------------------------------------------------------------------
-# 评价（按计划对账，不重跑 Target）
+# 评价（按计划对账，不重跑 Target；E04 语义裁判独立运行）
 # --------------------------------------------------------------------------
 def load_plan_from_root(root: str) -> Dict[str, Any]:
     path = os.path.join(root, "plan.json")
@@ -338,14 +642,130 @@ def load_plan_from_root(root: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any], eval_run_id: str):
+    """按冻结 EvaluationPlan 构造语义裁判与其独立事件/账本。"""
+    from .budget import BudgetGuard
+    from .clients import OpenAICompatGateway
+    from .events import EventStore
+    from .routing import RoutingError as _RoutingError
+    from .routing import serialize_params
+
+    run_root = os.path.dirname(os.path.dirname(os.path.abspath(eval_dir.rstrip("/"))))
+    frozen_templates = PromptRegistry.load_frozen(run_root, plan.get("prompt_manifest") or [])
+    stage_id = str(spec.get("stage_id") or "judge_eval")
+    if stage_id not in frozen_templates:
+        raise PromptError(f"冻结模板缺少评价阶段 {stage_id}；不允许回退到当前配置文件")
+    template = frozen_templates[stage_id]
+
+    service = spec.get("service") or {}
+    if not service.get("base_url") or not service.get("model"):
+        raise _RoutingError("评价服务配置不完整（base_url/model）")
+    profile = str(service.get("parameter_profile") or PROFILE_OPENAI)
+    resolved = dict(service.get("resolved_params") or {})
+    raw_params = dict(service.get("raw_params") or {})
+    store = EventStore(eval_dir, eval_run_id, path=os.path.join(eval_dir, "events.jsonl"))
+    limits = BudgetLimits(
+        target_calls=0,
+        non_target_calls=int((spec.get("budget") or {}).get("non_target_calls", 100)),
+    )
+    guard = BudgetGuard(limits, store, eval_run_id)
+    gateway = OpenAICompatGateway(
+        guard,
+        store,
+        base_url=str(service["base_url"]),
+        model=str(service["model"]),
+        api_key_env=str(service.get("api_key_env") or ""),
+        timeout=float(service.get("timeout_s", 60)),
+        service_id=str(service.get("service_id") or ""),
+        profile=profile,
+        default_params=raw_params,
+        param_serializer=lambda p: serialize_params(profile, p),
+        auth_required=bool(service.get("auth_required", False)),
+        template_ref=template.ref(),
+    )
+    judge = SemanticJudge(
+        gateway,
+        template,
+        rubric=dict(spec.get("rubric") or {}),
+        max_format_retries=int(spec.get("max_format_retries", 1)),
+        judge_ref=f"{template.template_id}@{template.version}",
+    )
+    store.append(
+        "evaluation_started",
+        phase=Phase.ANALYSIS,
+        role="judge_eval",
+        payload={
+            "eval_run_id": eval_run_id,
+            "stage_id": stage_id,
+            "service_id": service.get("service_id", ""),
+            "model": service.get("model", ""),
+            "parameter_profile": profile,
+            "resolved_params": resolved,
+            "template": template.ref(),
+            "rubric": dict(spec.get("rubric") or {}),
+            "budget": limits.to_dict(),
+        },
+    )
+    return judge, store, guard, gateway
+
+
+def _read_evidence(ep_dir: str, wanted: Optional[set]) -> List[Dict[str, Any]]:
+    path = os.path.join(ep_dir, "evidence.jsonl")
+    if not os.path.exists(path):
+        return []
+    rows: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if wanted is not None and row.get("evidence_id") not in wanted:
+                continue
+            rows.append(row)
+    return rows
+
+
 def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict[str, Any]:
     root = root or results_root(cfg)
     # S08：评价必须使用被评价目录自己的冻结计划；config 只用于定位默认 root
     plan = load_plan_from_root(root)
+    spec = plan.get("evaluation_spec") or {"type": "rule", "judge_ref": "rule@v1", "rubric": {}}
     eval_run_id = new_id("eval")
     eval_dir = os.path.join(root, "evaluations", eval_run_id)
     os.makedirs(eval_dir, exist_ok=True)
-    write_json({"rubrics": "plan.json#/episodes", "judge_ref": "rule@v1"}, os.path.join(eval_dir, "config.json"))
+    write_json(
+        {
+            "eval_run_id": eval_run_id,
+            "source_run": os.path.abspath(root),
+            "evaluation_spec": spec,
+            "prompt_manifest": plan.get("prompt_manifest") or [],
+            "rubric_source": "plan.json#/evaluation_spec/rubric" if spec.get("type") == "llm" else "plan.json#/episodes",
+        },
+        os.path.join(eval_dir, "config.json"),
+    )
+    write_json(
+        {
+            "eval_run_id": eval_run_id,
+            "source_run": os.path.abspath(root),
+            "evaluation_spec": spec,
+            "episodes": [
+                {"episode_id": e["episode_id"], "task_id": e["task_id"], "exact_task_id": e.get("exact_task_id")}
+                for e in plan["episodes"]
+            ],
+            "judge_ref": spec.get("judge_ref") or (spec.get("rubric") or {}).get("id", "semantic"),
+            "frozen": True,
+        },
+        os.path.join(eval_dir, "plan.json"),
+    )
+
+    judge = None
+    eval_store = None
+    if spec.get("type") == "llm":
+        judge, eval_store, _eval_guard, _eval_gw = _build_eval_judge(eval_dir, plan, spec, eval_run_id)
 
     evaluations: List[EpisodeEvaluation] = []
     records: List[Dict[str, Any]] = []
@@ -354,7 +774,7 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
         task_id = entry["task_id"]
         task = Task(**entry["task"])
         rubric = Rubric.from_frozen(entry["rubric"])
-        judge = JudgeEval(rubric)
+        rule_judge = JudgeEval(rubric)
         ep_dir = os.path.join(root, "episodes", ep_id)
         final_path = os.path.join(ep_dir, "final.json")
 
@@ -389,8 +809,28 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                         candidate = _load_final_candidate(ep_dir, cand_id)
                         if candidate is None:
                             outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_candidate:artifact_unavailable"
+                        elif spec.get("type") == "llm":
+                            evidence = _read_evidence(ep_dir, {i for c in candidate.claims for i in c.evidence_ids} or None)
+                            verdict = judge.evaluate(
+                                task,
+                                candidate,
+                                eval_run_id=eval_run_id,
+                                evidence=evidence,
+                                rubric_version=str((spec.get("rubric") or {}).get("version", "v1")),
+                                node_id=entry.get("episode_id", ""),
+                            )
+                            assert eval_store is not None
+                            SemanticJudge.record(eval_store, verdict, task_id)
+                            ev = decide_outcome(
+                                episode_id=ep_id,
+                                task_id=task_id,
+                                final_answer=candidate,
+                                verdict=verdict,
+                                failure_established=False,
+                            )
+                            outcome, basis = ev.outcome, ev.reason
                         else:
-                            verdict = judge.evaluate(task, candidate, eval_run_id)
+                            verdict = rule_judge.evaluate(task, candidate, eval_run_id)
                             ev = decide_outcome(
                                 episode_id=ep_id,
                                 task_id=task_id,
@@ -422,6 +862,17 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                 "basis": basis,
                 "verdict_id": verdict.verdict_id if verdict else None,
                 "class": verdict.cls if verdict else None,
+                "judge_ref": verdict.judge_ref if verdict else None,
+                "semantic": (
+                    {
+                        k: verdict.payload.get(k)
+                        for k in ("assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency", "reason")
+                        if isinstance(verdict.payload, dict) and k in verdict.payload
+                    }
+                    if verdict
+                    else {}
+                ),
+                "fallback_render": bool(candidate.fallback_render) if candidate else None,
             }
         )
         if verdict is not None:
@@ -431,6 +882,7 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
             final_obj["outcome"] = outcome.value
             final_obj["verdict_id"] = verdict.verdict_id if verdict else None
             final_obj["basis"] = basis
+            final_obj["eval_run_id"] = eval_run_id
             write_json(final_obj, final_path)
 
     metrics = compute_metrics(evaluations)
@@ -438,6 +890,26 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
     with open(os.path.join(eval_dir, "records.jsonl"), "w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    if eval_store is not None:
+        eval_store.append(
+            "evaluation_completed",
+            phase=Phase.ANALYSIS,
+            role="judge_eval",
+            payload={
+                "eval_run_id": eval_run_id,
+                "S": metrics["S"],
+                "F": metrics["F"],
+                "U": metrics["U"],
+                "n": metrics["N"],
+                "ledger": eval_store.ledger(),
+            },
+        )
+        write_json(eval_store.ledger(), os.path.join(eval_dir, "ledger.json"))
+    else:
+        write_json(
+            {"target_calls": 0, "served_calls": 0, "note": "规则评价（合成 baseline），无模型调用"},
+            os.path.join(eval_dir, "ledger.json"),
+        )
     return {"eval_run_id": eval_run_id, "dir": eval_dir, **metrics}
 
 
@@ -461,10 +933,82 @@ def _load_final_candidate(ep_dir: str, candidate_id: Optional[str]) -> Optional[
         if not isinstance(d, dict) or d.get("candidate_id") != candidate_id:
             continue
         try:
-            return AnswerCandidate(**{k: v for k, v in d.items() if k in AnswerCandidate.__dataclass_fields__})
+            data = {k: v for k, v in d.items() if k in AnswerCandidate.__dataclass_fields__}
+            # 候选是从 asdict 落盘的：claims 是普通 dict，读回时必须还原为 Claim
+            data["claims"] = [
+                Claim(**{k: v for k, v in c.items() if k in Claim.__dataclass_fields__}) if isinstance(c, dict) else c
+                for c in (data.get("claims") or [])
+            ]
+            return AnswerCandidate(**data)
         except TypeError:
             return None
     return None
+
+
+# --------------------------------------------------------------------------
+# 报告（E05）：逐题 + 汇总量，不重跑任何模型
+# --------------------------------------------------------------------------
+def report_run(root: str) -> Dict[str, Any]:
+    root = os.path.abspath(root)
+    plan = load_plan_from_root(root)
+    eval_root = os.path.join(root, "evaluations")
+    evals = (
+        sorted(
+            (p for p in os.listdir(eval_root) if os.path.isdir(os.path.join(eval_root, p))),
+            key=lambda p: os.path.getmtime(os.path.join(eval_root, p)),
+        )
+        if os.path.isdir(eval_root)
+        else []
+    )
+    latest = os.path.join(eval_root, evals[-1]) if evals else ""
+    metrics = json.load(open(os.path.join(latest, "metrics.json"), encoding="utf-8")) if latest else {}
+    records = []
+    if latest and os.path.exists(os.path.join(latest, "records.jsonl")):
+        with open(os.path.join(latest, "records.jsonl"), encoding="utf-8") as f:
+            records = [json.loads(l) for l in f if l.strip()]
+    calls_by_role: Dict[str, int] = {}
+    calls_by_stage: Dict[str, int] = {}
+    for ep in plan["episodes"]:
+        path = os.path.join(root, "episodes", ep["episode_id"], "events.jsonl")
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                ev = json.loads(line)
+                if ev.get("type") == "request_sent":
+                    calls_by_role[ev.get("role", "")] = calls_by_role.get(ev.get("role", ""), 0) + 1
+                    calls_by_stage[ev.get("stage_id", "")] = calls_by_stage.get(ev.get("stage_id", ""), 0) + 1
+    eval_ledger = {}
+    if latest and os.path.exists(os.path.join(latest, "ledger.json")):
+        eval_ledger = json.load(open(os.path.join(latest, "ledger.json"), encoding="utf-8"))
+    report = {
+        "experiment_id": plan.get("experiment_id"),
+        "episodes": len(plan["episodes"]),
+        "eval_run_id": os.path.basename(latest) if latest else "",
+        "metrics": {
+            k: metrics.get(k)
+            for k in ("N", "S", "F", "U", "asr_point", "asr_task_range", "task_eval_coverage", "any_success_rate")
+        },
+        "calls_by_role": calls_by_role,
+        "calls_by_stage": calls_by_stage,
+        "eval_calls": eval_ledger.get("calls", {}),
+        "per_episode": records,
+        "models": [
+            {
+                "role": row.get("role"),
+                "service_id": row.get("service_id"),
+                "model": row.get("model"),
+                "parameter_profile": row.get("parameter_profile"),
+                "resolved_params": row.get("resolved_params"),
+                "capability_status": row.get("capability_status"),
+            }
+            for row in plan.get("model_manifest", [])
+        ],
+        "prompt_manifest": plan.get("prompt_manifest", []),
+        "note": "ASR 点值是任务等权下界；有 U 时必须同时报 asr_task_range。评价覆盖低时不能把 0% 当作方法效果。",
+    }
+    write_json(report, os.path.join(root, "report.json"))
+    return report
 
 
 # --------------------------------------------------------------------------

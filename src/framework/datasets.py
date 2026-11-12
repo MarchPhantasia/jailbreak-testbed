@@ -97,7 +97,7 @@ class StrongRejectAdapter(DatasetAdapter):
     def load(self, path: str, **kwargs) -> LoadResult:
         tasks: List[Task] = []
         excluded: List[Dict[str, str]] = []
-        revision = kwargs.get("revision", "pinned")
+        revision = kwargs.get("revision") or "pinned"
         if path.endswith(".jsonl"):
             with open(path, "r", encoding="utf-8") as f:
                 rows = [json.loads(l) for l in f if l.strip()]
@@ -135,7 +135,7 @@ class HarmBenchAdapter(DatasetAdapter):
     def load(self, path: str, **kwargs) -> LoadResult:
         tasks: List[Task] = []
         excluded: List[Dict[str, str]] = []
-        revision = kwargs.get("revision", "pinned")
+        revision = kwargs.get("revision") or "pinned"
         with open(path, "r", encoding="utf-8", newline="") as f:
             for i, r in enumerate(csv.DictReader(f)):
                 behavior = r.get("Behavior") or r.get("behavior") or ""

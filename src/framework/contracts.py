@@ -169,12 +169,17 @@ class Task:
 
 @dataclass
 class BudgetLimits:
-    """预算上限。主比较固定 target_calls；其余维度用于记账。"""
+    """预算上限。主比较固定 target_calls；其余维度用于记账。
+
+    stage_calls 是"在线阶段调用上限"（E01-R2）：与总额同时检查，任一不足都不得发出。
+    阶段限额不能创造新总额，只会在总额之内进一步收窄。
+    """
 
     target_calls: int = 20
     non_target_calls: int = 400
     tokens: Optional[int] = None
     wall_ms: Optional[int] = None
+    stage_calls: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

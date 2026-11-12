@@ -40,6 +40,12 @@ EVENT_TYPES = (
     "component_error",
     "recovery_decision",
     "cache_hit",
+    "request_generated",
+    "preflight_probe",
+    "assembly_rejected",
+    "evaluation_started",
+    "evaluation_verdict",
+    "evaluation_completed",
     "terminate",
 )
 
@@ -56,6 +62,7 @@ class Event:
     stage_id: str = ""
     call_id: str = ""
     attempt_id: str = ""
+    request_id: str = ""
     node_id: str = ""
     view_id: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
@@ -74,10 +81,11 @@ class Event:
 class EventStore:
     """append-only JSONL 事件存储，每 episode 一个文件。"""
 
-    def __init__(self, root: str, episode_id: str):
+    def __init__(self, root: str, episode_id: str, path: Optional[str] = None):
         self.root = root
         self.episode_id = episode_id
-        self.path = os.path.join(root, "episodes", episode_id, "events.jsonl")
+        # 评价运行/探针使用独立目录：显式给出 path 时不再套 episodes/<id>
+        self.path = path or os.path.join(root, "episodes", episode_id, "events.jsonl")
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._seq = 0
         self._events: List[Event] = []
@@ -99,6 +107,7 @@ class EventStore:
         stage_id: str = "",
         call_id: str = "",
         attempt_id: str = "",
+        request_id: str = "",
         node_id: str = "",
         view_id: str = "",
         payload: Optional[Dict[str, Any]] = None,
@@ -119,6 +128,7 @@ class EventStore:
             stage_id=stage_id,
             call_id=call_id,
             attempt_id=attempt_id,
+            request_id=request_id,
             node_id=node_id,
             view_id=view_id,
             payload=payload or {},

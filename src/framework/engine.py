@@ -216,14 +216,16 @@ class Engine:
             payload={"messages": messages, "session_mode": view.session_mode.value},
         )
         self.attempt_counter += 1
+        request_id = str(action.params.get("request_id") or "")
         res = self.target.call(
             Role.TARGET,
-            stage_id="target_query",
+            stage_id=str(getattr(self.target, "stage_id", "") or "target_query"),
             messages=messages,
             params=action.params.get("params") or {},
             node_id=node_id,
             view_id=view.view_id,
             attempt_id=f"att_{self.attempt_counter}",
+            request_id=request_id,
         )
 
         response_ev = self.store.last("response_received")
@@ -397,6 +399,8 @@ class Engine:
             frozen,
             k=int(action.params.get("k") or self.k_candidates),
             stage_policy_ref=self.episode.stage_policy_ref,
+            node_id=node_id,
+            view_id=self.nodes[node_id].view_ref,
         )
         self.candidates.extend(candidates)
         self._link_pack_candidates(frozen, candidates)
@@ -432,6 +436,52 @@ class Engine:
         if verdict == "stop":
             self.stop_reason = f"online_success:{why}"
         return StepResult(action.action_id, Status.OK, f"装配完成：{verdict}（{why}）")
+
+    def assemble_without_model(self, reason: str) -> Optional[AnswerCandidate]:
+        """无本地额度时的原文回退：不调用模型、不占模型预算，明确标 fallback_render。
+
+        保留 Target 原文与缺项，避免"额度不足"把已有材料整体丢掉；这不是模型装配，
+        因此 assembly_config.assembler 记为 material_template，事件里单独标记。
+        """
+        node_id = self.current_node_id
+        state = self.states[node_id]
+        built = self.assembler.build_pack(self.task, state, self.elements)
+        frozen = self._freeze_pack(built, node_id, state)
+        answer, claims, gaps = Assembler().render(self.task, frozen)
+        candidate = AnswerCandidate(
+            candidate_id=new_id("cand"),
+            answer=answer,
+            claims=claims,
+            evidence_pack_ids=[frozen.pack_id],
+            gaps=list(gaps),
+            assembly_config={"assembler": "material_template", "fallback_render": True, "reason": reason},
+            stage_policy_ref=self.episode.stage_policy_ref,
+            processing_refs=["fallback:material_template@v1", f"pack:{frozen.pack_id}"],
+            fallback_render=True,
+            end_state="assembled_fallback_no_budget",
+        )
+        self.candidates.append(candidate)
+        self._link_pack_candidates(frozen, [candidate])
+        self.store.append(
+            "assembled",
+            role="assembler",
+            node_id=node_id,
+            payload={
+                "k": 1,
+                "fallback_render": True,
+                "reason": reason,
+                "candidates": [{"id": candidate.candidate_id, "chars": len(candidate.answer), "gaps": candidate.gaps, "claims": len(candidate.claims)}],
+            },
+        )
+        self.final_candidate = self.selector.select([candidate])
+        if self.final_candidate is not None:
+            self.store.append(
+                "candidate_selected",
+                role="selector",
+                node_id=node_id,
+                payload={"candidate_id": self.final_candidate.candidate_id, "selector": self.selector.name, "fallback_render": True},
+            )
+        return self.final_candidate
 
     # ------------------------------------------------------------------
     def _build_messages(self, view: HistoryView, query: str) -> List[Dict[str, str]]:

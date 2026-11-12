@@ -1,15 +1,21 @@
-"""独立方法的 episode 执行（手册 §12.1）。
+"""独立方法的 episode 执行（手册 §12.1 / E01–E03）。
 
 只做编排：装配组件 → 循环 propose/execute → 冻结候选。
 结果判定（success/failure/unresolved）不在这里落定，交给 EvaluationRun。
+
+R2 补充：
+- 角色 → 服务 → 模型由 ``routing.RoutingPlan`` 决定，不再让所有本地角色共用同一个隐式网关；
+- 请求生成写 ``request_generated`` 权威事件 + ``requests.jsonl`` 派生索引，Target 调用引用同一 request_id；
+- 阶段额度耗尽时，若装配阶段与全局额度仍允许，用已有证据收尾而不是丢弃材料（N11）。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from ..assembly import Assembler, make_selector
+from ..assembly import Assembler, make_assembler, make_selector
 from ..budget import BudgetExhausted, BudgetGuard
 from ..clients import MockGateway, ModelGateway, OpenAICompatGateway
 from ..contracts import Action, ActionType, AnswerCandidate, BudgetLimits, Episode, SessionMode, Status, Task, new_id, stable_hash
@@ -17,7 +23,10 @@ from ..controller import Controller, ElementController, ScriptedController
 from ..engine import Engine
 from ..events import EventStore
 from ..judge import JudgeOnline, Rubric
+from ..prompts import PromptRegistry
 from ..recovery import RecoveryPolicy
+from ..requests import RequestLedger
+from ..routing import RoutingPlan, build_gateway, resolve_routing
 from ..search import make_policy, make_scorer
 from ..state import make_backend
 
@@ -37,17 +46,22 @@ class EpisodeArtifacts:
         return list(self.engine.candidates)
 
 
-def build_target_gateway(cfg: Dict[str, Any], task: Task, guard: BudgetGuard, store: EventStore) -> ModelGateway:
+def build_target_gateway(cfg: Dict[str, Any], task: Task, guard: BudgetGuard, store: EventStore, *, routing: Optional[RoutingPlan] = None) -> ModelGateway:
     """按配置构造 Target 客户端；未支持类型直接报错，不静默退回 mock（R01）。"""
+    if routing is not None and (routing.new_registry or "target" not in cfg):
+        gateway = build_gateway(routing, "target", guard, store)
+        return gateway
     target = cfg.get("target", {}) or {}
     kind = (target.get("type") or "mock").lower()
     if kind == "mock":
         scripts = (task.runtime_hints or {}).get("target_scripts") or {"*": [{"status": "OK", "text": "（模拟 Target 无内容）"}]}
-        return MockGateway(guard, store, scripts=_to_script_items(scripts), model_name=target.get("model", "mock"))
+        gateway = MockGateway(guard, store, scripts=_to_script_items(scripts), model_name=target.get("model", "mock"))
+        gateway.stage_id = "target_query"
+        return gateway
     if kind in ("openai", "openai_compatible", "http"):
         if not target.get("base_url"):
             raise ValueError("target.type=openai 需要 base_url")
-        return OpenAICompatGateway(
+        gateway = OpenAICompatGateway(
             guard,
             store,
             base_url=target["base_url"],
@@ -55,6 +69,8 @@ def build_target_gateway(cfg: Dict[str, Any], task: Task, guard: BudgetGuard, st
             api_key_env=target.get("api_key_env", "OPENAI_API_KEY"),
             timeout=float(target.get("timeout_s", 60)),
         )
+        gateway.stage_id = "target_query"
+        return gateway
     raise ValueError(f"未支持的 target.type：{kind}（不做隐式 mock 回退）")
 
 
@@ -70,7 +86,18 @@ def build_local_gateway(cfg: Dict[str, Any], guard: BudgetGuard, store: EventSto
     raise ValueError(f"未支持的 attacker.type：{kind}")
 
 
-def build_controller(kind: str, *, queries: Optional[List[str]] = None, elements: Optional[List[str]] = None, gateway: Optional[ModelGateway] = None, renderer=None) -> Controller:
+def build_controller(
+    kind: str,
+    *,
+    queries: Optional[List[str]] = None,
+    elements: Optional[List[str]] = None,
+    gateway: Optional[ModelGateway] = None,
+    renderer=None,
+    stage_id: str = "plan",
+    template=None,
+    strategy: str = "model_query_v1",
+    strategy_version: str = "",
+) -> Controller:
     if kind == "scripted":
         return ScriptedController(queries or [])
     if kind == "element":
@@ -78,9 +105,16 @@ def build_controller(kind: str, *, queries: Optional[List[str]] = None, elements
     if kind == "llm":
         from ..controller import LLMController
 
-        if gateway is None or renderer is None:
-            raise ValueError("llm controller 需要 gateway 与 renderer")
-        return LLMController(gateway, renderer)
+        if gateway is None:
+            raise ValueError("llm controller 需要 gateway")
+        return LLMController(
+            gateway,
+            renderer,
+            stage_id=stage_id,
+            template=template,
+            strategy=strategy,
+            strategy_version=strategy_version,
+        )
     raise ValueError(f"未知控制器：{kind}")
 
 
@@ -93,22 +127,24 @@ def run_episode(
     local_gateway: Optional[ModelGateway] = None,
     episode_id: Optional[str] = None,
     rubric: Optional[Rubric] = None,
+    ctx=None,
 ) -> EpisodeArtifacts:
-    """执行一条 episode。target_gateway 为空时按 config 构建 Mock。"""
+    """执行一条 episode。target_gateway 为空时按配置/路由构建。"""
     exp = config.get("experiment", {})
-    budget_cfg = exp.get("budget", {}) or {}
-    limits = BudgetLimits(
-        target_calls=int(budget_cfg.get("target_calls", 20)),
-        non_target_calls=int(budget_cfg.get("non_target_calls", 400)),
-        tokens=budget_cfg.get("tokens"),
-        wall_ms=budget_cfg.get("wall_ms"),
-    )
-    session_mode = SessionMode(exp.get("session_mode", "stateless"))
     method_cfg = config.get("method", {}) or {}
+    routing: RoutingPlan = ctx.routing if ctx is not None else resolve_routing(config)
+    limits: BudgetLimits = ctx.limits if ctx is not None else BudgetLimits(
+        target_calls=int((exp.get("budget", {}) or {}).get("target_calls", 20)),
+        non_target_calls=int((exp.get("budget", {}) or {}).get("non_target_calls", 400)),
+    )
+    prompts: Optional[PromptRegistry] = ctx.prompts if ctx is not None else (
+        PromptRegistry.from_config(config) if config.get("prompts") else None
+    )
+    has_prompts = prompts is not None
+    session_mode = SessionMode(exp.get("session_mode", "stateless"))
     state_cfg = method_cfg.get("state", {}) or {}
     assembly_cfg = method_cfg.get("assembly", {}) or {}
     search_cfg = method_cfg.get("search", {}) or {}
-    judge_cfg = method_cfg.get("judge", {}) or {}
     recovery_cfg = method_cfg.get("recovery", {}) or {}
     stopping_cfg = method_cfg.get("stopping", {}) or {}
     stop_policy = str(stopping_cfg.get("policy", "after_assembly")).lower()
@@ -119,9 +155,19 @@ def run_episode(
     store = EventStore(results_root, eid)
     guard = BudgetGuard(limits, store, eid)
 
+    # ---- 角色网关：新注册表或冻结模板模式按路由构造 ----
+    routed_local = routing.new_registry or has_prompts
+    controller_route = routing.components.get("controller")
+    controller_stage = controller_route.stage_id if controller_route is not None else "plan"
+    assembler_route = routing.components.get("assembler")
+    assembler_stage = assembler_route.stage_id if assembler_route is not None else "assemble"
+
     if target_gateway is None:
-        target_gateway = build_target_gateway(config, task, guard, store)
-    if local_gateway is None:
+        if routing.new_registry or has_prompts:
+            target_gateway = build_gateway(routing, "target", guard, store)
+        else:
+            target_gateway = build_target_gateway(config, task, guard, store)
+    if local_gateway is None and not routing.new_registry and not has_prompts:
         local_gateway = build_local_gateway(config, guard, store)
 
     if rubric is None:
@@ -144,6 +190,21 @@ def run_episode(
     backend = make_backend(
         backend_name, elements, max_chars=int(state_cfg.get("max_chars", 400)), window_chars=window_chars
     )
+
+    # ---- 装配器：显式选择模型装配或模板基线 ----
+    assembly_kind = str(assembly_cfg.get("type") or "material_template").lower()
+    assembler_gateway = None
+    assembler_template = None
+    if assembly_kind == "llm":
+        assembler_template = prompts.get(assembler_stage) if prompts is not None else None
+        if routed_local:
+            assembler_gateway = build_gateway(routing, "assembler", guard, store, template_ref=(assembler_template.ref() if assembler_template else None))
+        else:
+            assembler_gateway = local_gateway
+        assembler = make_assembler(config, gateway=assembler_gateway, template=assembler_template)
+    else:
+        assembler = Assembler()
+
     engine = Engine(
         task=task,
         episode=Episode(
@@ -161,7 +222,7 @@ def run_episode(
         guard=guard,
         target_gateway=target_gateway,
         state_backend=backend,
-        assembler=Assembler(),
+        assembler=assembler,
         selector=make_selector(assembly_cfg.get("selector", "first")),
         judge_online=JudgeOnline(),
         rubric=rubric,
@@ -174,14 +235,38 @@ def run_episode(
     )
     engine.start()
 
+    controller_cfg = method_cfg.get("controller", {}) or {}
+    controller_kind = str(controller_cfg.get("type", "element")).lower()
+    controller_template = None
+    if controller_kind == "llm":
+        controller_template = prompts.get(controller_stage) if prompts is not None else None
+        if routed_local:
+            controller_gateway = build_gateway(
+                routing, "controller", guard, store, template_ref=(controller_template.ref() if controller_template else None)
+            )
+            engine.controller_gateway = controller_gateway
+        else:
+            controller_gateway = local_gateway or build_local_gateway(config, guard, store)
+            engine.controller_gateway = controller_gateway
+    else:
+        controller_gateway = local_gateway
     controller = build_controller(
-        method_cfg.get("controller", {}).get("type", "element"),
-        queries=method_cfg.get("controller", {}).get("queries"),
+        controller_kind,
+        queries=controller_cfg.get("queries"),
         elements=elements,
-        gateway=local_gateway,
+        gateway=controller_gateway,
         renderer=backend.render_for_controller,
+        stage_id=controller_stage,
+        template=controller_template,
+        strategy=str(controller_cfg.get("strategy") or "model_query_v1"),
+        strategy_version=str(controller_cfg.get("strategy_version") or ""),
     )
     recovery = RecoveryPolicy(store, **{k: v for k, v in recovery_cfg.items() if k in ("max_network_retries", "max_format_retries", "total_cap", "version")})
+
+    # ---- 请求产物索引（派生文件；权威记录是 request_generated 事件） ----
+    requests_path = os.path.join(os.path.dirname(store.path), "requests.jsonl")
+    request_ledger = RequestLedger(store, requests_path)
+    last_request_id = ""
 
     max_steps = int(exp.get("max_steps", 12))
     steps = 0
@@ -206,6 +291,16 @@ def run_episode(
         engine.execute(act)
         steps += 1
 
+    def _can_assemble_with_remaining_budget() -> bool:
+        if engine.final_candidate is not None:
+            return False
+        snap = guard.snapshot()
+        if snap.get("non_target_calls_left") == 0:
+            return False
+        if guard.stage_left(assembler_stage) == 0:
+            return False
+        return bool(engine.states[engine.current_node_id].materials)
+
     while not engine.terminated and steps < max_steps:
         node_id = engine.select_node() or engine.current_node_id
         state = engine.states[node_id]
@@ -225,15 +320,44 @@ def run_episode(
                     can_assemble=True,
                 )
             except BudgetExhausted:
-                # S07：本地额度耗尽属于常规停止，必须记账收尾而非抛出
-                store.append("action_rejected", role="controller", node_id=node_id,
-                             payload={"reason": "local_budget_exhausted"})
-                engine.terminate("local_budget_exhausted")
+                # 阶段额度可能先于全局额度耗尽：仍有装配额度时用已有证据收尾（N11）
+                stage_left = guard.stage_left(controller_stage)
+                reason = "stage_budget_exhausted" if stage_left == 0 else "local_budget_exhausted"
+                store.append(
+                    "action_rejected",
+                    role="controller",
+                    stage_id=controller_stage,
+                    node_id=node_id,
+                    payload={"reason": reason, "stage_id": controller_stage, "stage_calls_left": stage_left},
+                )
+                if _can_assemble_with_remaining_budget():
+                    try:
+                        _assemble_now("stage_cap_finalize")
+                        engine.terminate("fallback_assembled")
+                    except BudgetExhausted:
+                        store.append("action_rejected", role="engine", node_id=node_id, payload={"reason": "no_assembly_budget"})
+                        engine.assemble_without_model("no_local_budget")
+                        engine.terminate("fallback_assembled")
+                elif engine.states[node_id].materials:
+                    # 无模型额度但已有材料：不调用模型的原文回退，避免整体丢材料
+                    engine.assemble_without_model("no_local_budget")
+                    engine.terminate("fallback_assembled")
+                else:
+                    engine.terminate(reason)
                 break
 
         if action is None:
             # S07：保留组件真实状态（拒答 ≠ 格式错误）
             status = getattr(controller, "last_failure", None) or getattr(controller, "last_status", Status.INVALID_OUTPUT)
+            if hasattr(controller, "last_call_id"):
+                request_ledger.record_invalid(
+                    task_id=task.task_id,
+                    node_id=node_id,
+                    view_id=getattr(controller, "last_view_id", ""),
+                    reason=str(getattr(status, "value", status)),
+                    generation_call_id=str(getattr(controller, "last_call_id", "") or ""),
+                    template_ref=getattr(controller, "last_template_ref", {}) or {},
+                )
             decision = recovery.handle("controller", status, attempt_key="controller")
             steps += 1
             if decision.action in ("retry_same", "retry_rephrase"):
@@ -264,6 +388,30 @@ def run_episode(
                     break
                 engine.terminate(decision.reason)
                 break
+            # 请求产物：模型生成的有效查询才发送；同一 query 的重发复用同一 request_id
+            if not action.params.get("request_id"):
+                parent = last_request_id
+                artifact = request_ledger.record(
+                    task_id=task.task_id,
+                    query=q,
+                    node_id=node_id,
+                    view_id=engine.nodes[node_id].view_ref,
+                    strategy=str(controller_cfg.get("strategy") or (getattr(controller, "strategy", "") or "scripted")),
+                    strategy_version=str(
+                        getattr(controller, "strategy_version", "")
+                        or controller_cfg.get("strategy_version", "")
+                        or "model_query_v1@1"
+                    ),
+                    parent_request_ids=[parent] if parent else [],
+                    generation_call_id=str(getattr(controller, "last_call_id", "") or ""),
+                    template_ref=getattr(controller, "last_template_ref", {}) or {},
+                    input_evidence_ids=getattr(controller, "last_input_evidence_ids", []) or [],
+                    parse_status="parsed",
+                    rationale=action.rationale,
+                    transform_chain=[str(controller_cfg.get("strategy") or "scripted")],
+                )
+                action.params["request_id"] = artifact.request_id
+                last_request_id = artifact.request_id
 
         store.append(
             "action_proposed",
@@ -329,14 +477,25 @@ def run_episode(
                 need_finalize = True
                 reason = "finalize_new_evidence"
         if need_finalize and local_budget_left:
-            _assemble_now(reason)
+            try:
+                _assemble_now(reason)
+            except BudgetExhausted:
+                # E03：额度不足时允许"不调用模型"的原文回退，明确标 fallback_render
+                store.append(
+                    "action_rejected",
+                    role="engine",
+                    node_id=node_id,
+                    payload={"reason": "no_assembly_budget", "note": "改用不调用模型的原文回退"},
+                )
+                engine.assemble_without_model("no_local_budget")
         elif need_finalize:
             store.append(
                 "action_rejected",
                 role="engine",
                 node_id=node_id,
-                payload={"reason": "stale_candidate_no_local_budget", "note": "新证据未进入最终答案"},
+                payload={"reason": "stale_candidate_no_local_budget", "note": "改用不调用模型的原文回退"},
             )
+            engine.assemble_without_model("no_local_budget")
         engine.terminate(engine.termination_reason or ("budget_exhausted" if engine.target_exhausted else "max_steps"))
 
     return EpisodeArtifacts(

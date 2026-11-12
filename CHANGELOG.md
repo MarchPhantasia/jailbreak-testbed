@@ -2,6 +2,50 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.4.0] — 2026-11-12
+
+最小真实闭环（执行包 `execution1-r2`，E01–E05）：按组件路由模型、请求产物、模型装配、独立语义裁判、
+真实数据入口。旧合成配置与六套历史验收保持原样。
+
+状态：**offline_ready**（本地假服务与验收全过）；**real_pilot_complete = 否**（未连接真实服务，无真实 ASR）。
+
+### 新增
+
+- **E01 路由与参数档案**：`services`/`components` 显式路由；`openai_chat` / `qwen38_vllm` /
+  `deepseek_thinking_proxy` 三个档案先校验再序列化；`extra_body` 展开到 HTTP 顶层；未知字段、
+  保留键覆盖、同名冲突、非原生 effort、thinking 下的采样参数在启动前报错（不再静默丢弃）。
+- **E01 模板冻结**：`prompts.<stage>.{id,version,path}` + `prompt_manifest`（SHA-256、渲染器版本、
+  运行目录快照、变量协议）；`single-substitute@v1` 只替换 `{{input_json}}`。
+- **E01 生成探针**：`check-services` 对 target/attacker(controller+assembler)/judge_eval 做真实
+  非流式生成，按 `service+profile` 去重并单独记账；不健康时 CLI 非零退出，正式 run 不启动 episode。
+- **E01 阶段额度**：`experiment.budget.stage_calls` 与全局额度同时生效；`tokens`/`wall_ms` 非空拒绝。
+- **E02 请求产物**：`request_generated` 权威事件 + `requests.jsonl` 可重建索引；Target 的
+  `request_sent.payload.request_id` 与索引双向可查；网络重发保留 `request_id`，新生成创建新 ID 并链接父产物。
+- **E03 模型装配**：`assembly.type=llm` 真正调用 Assembler 角色；schema 与引用归属校验、
+  答案行级覆盖检查、有限重试、`fallback_render` 原文降级。
+- **E04 语义裁判**：`evaluation.type=llm` 调用独立服务，自带 `EvaluationPlan`、独立事件与账本；
+  `scored` 三维度 + 冻结 `success_rule` 由程序计算 S/F/U；`unscored` 与"证据不足"严格分开。
+- **E05 数据与报告**：revision 透传到 adapter/manifest；`scripts/select_dev_slice.py` 按重复组原子抽样；
+  `scripts/report_run.py` 与 `jbt report` 导出逐题与汇总；`configs/real-dev.example.yaml` 为真实配置模板。
+
+### 契约变化
+
+- `BudgetLimits` 新增 `stage_calls`；`BudgetGuard.reserve(..., stage_id=)` 同时检查阶段额度。
+- `plan.json` 新增 `routing`/`stages`/`model_manifest`/`evaluation_spec`/`prompt_manifest`/`budget`/`profile`。
+- 新增事件 `request_generated`、`assembly_rejected`、`evaluation_started`、`evaluation_verdict`、`evaluation_completed`；
+  `Event` 增加 `request_id` 字段。
+- `check_services` 返回值扩展为 `probes/roles/target/attacker/judge_eval/healthy`；`attacker` 为兼容别名。
+- `CallResult` 增加 `reasoning`；`reasoning`/`reasoning_content` 与最终 `content` 分开解析，
+  只有推理没有内容记为 `INVALID_OUTPUT(reasoning_only)`。
+- `Assembler.assemble_from_pack` 与 `PromptRegistry`、`RoutingPlan` 为新增公开接口；旧调用保持兼容。
+
+### 已知限制
+
+- 语义裁判未做人工一致性校准；`truth_status` 保持 `not_assessed`。
+- 行级覆盖检查是结构检查，不证明语义支持。
+- `extractor`/`summarizer`/`judge_online` 的语义实现不在本轮；`raw_history` 下启用会报错。
+- 真实服务的能力状态默认 `unknown`：HTTP 200 只代表接受请求。
+
 ## [code-v0.2.1] — 2026-11-11
 
 ### 变更

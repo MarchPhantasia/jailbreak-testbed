@@ -9,15 +9,20 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from .budget import BudgetExhausted
 from .contracts import (
     AgentState,
     AnswerCandidate,
     Claim,
     Fidelity,
     Origin,
+    Role,
+    Status,
     SupportStatus,
     Task,
     new_id,
@@ -111,6 +116,8 @@ class Assembler:
         *,
         k: int = 1,
         stage_policy_ref: str = "",
+        node_id: str = "",
+        view_id: str = "",
     ) -> List[AnswerCandidate]:
         """从已冻结的证据包生成候选；包不变则答案可重放。"""
         out: List[AnswerCandidate] = []
@@ -131,6 +138,275 @@ class Assembler:
                 )
             )
         return out
+
+
+# --------------------------------------------------------------------------
+# 模型装配（E03）：证据约束、引用校验、有限重试、明确降级
+# --------------------------------------------------------------------------
+ANSWER_CLAIM_CHECK = "line-substring@v1"
+
+
+def _looks_like_gap(line: str) -> bool:
+    return bool(re.match(r"^\s*[-*]?\s*(未提供|未确认|缺项)", line))
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def uncovered_ratio(answer: str, claims: List[Claim]) -> Tuple[float, List[str]]:
+    """答案中未被任何 claim 文本覆盖的实质行占比（结构检查，不证明语义支持）。"""
+    lines = [l.strip() for l in str(answer or "").splitlines()]
+    body = [l for l in lines if l and not _looks_like_gap(l)]
+    if not body:
+        return 0.0, []
+    texts = [_normalize(c.text) for c in claims if c.text]
+    uncovered = [l for l in body if not any(t and (t in _normalize(l) or _normalize(l) in t) for t in texts)]
+    chars = sum(len(l) for l in body) or 1
+    return sum(len(l) for l in uncovered) / chars, uncovered
+
+
+class LLMAssembler(Assembler):
+    """把冻结证据包交给 Assembler 角色模型，产出 answer/claims/gaps。
+
+    校验只做结构与引用归属：引用 ID 属于该包、schema 字段合法、答案实质行能被 claims
+    覆盖。语义支持与保真度仍为未核验，不在这里自证。
+    """
+
+    def __init__(
+        self,
+        gateway,
+        template,
+        *,
+        max_format_retries: int = 1,
+        max_uncovered_ratio: float = 0.25,
+        stage_id: str = "assemble",
+        output_limit: int = 20000,
+    ):
+        self.gateway = gateway
+        self.template = template
+        self.max_format_retries = max(0, int(max_format_retries))
+        self.max_uncovered_ratio = float(max_uncovered_ratio)
+        self.stage_id = stage_id
+        self.output_limit = int(output_limit)
+        self.name = "llm_assembler"
+        self.last_call_ids: List[str] = []
+        self.last_failure = ""
+
+    # ---- 输入 ----
+    def _input_payload(self, task: Task, pack: EvidencePack) -> Dict[str, Any]:
+        return {
+            "task": task.public_view(),
+            "pack": {
+                "pack_id": pack.pack_id,
+                "materials": pack.materials,
+                "gaps": pack.gaps,
+                "notes": pack.notes,
+                "evidence_ids": pack.evidence_ids(),
+            },
+            "constraints": {
+                "must_keep_conditions": True,
+                "no_world_knowledge": True,
+                "unknown_stays_unknown": True,
+                "output": "answer/claims/gaps",
+            },
+        }
+
+    # ---- 解析与校验 ----
+    @staticmethod
+    def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+        from .prompts import strip_think_blocks
+
+        body = strip_think_blocks(text)
+        start = body.find("{")
+        end = body.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(body[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _validate(self, data: Optional[Dict[str, Any]], pack: EvidencePack) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+        problems: List[str] = []
+        if not isinstance(data, dict):
+            return None, ["not_json_object"]
+        answer = data.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            problems.append("answer_missing_or_empty")
+        elif len(answer) > self.output_limit:
+            problems.append("answer_too_long")
+        claims_raw = data.get("claims")
+        if not isinstance(claims_raw, list) or not claims_raw:
+            problems.append("claims_missing")
+            claims_raw = []
+        gaps_raw = data.get("gaps")
+        if gaps_raw is None:
+            gaps_raw = []
+        if not isinstance(gaps_raw, list) or any(not isinstance(g, str) for g in gaps_raw):
+            problems.append("gaps_not_list_of_string")
+            gaps_raw = []
+
+        valid_ids = set(pack.evidence_ids())
+        claims: List[Claim] = []
+        seen_claim_ids: set = set()
+        for i, raw in enumerate(claims_raw):
+            if not isinstance(raw, dict):
+                problems.append(f"claim_{i}_not_object")
+                continue
+            cid = raw.get("claim_id")
+            text = raw.get("text")
+            ids = raw.get("evidence_ids")
+            if not isinstance(cid, str) or not cid.strip():
+                problems.append(f"claim_{i}_bad_id")
+                continue
+            if cid in seen_claim_ids:
+                problems.append(f"claim_{i}_duplicate_id")
+                continue
+            if not isinstance(text, str) or not text.strip():
+                problems.append(f"claim_{i}_bad_text")
+                continue
+            if not isinstance(ids, list) or not ids or any(not isinstance(x, str) or not x for x in ids):
+                problems.append(f"claim_{i}_bad_evidence_ids")
+                continue
+            if len(set(ids)) != len(ids):
+                problems.append(f"claim_{i}_duplicate_evidence_ids")
+                continue
+            unknown = [x for x in ids if x not in valid_ids]
+            if unknown:
+                # N12：不存在/不属于本证据包的引用整体拒收，而不是删掉引用保留无出处句子
+                problems.append(f"claim_{i}_unknown_evidence:{','.join(unknown[:4])}")
+                continue
+            seen_claim_ids.add(cid)
+            claims.append(Claim(claim_id=cid, text=text, evidence_ids=list(ids), origin=Origin.TARGET_RESPONSE))
+
+        if not problems and not claims:
+            problems.append("no_valid_claims")
+        if not problems:
+            ratio, uncovered = uncovered_ratio(answer, claims)
+            if ratio > self.max_uncovered_ratio:
+                problems.append(f"answer_lines_not_covered:{len(uncovered)}")
+        if problems:
+            return None, problems
+        return {"answer": answer, "claims": claims, "gaps": list(gaps_raw)}, []
+
+    # ---- 装配 ----
+    def assemble_from_pack(self, task: Task, pack: EvidencePack, *, k: int = 1, stage_policy_ref: str = "", node_id: str = "", view_id: str = "") -> List[AnswerCandidate]:
+        payload = self._input_payload(task, pack)
+        template_ref = self.template.ref() if hasattr(self.template, "ref") else {}
+        attempts: List[Dict[str, Any]] = []
+        parsed: Optional[Dict[str, Any]] = None
+        last_status = ""
+        for attempt in range(1 + self.max_format_retries):
+            rendered = self.template.render(payload)
+            try:
+                res = self.gateway.call(
+                    Role.ASSEMBLER,
+                    self.stage_id,
+                    [{"role": "user", "content": rendered}],
+                    {},
+                    node_id=node_id,
+                    view_id=view_id,
+                    attempt_id=f"assemble_{attempt + 1}",
+                    template_ref=template_ref,
+                    input_evidence_ids=pack.evidence_ids(),
+                )
+            except BudgetExhausted:
+                self.last_failure = "budget_exhausted"
+                attempts.append({"attempt": attempt + 1, "status": "BUDGET_EXHAUSTED"})
+                break
+            self.last_call_ids.append(res.call_id)
+            last_status = res.status.value
+            data, problems = (None, ["not_dispatched"])
+            if res.ok:
+                data, problems = self._validate(self._extract_json(res.text), pack)
+            else:
+                problems = [f"call_status:{res.status.value}:{res.error}"]
+            attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "call_id": res.call_id,
+                    "status": res.status.value,
+                    "error": res.error,
+                    "problems": problems,
+                    "text_chars": len(res.text or ""),
+                }
+            )
+            if data is not None:
+                parsed = data
+                break
+        self.last_failure = "" if parsed else (last_status or "invalid_output")
+
+        if parsed is None:
+            return self._fallback(task, pack, stage_policy_ref, attempts, k=k)
+
+        claims = parsed["claims"]
+        ratio, _ = uncovered_ratio(parsed["answer"], claims)
+        candidate = AnswerCandidate(
+            candidate_id=new_id("cand"),
+            answer=parsed["answer"],
+            claims=claims,
+            evidence_pack_ids=[pack.pack_id],
+            gaps=parsed["gaps"],
+            assembly_config={
+                "assembler": self.name,
+                "k": k,
+                "template_id": template_ref.get("template_id", ""),
+                "template_sha256": template_ref.get("sha256", ""),
+                "answer_claim_check": ANSWER_CLAIM_CHECK,
+                "uncovered_ratio": round(ratio, 4),
+                "attempts": attempts,
+            },
+            stage_policy_ref=stage_policy_ref,
+            processing_refs=[f"assembler:{cid}" for cid in self.last_call_ids if cid] + [f"pack:{pack.pack_id}"],
+            fallback_render=False,
+            end_state="assembled",
+        )
+        return [candidate]
+
+    def _fallback(self, task: Task, pack: EvidencePack, stage_policy_ref: str, attempts: List[Dict[str, Any]], *, k: int = 1) -> List[AnswerCandidate]:
+        """声明的原文回退：保留 Target 原文与缺项，明确标记 fallback_render。"""
+        answer, claims, gaps = self.render(task, pack)
+        return [
+            AnswerCandidate(
+                candidate_id=new_id("cand"),
+                answer=answer,
+                claims=claims,
+                evidence_pack_ids=[pack.pack_id],
+                gaps=list(gaps),
+                assembly_config={
+                    "assembler": "material_template",
+                    "fallback_of": self.name,
+                    "k": k,
+                    "attempts": attempts,
+                    "failure": self.last_failure,
+                },
+                stage_policy_ref=stage_policy_ref,
+                processing_refs=[f"fallback:material_template@v1", f"pack:{pack.pack_id}"],
+                fallback_render=True,
+                end_state="assembled_fallback",
+            )
+        ]
+
+
+def make_assembler(cfg: Dict[str, Any], *, gateway=None, template=None):
+    """按 method.assembly.type 选择装配器；llm 必须真正拿到网关与模板。"""
+    method = cfg.get("method") or {}
+    kind = str(((method.get("assembly") or {}).get("type")) or "material_template").lower()
+    if kind == "material_template":
+        return Assembler()
+    if kind == "llm":
+        if gateway is None or template is None:
+            raise ValueError("assembly.type=llm 需要 Assembler 网关与冻结模板")
+        spec = method.get("assembly") or {}
+        return LLMAssembler(
+            gateway,
+            template,
+            max_format_retries=int(spec.get("max_format_retries", 1)),
+            max_uncovered_ratio=float(spec.get("max_uncovered_ratio", 0.25)),
+        )
+    raise ValueError(f"未支持的 assembly.type：{kind}（不做隐式回退）")
 
 
 def _as_enum(enum_cls, value, default):
@@ -172,9 +448,11 @@ def make_selector(name: str) -> CandidateSelector:
 
 __all__ = [
     "Assembler",
+    "LLMAssembler",
     "CandidateSelector",
     "CoverageSelector",
     "EvidencePack",
+    "make_assembler",
     "make_selector",
     "compute_open",
     "element_evidence",
