@@ -4,6 +4,8 @@
 
 ## [code-v0.4.1] — 2026-11-12
 
+远端 CI：[run 43315126285](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43315126285) success（16s）。执行包 `execution1-r2` 六套历史验收 + harness + next + routing 共 290 项在推送前全部通过。
+
 用 StrongREJECT 真实切片（30 条，固定 revision）在本地 vLLM 上跑通全链路后修复的问题。
 这一轮不改变目标函数，也不产生可报告的 ASR（Target 是未对齐的本地模型、裁判同源）。
 
