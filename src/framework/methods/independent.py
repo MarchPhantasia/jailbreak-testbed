@@ -317,8 +317,26 @@ def run_episode(
             last_pack_hash, target_calls_at_last_pack = pack_hash, target_calls
 
     if not engine.terminated:
-        if engine.final_candidate is None and guard.snapshot().get("non_target_calls_left", 1) != 0:
-            _assemble_now("finalize")
+        node_id = engine.current_node_id
+        local_budget_left = guard.snapshot().get("non_target_calls_left", 1) != 0
+        need_finalize = engine.final_candidate is None
+        reason = "finalize"
+        if not need_finalize and stop_policy == "online":
+            # V01：online 继续取证后，若活跃材料已变化，自动收尾必须重新装配而非冻结旧候选
+            now_fp = engine.materials_fingerprint(node_id)
+            last_fp = (engine.packs[-1].get("input_hash") if engine.packs else "") or ""
+            if now_fp and now_fp != last_fp:
+                need_finalize = True
+                reason = "finalize_new_evidence"
+        if need_finalize and local_budget_left:
+            _assemble_now(reason)
+        elif need_finalize:
+            store.append(
+                "action_rejected",
+                role="engine",
+                node_id=node_id,
+                payload={"reason": "stale_candidate_no_local_budget", "note": "新证据未进入最终答案"},
+            )
         engine.terminate(engine.termination_reason or ("budget_exhausted" if engine.target_exhausted else "max_steps"))
 
     return EpisodeArtifacts(

@@ -51,6 +51,23 @@
   计划在把 recompute 迁入 analysis 层后删除。
 - `.gitignore` 中的 `../.venv/` 是无效模式（git 忽略含 `..` 的规则），已移除；虚拟环境应放在仓库内并由 `.venv/` 覆盖。
 
+## [code-v0.3.1] — 2026-11-12
+
+按第五轮审查（`9c1157a`，V01–V02）修复；仓库 152 项、历轮 48 项 + 本轮 5 项全过。
+
+### 修复
+
+- **V01** online 策略下自动收尾冻结旧候选：新增材料指纹比较，收尾时若活跃材料已变化且本地额度充足，
+  执行最终装配并把新证据带入答案；旧候选不可变。无额度时记 `stale_candidate_no_local_budget`。
+- **V02** HTTP 适配层把拒答/过滤/缺 choices 记为 OK：`_parse_completion()` 先校验结构，
+  `message.refusal` → `REFUSED(provider_refusal)`，`finish_reason=content_filter` → `REFUSED(content_filter)`，
+  缺 choices → `INVALID_OUTPUT`，内容+拒答 → `PARTIAL`，`length` → `TRUNCATED`。
+
+### 契约变化
+
+- `Engine.materials_fingerprint()` 暴露给编排层；online 收尾可能产生第二次 `assembled`。
+- `CallResult.error` 增加原因标签；`raw` 保留 `refusal` / `filter_reason`。
+
 ## [code-v0.3.0] — 2026-11-12
 
 按第四轮审查（`ad300ee`，U01–U04）修复；仓库 141 项、历轮验收 48 项 + 本轮 8 项全过。

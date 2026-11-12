@@ -103,6 +103,7 @@ docs/            手册（canonical）、早期设计笔记、ADR
 
 第三轮（T01–T08）：[docs/review/round3-3e531e3-fixes.md](docs/review/round3-3e531e3-fixes.md)
 第四轮（U01–U04）：[docs/review/round4-ad300ee-fixes.md](docs/review/round4-ad300ee-fixes.md)
+第五轮（V01–V02）：[docs/review/round5-9c1157a-fixes.md](docs/review/round5-9c1157a-fixes.md)
 
 a9b45c9 的 13 项问题（R01–R13）逐项状态、修改、验证与剩余限制见
 [docs/review/a9b45c9-fixes.md](docs/review/a9b45c9-fixes.md)。

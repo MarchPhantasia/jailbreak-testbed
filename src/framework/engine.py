@@ -334,6 +334,16 @@ class Engine:
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
+    def materials_fingerprint(self, node_id: str) -> str:
+        """当前活跃材料指纹：与 pack 的 input_hash 使用同一序列化方式（V01）。"""
+        state = self.states.get(node_id)
+        if state is None:
+            return ""
+        pack = self.assembler.build_pack(self.task, state, self.elements)
+        return hashlib.sha256(
+            json.dumps(pack.materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+
     def _freeze_pack(self, pack, node_id: str, state):
         """深拷贝材料并落盘；返回冻结后的包（输入不可被后续状态改写）。"""
         from .assembly import EvidencePack

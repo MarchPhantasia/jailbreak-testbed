@@ -280,17 +280,55 @@ class OpenAICompatGateway(ModelGateway):
         except Exception as exc:  # noqa: BLE001
             return CallResult(call_id="", status=Status.TRANSPORT_ERROR, error=str(exc))
 
-        choice = (data.get("choices") or [{}])[0]
-        text = (choice.get("message") or {}).get("content", "") or ""
-        finish = choice.get("finish_reason", "") or ""
-        status = Status.TRUNCATED if finish == "length" else Status.OK
+        return self._parse_completion(data)
+
+    @staticmethod
+    def _parse_completion(data: Any) -> CallResult:
+        """把供应商响应映射到接口状态（V02）。
+
+        - 缺 choices / 结构非法 → INVALID_OUTPUT（不能冒充 OK 空串）
+        - message.refusal 且无内容 → REFUSED（保留拒答文本与原因）
+        - finish_reason=content_filter 且无内容 → REFUSED（原因记为 content_filter）
+        - 有内容又带 refusal → PARTIAL（部分可用）
+        - finish_reason=length → TRUNCATED；其余有内容 → OK
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
+            return CallResult(call_id="", status=Status.INVALID_OUTPUT, error="malformed_response:no_choices")
+        choice = data["choices"][0]
+        if not isinstance(choice, dict):
+            return CallResult(call_id="", status=Status.INVALID_OUTPUT, error="malformed_response:choice_not_object")
+        message = choice.get("message")
+        message = message if isinstance(message, dict) else {}
+        content = message.get("content") or ""
+        refusal = message.get("refusal") or ""
+        finish = choice.get("finish_reason") or ""
+        usage = data.get("usage") or {}
+        raw = {"id": data.get("id"), "model": data.get("model"), "finish_reason": finish}
+        if refusal:
+            raw["refusal"] = refusal
+        if finish == "content_filter":
+            raw["filter_reason"] = "content_filter"
+
+        if content and refusal:
+            status, error = Status.PARTIAL, "mixed_refusal_with_content"
+        elif content:
+            status = Status.TRUNCATED if finish == "length" else Status.OK
+            error = ""
+        elif refusal:
+            status, error = Status.REFUSED, "provider_refusal"
+        elif finish == "content_filter":
+            status, error = Status.REFUSED, "content_filter"
+        else:
+            status, error = Status.INVALID_OUTPUT, "empty_content"
+
         return CallResult(
             call_id="",
             status=status,
-            text=text,
+            text=content or refusal,
             finish_reason=finish,
-            usage=data.get("usage") or {},
-            raw={"id": data.get("id"), "model": data.get("model")},
+            usage=usage,
+            raw=raw,
+            error=error,
         )
 
     def probe(self) -> Dict[str, Any]:
