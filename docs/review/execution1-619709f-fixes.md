@@ -1,8 +1,32 @@
 # 审查包 execution1-619709f 修复记录（R1–R6）
 
 - 审查对象：`619709f`（实际实现 `0d74ad6`）
-- 本轮提交：`26bd825`（不推送；远端推送由另一会话负责）
-- 状态：**offline_ready**；InferKnock Target **未试跑**（本会话无 `INFERKNOCK_API_KEY`，`api.inferknock.ai` 返回 401）
+- 本轮提交：`26bd825`（R1–R6）、`2790288`（记录）、`90cb32e`（env）、`37bde10`/`be0fdde`（上下文与探针）
+- 状态：**offline_ready**；InferKnock Target 已接线，**未试跑**（本会话无 `INFERKNOCK_API_KEY`，接口返回 401）
+
+## 0. 本轮总览
+
+审查提出六个问题（R1–R6）与一份角色/参数决定；本轮把它们全部处理，并补了三件让真实实验
+可解释、可复算的基础设施。一句话：**先堵住会污染评价的路径，再把 Target 换成 InferKnock，并让
+证据、上下文与凭证都可审计。**
+
+| # | 事项 | 改了什么 | 验证 |
+|---|---|---|---|
+| R1 | 思考块冒充输出 | `inline-think@v2`：修正起始标签、未闭合块截断、孤立结束标签；三个解析器统一 | 审查 10 个观察案例复跑，4 个 R1 案例全部翻转 |
+| R2 | 裁判静默丢证据 | `cited-first-whole@v1`：引用证据优先且完整、整条装/整条省、`evidence_plan` 记录完整性；上限可配并冻结 | 末尾关键证据进入输入；中段限定语不被切断；引用缺失记 unscored |
+| R3 | 证据范围混用 | 来源判定默认 `candidate_pack`（候选冻结证据包），episode 全量只作显式替代/分析口径 | 冻结后才出现的材料不再替候选补证；两种口径分开记录 |
+| R4 | 覆盖检查被过度解读 | 门槛只对证据原文；拆成 `answer_evidence`/`answer_claim`/`claim_citation`；`judge_eval.v2` 明确引用质量只作诊断 | 自证洗白被拒；短断言豁免单独计数 |
+| R5 | 路径按存在性漂移 | `experiment.path_base`（config/cwd）确定性解析 | 目录创建前后一致、换工作目录一致 |
+| R6 | 模板字节/测试目录 | UTF-8 字节读写与哈希；测试用临时目录 | CRLF 模板快照字节与哈希一致 |
+| 角色 | Target → InferKnock | `target_query`：high / 8192 / thinking，无 temperature；Assembler 关 thinking、8192；Judge 同源 8192 | 配置解析/路由/序列化离线验证；真实探测待 key |
+| 上下文 | 32k 窗口 | `services.*.context_window=32768`；发送前保守估算，超窗不发也不计预算；裁判证据受 token 预算约束 | 本机 32k vLLM 实跑：est_in 198–7198，headroom 16k–28k，裁判 included 81 / omitted 0 |
+| 凭证 | 显式 env 文件 | `--env-file` / `JBT_ENV_FILE`；系统环境优先、只回显键名 | `.env`（600）加载：key 缺失时目标/裁判给出明确报错 |
+
+检查：仓库 230 项、九套验收（baseline/prior/round2–5/harness/next/routing）全过；
+审查包自带的 `reproduce_observations.py` 复跑后，R1/R2/R4/R5 的 `observed_issue` 全部为 false。
+
+仍未做（需要凭证或人工）：InferKnock 小批次、两组 Assembler 对照、Judge 人工校准、heldout 清单。
+
 
 ## 1. 逐项修复
 
