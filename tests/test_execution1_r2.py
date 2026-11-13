@@ -1086,3 +1086,98 @@ def test_R6_template_snapshot_hash_matches_bytes(tmp_path):
     assert rows[0]["sha256"] == hashlib.sha256(raw).hexdigest()
     frozen = PromptRegistry.load_frozen(str(tmp_path / "run"), rows)
     assert frozen["plan"].text == raw.decode("utf-8")
+
+
+# --------------------------------------------------------------------------
+# 11. 上下文预算（32k 级服务窗口）
+# --------------------------------------------------------------------------
+def test_context_estimator_is_conservative_for_cjk():
+    from framework.context import estimate_tokens
+
+    assert estimate_tokens("") == 0
+    assert estimate_tokens("中文十二个字符") == 7  # CJK 1 token/字
+    assert estimate_tokens("abcdefghij") == 3  # 0.3 token/字符 → 向上取整
+    assert estimate_tokens("中文 mixed text") > estimate_tokens("mixed text")
+
+
+def test_service_context_window_must_exceed_output_cap(tmp_path):
+    cfg = routed_cfg(tmp_path)
+    cfg["services"]["general"]["context_window"] = 4096
+    cfg["services"]["local"]["context_window"] = 1024
+    runner.build_run_context(cfg)  # 合法：输出上限都远小于窗口
+    cfg["services"]["local"]["context_window"] = 1024
+    cfg["stages"]["stages"]["plan"]["max_tokens"] = 2048  # 输出 > 窗口
+    with pytest.raises(RoutingError) as exc:
+        runner.build_run_context(cfg)
+    assert "max_tokens" in str(exc.value)
+    cfg["stages"]["stages"]["plan"]["max_tokens"] = 31
+    cfg["services"]["local"]["context_window"] = 32
+    with pytest.raises(RoutingError) as exc2:
+        runner.build_run_context(cfg)
+    assert "context_window" in str(exc2.value)
+
+
+def test_gateway_refuses_over_context_without_charging(tmp_path):
+    from framework.context import estimate_tokens
+
+    store = EventStore(str(tmp_path), "ep")
+    guard = BudgetGuard(BudgetLimits(non_target_calls=5), store, "ep")
+    gw = OpenAICompatGateway(guard, store, "http://fixture.invalid/v1", "m", context_window=2048)
+    huge = "中" * 5000
+    res = gw.call("controller", "plan", [{"role": "user", "content": huge}], {"max_tokens": 1024})
+    assert res.status is Status.INVALID_OUTPUT
+    assert res.error == "context_budget_exceeded"
+    assert guard.snapshot()["non_target_calls_used"] == 0, "未发出的请求不能计预算"
+    assert not store.of_type("request_sent"), "被拦截的请求不应产生 request_sent"
+    errors = store.of_type("component_error")
+    assert errors and errors[-1].payload["error"] == "context_budget_exceeded"
+    assert errors[-1].payload["context"]["context_window"] == 2048
+
+
+def test_judge_evidence_respects_token_budget():
+    from framework.evaluation import plan_evidence
+
+    rows = [
+        {"evidence_id": "E1", "text": "中" * 3000},  # 3000 tokens
+        {"evidence_id": "E2", "text": "short cited"},
+    ]
+    included, plan = plan_evidence(rows, ["E2"], cap_chars=60000, token_budget=500)
+    assert [r["evidence_id"] for r in included] == ["E2"]
+    assert plan["omitted_ids"] == ["E1"]
+    assert plan["input_completeness"] == "declared_omission"
+    assert plan["included_tokens_estimate"] <= 500
+
+
+def test_judge_over_context_cited_evidence_is_unusable():
+    from framework.evaluation import SemanticJudge
+
+    template = PromptTemplate(
+        stage_id="judge_eval", template_id="unit.judge", version="2", role="judge_eval",
+        text="JBT_STAGE=JUDGE_EVAL\nINPUT_JSON\n{{input_json}}\n", source_path="unit",
+    )
+    judge = SemanticJudge(None, template, rubric={}, context_window=4096, max_output_tokens=2048)
+    candidate = AnswerCandidate("c1", "答案", claims=[Claim("cl1", "答案", ["E1"])])
+    verdict = judge.evaluate(
+        Task("t", "p", "x"), candidate, eval_run_id="eval_ctx",
+        evidence=[{"evidence_id": "E1", "text": "中" * 5000}],
+    )
+    assert verdict.usable is False
+    assert verdict.basis == "unscored:context_budget_exceeded"
+    assert verdict.payload["evidence_plan"]["over_context"] is True
+
+
+def test_plan_freezes_context_window_for_judge(tmp_path, fake):
+    cfg = routed_cfg(tmp_path)
+    cfg["services"]["general"]["context_window"] = 32768
+    cfg["services"]["local"]["context_window"] = 32768
+    cfg["evaluation"]["max_evidence_chars"] = 60000
+    root, ep, plan, _ = run_once(cfg)
+    spec = plan["evaluation_spec"]
+    assert spec["service"]["context_window"] == 32768
+    assert spec["max_evidence_chars"] == 60000
+    runner.evaluate_experiment(cfg, root=str(root))
+    verdict_files = list((root / "evaluations").glob("*/verdicts.jsonl"))
+    assert verdict_files
+    verdict = json.loads(verdict_files[0].read_text(encoding="utf-8").splitlines()[0])
+    plan_ = verdict["payload"]["evidence_plan"]
+    assert plan_["context_window"] == 32768 and plan_["token_budget"] > 0

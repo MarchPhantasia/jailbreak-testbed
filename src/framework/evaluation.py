@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .budget import BudgetExhausted
+from .context import estimate_tokens, input_token_budget
 from .clients import CallResult, ModelGateway
 from .contracts import AnswerCandidate, Role, Status, Task, Verdict, new_id
 from .events import EventStore
@@ -33,11 +34,13 @@ def plan_evidence(
     evidence: Optional[List[Dict[str, Any]]],
     cited_ids: Optional[List[str]],
     cap_chars: int,
+    token_budget: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """按可审计规则选择裁判输入证据。
 
-    - 被 claims 引用的证据必须**完整**进入（即使因此超过 cap，也保留并声明 over_cap）；
+    - 被 claims 引用的证据必须**完整**进入（即使超过 cap/预算，也保留并声明 over_cap/over_context）；
     - 其余证据整条装入，装不下就整条省略并记录 id；绝不切割单条证据；
+    - 同时受字符上限与上下文 token 预算约束（token 预算来自服务的 context_window）；
     - 引用 ID 在证据集合里找不到时记 cited_missing（评价输入不完整，调用方应判不可用）。
     """
     rows: List[Dict[str, Any]] = []
@@ -60,15 +63,21 @@ def plan_evidence(
     included: List[Dict[str, Any]] = []
     omitted: List[str] = []
     used = 0
+    used_tokens = 0
     over_cap = False
+    over_context = False
     for row in ordered:
         cost = len(row["text"])
+        cost_tokens = estimate_tokens(row["text"])
         is_cited = row["evidence_id"] in cited_set
-        if used + cost > cap_chars and not is_cited:
+        over_chars = used + cost > cap_chars
+        over_tokens = token_budget is not None and used_tokens + cost_tokens > token_budget
+        if not is_cited and (over_chars or over_tokens):
             omitted.append(row["evidence_id"])
             continue
-        if used + cost > cap_chars and is_cited:
-            over_cap = True
+        if is_cited and (over_chars or over_tokens):
+            over_cap = over_cap or over_chars
+            over_context = over_context or over_tokens
         included.append(
             {
                 **row,
@@ -83,11 +92,14 @@ def plan_evidence(
             }
         )
         used += cost
+        used_tokens += cost_tokens
 
     if missing_cited:
         completeness = "cited_missing"
     elif not included:
         completeness = "no_evidence"
+    elif over_context:
+        completeness = "over_context_cited_priority"
     elif over_cap:
         completeness = "over_cap_cited_priority"
     elif omitted:
@@ -97,12 +109,15 @@ def plan_evidence(
     plan = {
         "policy": EVIDENCE_POLICY,
         "cap_chars": cap_chars,
+        "token_budget": token_budget,
         "included_ids": [r["evidence_id"] for r in included],
         "omitted_ids": omitted,
         "missing_cited_ids": missing_cited,
         "included_chars": used,
+        "included_tokens_estimate": used_tokens,
         "total_candidates": len(rows),
         "over_cap": over_cap,
+        "over_context": over_context,
         "truncated": False,
         "input_completeness": completeness,
     }
@@ -200,6 +215,8 @@ class SemanticJudge:
         judge_ref: str = "",
         max_evidence_chars: int = 20000,
         evidence_scope: str = "candidate_pack",
+        context_window: Optional[int] = None,
+        max_output_tokens: int = 0,
     ):
         self.gateway = gateway
         self.template = template
@@ -208,6 +225,8 @@ class SemanticJudge:
         self.judge_ref = judge_ref or f"{template.template_id}@{template.version}"
         self.max_evidence_chars = int(max_evidence_chars)
         self.evidence_scope = str(evidence_scope or "candidate_pack")
+        self.context_window = int(context_window) if context_window else None
+        self.max_output_tokens = int(max_output_tokens or 0)
         self.last_status = ""
         self.last_failure = ""
         self.last_call_ids: List[str] = []
@@ -220,7 +239,11 @@ class SemanticJudge:
         evidence: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         cited_ids = sorted({i for c in candidate.claims for i in c.evidence_ids})
-        evidence_rows, evidence_plan = plan_evidence(evidence, cited_ids, self.max_evidence_chars)
+        token_budget = input_token_budget(self.context_window, self.max_output_tokens)
+        evidence_rows, evidence_plan = plan_evidence(
+            evidence, cited_ids, self.max_evidence_chars, token_budget=token_budget
+        )
+        evidence_plan["context_window"] = self.context_window
         self.last_evidence_plan = evidence_plan
         return {
             "evaluation_subject": {
@@ -269,6 +292,19 @@ class SemanticJudge:
     ) -> Verdict:
         payload = self.build_input(task, candidate, evidence)
         plan = payload["evidence_plan"]
+        if plan["input_completeness"] == "over_context_cited_priority":
+            # 被引用证据本身就超过上下文预算：不发注定失败的请求，保留可离线重评的记录
+            return Verdict(
+                verdict_id=new_id("vd"),
+                eval_run_id=eval_run_id,
+                task_id=task.task_id,
+                answer_id=candidate.candidate_id,
+                rubric_version=rubric_version or str(self.rubric.get("version", "v1")),
+                judge_ref=self.judge_ref,
+                usable=False,
+                basis="unscored:context_budget_exceeded",
+                payload={"assessment": "unscored", "evidence_plan": plan, "failure": "context_budget_exceeded"},
+            )
         if plan["input_completeness"] == "cited_missing":
             return Verdict(
                 verdict_id=new_id("vd"),

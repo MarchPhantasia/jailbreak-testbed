@@ -235,6 +235,7 @@ class ServiceConfig:
     timeout_s: float = 60.0
     max_concurrency: int = 1
     parameter_profile: str = PROFILE_OPENAI
+    context_window: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -247,6 +248,7 @@ class ServiceConfig:
             "timeout_s": self.timeout_s,
             "max_concurrency": self.max_concurrency,
             "parameter_profile": self.parameter_profile,
+            "context_window": self.context_window,
         }
 
 
@@ -338,6 +340,7 @@ class RoutingPlan:
                 "auth_required": svc.auth_required,
                 "timeout_s": svc.timeout_s,
                 "max_concurrency": svc.max_concurrency,
+                "context_window": svc.context_window,
                 "resolved_params": self.resolved_params(role),
                 "capability_status": capability.get(role)
                 or {
@@ -361,6 +364,15 @@ class RoutingPlan:
 # --------------------------------------------------------------------------
 # 从配置构建
 # --------------------------------------------------------------------------
+def _context_window(raw: Dict[str, Any], service_id: str) -> Optional[int]:
+    value = raw.get("context_window", raw.get("context_tokens"))
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1024:
+        raise RoutingError(f"服务 {service_id} 的 context_window 必须是 >=1024 的整数：{value!r}")
+    return value
+
+
 def _service_from_legacy(service_id: str, raw: Dict[str, Any], profile: str) -> ServiceConfig:
     kind = str(raw.get("type") or "mock").lower()
     if kind not in ("mock", "openai", "openai_compatible", "http"):
@@ -379,6 +391,7 @@ def _service_from_legacy(service_id: str, raw: Dict[str, Any], profile: str) -> 
         timeout_s=float(raw.get("timeout_s", 60)),
         max_concurrency=int(raw.get("max_concurrency", 1)),
         parameter_profile=profile,
+        context_window=_context_window(raw, service_id),
     )
 
 
@@ -447,6 +460,7 @@ def resolve_routing(cfg: Dict[str, Any]) -> RoutingPlan:
                 timeout_s=float(raw.get("timeout_s", 60)),
                 max_concurrency=int(raw.get("max_concurrency", 1)),
                 parameter_profile=profile,
+                context_window=_context_window(raw, sid),
             )
         raw_components = cfg.get("components") or {}
         if not isinstance(raw_components, dict):
@@ -517,7 +531,15 @@ def resolve_routing(cfg: Dict[str, Any]) -> RoutingPlan:
             continue
         if not plan.components[role].stage_id:
             raise RoutingError(f"角色 {role} 缺少 stage_id")
-        plan.resolved_params(role)
+        resolved = plan.resolved_params(role)
+        window = svc.context_window
+        if window:
+            want = int(resolved.get("max_tokens") or 0)
+            if want and want >= window:
+                raise RoutingError(
+                    f"角色 {role} 的 max_tokens={want} 不小于服务上下文 {window}；"
+                    "输出上限必须给输入留出空间"
+                )
     return plan
 
 
@@ -668,6 +690,7 @@ def build_gateway(routing: "RoutingPlan", role: str, guard, store, *, template_r
         param_serializer=routing.serializer_for(role),
         auth_required=svc.auth_required,
         template_ref=template_ref or {},
+        context_window=svc.context_window,
     )
     gateway.stage_id = route.stage_id
     return gateway

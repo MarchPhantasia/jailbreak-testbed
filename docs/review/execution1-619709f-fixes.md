@@ -89,7 +89,11 @@
 | Judge_eval | `general`（同源，报告须注明） | `max_tokens=8192`、`effort=high`、thinking enabled |
 | Extractor / Summarizer | 关闭 | 原文后端不引入额外调用 |
 
-本地已能验证的部分：配置解析、路由、阶段参数序列化、模板冻结。
+上下文：两个服务都声明 `context_window: 32768`；Target/Judge 输出上限 8192、Assembler 8192、
+Controller 4096，裁判 `max_evidence_chars=60000`。发送前按保守估算检查输入 + 输出是否放得下，
+超窗不发请求也不计预算；裁判证据选择同时受字符上限与窗口 token 预算约束。
+
+本地已能验证的部分：配置解析、路由、阶段参数序列化、上下文预算、模板冻结。
 真实探测：`attacker` 健康；`target` 与 `judge_eval` 因缺少 `TARGET_API_KEY` / `INFERKNOCK_API_KEY` 失败
 （`api.inferknock.ai` 独立返回 401 `missing API key`）。**这不是接口不可用，是本会话没有凭证。**
 

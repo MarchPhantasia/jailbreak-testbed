@@ -2,6 +2,24 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.5.2] — 2026-11-14
+
+### 新增
+
+- `services.*.context_window`（token）：按服务声明上下文窗口；InferKnock 与本机 vLLM 起点均设 32768。
+- 发送前上下文预算：保守估算（CJK 1 token/字、其他 0.3 token/字符）输入 + `max_tokens` + 预留；
+  超窗直接拦截，**不发请求、不占预算**，记 `component_error:context_budget_exceeded`；
+  `request_sent.payload.context` 记录估算输入/输出上限/余量。
+- 裁判证据选择增加 token 预算维度：被引用证据优先且完整，其余整条装入或省略；
+  被引用证据自身超预算 → `unscored:context_budget_exceeded`（可离线用更大窗口重评）。
+- 阶段校验：`max_tokens` 必须小于服务的 `context_window`，否则启动前报错。
+- `plan.json.model_manifest` 与 `evaluation_spec.service` 记录 `context_window`。
+
+### 配置
+
+- 32k 起点：Target/Judge `8192`、Assembler `8192`、Controller `4096`；
+  裁判 `max_evidence_chars` 提高到 60000（example）/ 40000（local smoke）。
+
 ## [code-v0.5.1] — 2026-11-14
 
 ### 新增

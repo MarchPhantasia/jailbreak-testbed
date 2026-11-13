@@ -166,7 +166,7 @@ evaluation:
   max_format_retries: 1
   # 来源判定用候选冻结证据包；episode 全量只作显式替代协议（另报支持率）
   evidence_scope: candidate_pack
-  max_evidence_chars: 20000
+  max_evidence_chars: 60000
   budget:
     non_target_calls: 60
   rubric:
@@ -187,6 +187,8 @@ services:
     timeout_s: 180
     max_concurrency: 1
     parameter_profile: qwen38_vllm
+  # 32k 上下文：输入 + max_tokens 必须放得下；发送前会做保守估算
+    context_window: 32768
   general:
     type: openai
     base_url: https://api.inferknock.ai/v1
@@ -196,6 +198,8 @@ services:
     timeout_s: 180
     max_concurrency: 1
     parameter_profile: deepseek_thinking_proxy
+  # 32k 上下文：输入 + max_tokens 必须放得下；发送前会做保守估算
+    context_window: 32768
 components:
   controller:
     enabled: true

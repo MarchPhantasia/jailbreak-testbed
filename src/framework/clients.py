@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .budget import BudgetGuard, BudgetExhausted
+from .context import request_budget
 from .contracts import Phase, Role, Status, new_id
 from .events import EventStore
 
@@ -110,6 +111,8 @@ class ModelGateway:
         self.param_serializer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
         self.profile_name = ""
         self.template_ref: Dict[str, Any] = {}
+        #: 服务上下文窗口（token）；未知为 None，已知时做发送前预算检查
+        self.context_window: Optional[int] = None
 
     def _merge_params(self, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged: Dict[str, Any] = dict(self.default_params or {})
@@ -135,6 +138,33 @@ class ModelGateway:
     ) -> CallResult:
         role_name = role.value if isinstance(role, Role) else str(role)
         params = self._merge_params(params)
+        budget = request_budget(
+            context_window=self.context_window,
+            messages=messages,
+            max_tokens=params.get("max_tokens"),
+        )
+        if budget["fits"] is False:
+            # 发送前拦截：不占预算、不写 request_sent，避免把必然超窗的请求发出去
+            self.store.append(
+                "component_error",
+                phase=phase,
+                role=role_name,
+                stage_id=stage_id,
+                node_id=node_id,
+                view_id=view_id,
+                attempt_id=attempt_id,
+                payload={
+                    "error": "context_budget_exceeded",
+                    "context": budget,
+                    "note": "估算超窗；请求未发出，也未计入调用预算",
+                },
+            )
+            return CallResult(
+                call_id="",
+                status=Status.INVALID_OUTPUT,
+                error="context_budget_exceeded",
+                raw={"context": budget},
+            )
         key = ResponseCache.key(
             role_name,
             self.model_name,
@@ -198,6 +228,7 @@ class ModelGateway:
                 "input_evidence_ids": list(input_evidence_ids or []),
                 "model": self.model_name,
                 "request_id": request_id,
+                "context": budget,
                 "served": True,
                 "ticket": ticket,
             },
@@ -322,6 +353,7 @@ class OpenAICompatGateway(ModelGateway):
         param_serializer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         auth_required: bool = False,
         template_ref: Optional[Dict[str, Any]] = None,
+        context_window: Optional[int] = None,
     ):
         super().__init__(guard, store, cache)
         self.base_url = base_url.rstrip("/")
@@ -334,6 +366,7 @@ class OpenAICompatGateway(ModelGateway):
         self.param_serializer = param_serializer
         self.auth_required = bool(auth_required)
         self.template_ref = dict(template_ref or {})
+        self.context_window = int(context_window) if context_window else None
         if self.auth_required:
             # 调用前显式失败：不把空凭证当成"未鉴权服务"，也不发一次注定失败的请求
             self._api_key()

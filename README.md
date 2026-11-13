@@ -48,6 +48,7 @@
 | 候选证据包口径（vs episode 池） | ✅ R3 | `runner.candidate_evidence_scope` |
 | 结构诊断拆分（不宣称语义支持） | ✅ R4 | `framework/assembly.py` |
 | 确定性路径基准 | ✅ R5 | `experiment.path_base` |
+| 上下文预算与发送前拦截 | ✅ | `framework/context.py`、`services.*.context_window` |
 | 节点级/事实级/前缀级归因 | ⏳ 未实现 | 只有 `analyze` 骨架 |
 | 多候选选择器、阶段预算细调、审计流程 | ⏳ 部分 | 见「未完成」 |
 
@@ -80,7 +81,7 @@ export INFERKNOCK_API_KEY=...        # 或在 ~/.bashrc / systemd EnvironmentFil
 PYTHONPATH=src .venv/bin/python -m framework.cli check-services --config configs/real-dev.example.yaml
 PYTHONPATH=src .venv/bin/python -m framework.cli check-services --config configs/real-dev.example.yaml --env-file .env
 
-# 测试（217 项）
+# 测试（230 项）
 .venv/bin/python -m pytest
 
 # 同一 experiment.id 重跑会被拒绝（防止分母混算）；换 id 或 results_dir 再跑
@@ -93,6 +94,21 @@ N=3  S=1  F=2  U=0  eval_coverage=1.0
 class_dist = {D:1, B:1, A:1}
 target_calls = [2, 3, 3]（逐 episode）
 ```
+
+## 上下文预算
+
+服务声明 `context_window`（token，例如 InferKnock 与本机 vLLM 都用 32768）。框架不依赖具体
+tokenizer，用偏保守的估算（CJK 1 token/字、其他 0.3 token/字符 + 每条消息 4）做**发送前**检查：
+
+- 估算输入 + `max_tokens` + 预留 > 窗口 → **不发请求、不占预算**，记 `component_error:context_budget_exceeded`；
+- 每个 `request_sent` 记录 `context`（估算输入、max_tokens、窗口、余量），便于事后核对；
+- 裁判证据选择同时受 `evaluation.max_evidence_chars`（字符硬上限）与窗口换算出的 **token 预算**约束：
+  被引用证据优先且完整，其余整条装入/省略并记录；被引用证据自身超预算 → `unscored:context_budget_exceeded`，
+  留待更大窗口离线重评；
+- 校验阶段就拒绝 `max_tokens ≥ context_window` 的配置，不等到调用时才发现。
+
+32k 窗口的起点配置：Target/Judge `max_tokens=8192`，Assembler `8192`，Controller `4096`；
+裁判 `max_evidence_chars=60000`（ASCII 约 18k token，中文则由 token 预算先约束）。
 
 ## 凭证怎么放
 
@@ -136,7 +152,7 @@ prompts/         版本化模板（plan / assemble / judge_eval）
 scripts/         切片与报告脚本、precheck
 fixtures/        合成任务（含模拟 Target 脚本）、无害语义对照样例
 spec/rubrics/    冻结判据示例
-tests/           217 个测试
+tests/           230 个测试
 src/jailbreak_testbed/  M0 参考模型（不参与运行，见其 README）
 docs/            手册（canonical）、早期设计笔记、ADR
 ```

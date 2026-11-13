@@ -280,6 +280,7 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str) -> None:
                     "auth_required": svc.auth_required,
                     "timeout_s": svc.timeout_s,
                     "parameter_profile": svc.parameter_profile,
+                    "context_window": svc.context_window,
                     # raw_params 保留阶段解析前的形态（含 extra_body）；发送前由 profile 展开
                     "raw_params": routing.raw_stage_params(route.stage_id),
                     "resolved_params": routing.resolved_params("judge_eval"),
@@ -725,6 +726,8 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
         judge_ref=f"{template.template_id}@{template.version}",
         max_evidence_chars=int(spec.get("max_evidence_chars", 20000)),
         evidence_scope=str(spec.get("evidence_scope") or "candidate_pack"),
+        context_window=service.get("context_window"),
+        max_output_tokens=int(resolved.get("max_tokens") or 0),
     )
     store.append(
         "evaluation_started",

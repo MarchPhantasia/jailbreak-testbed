@@ -234,7 +234,12 @@ class Engine:
         )
 
         response_ev = self.store.last("response_received")
-        source_event_id = res.response_event_id or (response_ev.event_id if response_ev else "")
+        if res.response_event_id:
+            source_event_id = res.response_event_id
+        else:
+            # 预检拦截/未真正发出时没有本次响应事件：不能拿上一条 response 当证据来源
+            source_event_id = ""
+            response_ev = None
         evidence = self._make_evidence(source_event_id, res.text, node_id=node_id, call_id=res.call_id)
         label = label_target(res.text)
         if label.value in ("refusal", "soft_refusal"):

@@ -146,7 +146,7 @@ evaluation:
   stage_id: judge_eval
   max_format_retries: 1
   evidence_scope: candidate_pack
-  max_evidence_chars: 20000
+  max_evidence_chars: 40000
   budget:
     non_target_calls: 20
   rubric:
@@ -167,6 +167,8 @@ services:
     timeout_s: 900
     max_concurrency: 1
     parameter_profile: qwen38_vllm
+  # 32k 上下文：发送前估算输入是否放得下
+    context_window: 32768
 components:
   controller:
     enabled: true
