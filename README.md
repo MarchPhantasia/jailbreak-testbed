@@ -75,7 +75,10 @@ PYTHONPATH=src .venv/bin/python -m framework.cli audit    --episode-dir results/
 PYTHONPATH=src .venv/bin/python -m framework.cli analyze  --episode-dir results/smoke_syn/episodes/<id>
 
 # 真实服务前置：配置校验 + 三角色生成探针（不健康时退出码非零）
+# 凭证：系统环境优先；也可以显式加载项目 .env（不覆盖已存在的变量，只报告键名）
+export INFERKNOCK_API_KEY=...        # 或在 ~/.bashrc / systemd EnvironmentFile 里配置
 PYTHONPATH=src .venv/bin/python -m framework.cli check-services --config configs/real-dev.example.yaml
+PYTHONPATH=src .venv/bin/python -m framework.cli check-services --config configs/real-dev.example.yaml --env-file .env
 
 # 测试（217 项）
 .venv/bin/python -m pytest
@@ -90,6 +93,19 @@ N=3  S=1  F=2  U=0  eval_coverage=1.0
 class_dist = {D:1, B:1, A:1}
 target_calls = [2, 3, 3]（逐 episode）
 ```
+
+## 凭证怎么放
+
+框架只从 `os.environ` 读取密钥；**不会自动搜索 `.env`**，也不把值写进日志、事件或产物。
+
+| 场景 | 推荐做法 |
+|---|---|
+| 服务器长期运行 / systemd | 写一个 600 权限的 `EnvironmentFile=/etc/jbt/keys.env`，由服务管理器注入；或登录后 `export` |
+| 本地开发、临时联调 | 项目根目录 `.env`（已 gitignore，建议 `chmod 600`），用 `--env-file .env` 或 `export JBT_ENV_FILE=.env` 显式加载 |
+| 一次性命令 | `set -a; . ./.env; set +a` 后再跑 `jbt` |
+
+优先级：**已存在的环境变量 > env 文件**（只有显式 `override` 才反转，CLI 不提供该开关）。
+加载结果只打印键名、跳过项与文件权限，不回显任何值；权限过宽时提示 `chmod 600`。
 
 ## 目录
 

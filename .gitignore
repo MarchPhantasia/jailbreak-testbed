@@ -23,6 +23,7 @@ data/normalized/
 .env
 .env.*
 !env.example
+!.env.example
 *.key
 hf_token*
 

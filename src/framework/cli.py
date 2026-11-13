@@ -13,28 +13,53 @@ from typing import Any, Dict, List
 
 from . import runner
 from .datasets import get_adapter, write_json
+from .envfile import EnvFileError, load_env_if_configured
 
 
 def _print(obj: Any) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
+    """先加载可选的 env 文件（显式/`JBT_ENV_FILE`），再读配置。"""
+    try:
+        info = load_env_if_configured(getattr(args, "env_file", None))
+    except EnvFileError as exc:
+        raise SystemExit(f"env 文件加载失败：{exc}")
+    if info:
+        # 只报告键名与统计，不回显任何值
+        print(
+            json.dumps(
+                {
+                    "env_file": info["path"],
+                    "loaded_keys": info["loaded_keys"],
+                    "skipped_existing_keys": info["skipped_existing_keys"],
+                    "permissions": info["permissions"],
+                    **({"warning": info["warning"]} if info["warning"] else {}),
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+    return runner.load_config(args.config)
+
+
 def cmd_prepare_data(args: argparse.Namespace) -> int:
-    cfg = runner.load_config(args.config)
+    cfg = _load_config(args)
     out = runner.prepare_data(cfg)
     _print({"command": "prepare-data", "calls_model": False, **out})
     return 0
 
 
 def cmd_check_data(args: argparse.Namespace) -> int:
-    cfg = runner.load_config(args.config)
+    cfg = _load_config(args)
     out = runner.check_data(cfg)
     _print({"command": "check-data", "calls_model": False, **out})
     return 0 if out["ok"] else 1
 
 
 def cmd_check_services(args: argparse.Namespace) -> int:
-    cfg = runner.load_config(args.config)
+    cfg = _load_config(args)
     out = runner.check_services(cfg)
     _print({"command": "check-services", "calls_model": True, "phase": "preflight", **out})
     # 不可达/未生成时非零退出（探针成本单独记账，不进 episode 预算）
@@ -42,7 +67,7 @@ def cmd_check_services(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    cfg = runner.load_config(args.config)
+    cfg = _load_config(args)
     if args.limit is not None:
         cfg.setdefault("datasets", {})["limit"] = args.limit
     try:
@@ -58,7 +83,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
-    cfg = runner.load_config(args.config)
+    cfg = _load_config(args)
     root = args.root or runner.results_root(cfg)
     try:
         spec = runner.load_plan_from_root(root).get("evaluation_spec") or {"type": "rule"}
@@ -146,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sp = sub.add_parser(name, help=help_text)
         sp.add_argument("--config", required=True, help="实验配置 yaml")
+        sp.add_argument(
+            "--env-file",
+            default=None,
+            help="可选的 KEY=VALUE 文件（如 .env）；系统环境优先，只报告键名",
+        )
         if name == "run":
             sp.add_argument("--limit", type=int, default=None)
             sp.add_argument("--offset", type=int, default=0)

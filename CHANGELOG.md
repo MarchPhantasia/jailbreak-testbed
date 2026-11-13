@@ -2,6 +2,21 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.5.1] — 2026-11-14
+
+### 新增
+
+- `--env-file` / `JBT_ENV_FILE`：显式加载 KEY=VALUE 文件（支持注释、`export`、成对引号）；
+  默认**不覆盖**已存在的环境变量，只报告键名、跳过项与文件权限，绝不回显值。
+  框架仍不会自动搜索 `.env`。
+- `.env.example`（仅键名）与 `.gitignore` 例外；README 增加"凭证怎么放"：
+  服务器用 systemd `EnvironmentFile` 或 shell `export`，本地开发用 `.env` + `--env-file`。
+
+### 说明
+
+- 密钥优先级：系统环境 > env 文件；权限过宽时提示 `chmod 600`。
+- 7 项新回归（解析、优先级、覆盖开关、缺失/格式错误、CLI 不回显）。
+
 ## [code-v0.5.0] — 2026-11-13
 
 按审查包 `execution1-619709f`（R1–R6）修复；Target 接线切到 InferKnock（本地未试跑，缺凭证）。
