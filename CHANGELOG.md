@@ -40,6 +40,9 @@
 按审查包 `execution1-619709f`（R1–R6）修复；Target 接线切到 InferKnock（本地未试跑，缺凭证）。
 仓库 217 项、九套检查全过。
 
+远端 CI：[run 43463820245](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43463820245) success（18s）。推送前复跑九套：仓库 230 + 17/19/12/8/5 + harness 2 + next 16 + routing 8。
+审查观察脚本复跑 10 例：9 例 `observed_issue` 已转 false；`R2_mid_evidence_cut` 该字段由脚本写死为 true，实际输出显示限定语 `NOT CURRENT` 已完整保留（12009 字符，超限部分为被引用的关键片段）。
+
 ### 修复
 
 - **R1** 最终内容适配器 `inline-think@v2`：修正起始标签（原代码写成缺 `<` 的 `" think"`），
