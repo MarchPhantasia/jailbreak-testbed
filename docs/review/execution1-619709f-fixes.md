@@ -1,7 +1,7 @@
 # 审查包 execution1-619709f 修复记录（R1–R6）
 
 - 审查对象：`619709f`（实际实现 `0d74ad6`）
-- 本轮提交：见 `git log` 最新一条（不推送；远端推送由另一会话负责）
+- 本轮提交：`26bd825`（不推送；远端推送由另一会话负责）
 - 状态：**offline_ready**；InferKnock Target **未试跑**（本会话无 `INFERKNOCK_API_KEY`，`api.inferknock.ai` 返回 401）
 
 ## 1. 逐项修复
