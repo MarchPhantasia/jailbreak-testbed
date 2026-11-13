@@ -392,6 +392,7 @@ def _probe_group(ctx: RunContext, cfg: Dict[str, Any], role: str, stage_id: str)
         "parameter_profile": svc.parameter_profile,
         "stage_id": stage_id,
         "auth_required": svc.auth_required,
+        "context_window": svc.context_window,
     }
     if svc.type == "mock":
         return {"ok": True, "generation_ok": True, "probed": False, "type": "mock", "note": "显式 mock；不产生真实调用", **info}
@@ -469,6 +470,7 @@ def check_services(cfg: Dict[str, Any], ctx: Optional[RunContext] = None) -> Dic
         "roles": [r for r in ("controller", "assembler") if result["roles"].get(r)],
         "model": {r: (result["roles"].get(r) or {}).get("model") for r in ("controller", "assembler") if result["roles"].get(r)},
         "usage": {r: (result["roles"].get(r) or {}).get("usage") for r in ("controller", "assembler") if result["roles"].get(r)},
+        "context_window": {r: (result["roles"].get(r) or {}).get("context_window") for r in ("controller", "assembler") if result["roles"].get(r)},
         "controller": controller,
         "assembler": assembler,
     }
@@ -592,6 +594,7 @@ def _observed_manifest(plan: Dict[str, Any], preflight: Dict[str, Any]) -> Dict[
                 "probe_id": probe.get("probe_id", ""),
                 "probe_status": probe.get("status", ""),
                 "sent_params": probe.get("sent_params", {}),
+                "context_window": probe.get("context_window"),
                 "usage": probe.get("usage", {}),
                 "capability_status": capability,
                 "note": "transport_accepted 只说明服务接受了请求；effort/采样是否生效保持 unknown",
