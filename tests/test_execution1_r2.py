@@ -20,7 +20,8 @@ from framework.assembly import EvidencePack, LLMAssembler, uncovered_ratio
 from framework.contracts import AnswerCandidate, BudgetLimits, Claim, Status, Task
 from framework.clients import CallResult, MockGateway, OpenAICompatGateway, ResponseCache
 from framework.evaluation import parse_judge_output, success_from_rule
-from framework.prompts import PromptTemplate, PromptError
+from framework.prompts import PromptError, PromptRegistry, PromptTemplate
+from framework.controller import _extract_json
 from framework.requests import RequestLedger
 from framework.routing import (
     RoutingError,
@@ -30,6 +31,7 @@ from framework.routing import (
     validate_evaluation,
 )
 from framework.events import EventStore
+import tempfile
 from framework.budget import BudgetExhausted, BudgetGuard
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,10 +170,14 @@ class _Resp:
 def prompt_cfg(tmp_path):
     """把仓库模板复制到临时目录：测试对源文件的改动不影响仓库副本。"""
     out = {}
-    for stage, name in (("plan", "plan.v1.txt"), ("assemble", "assemble.v1.txt"), ("judge_eval", "judge_eval.v1.txt")):
+    for stage, name, version in (
+        ("plan", "plan.v1.txt", "1"),
+        ("assemble", "assemble.v1.txt", "1"),
+        ("judge_eval", "judge_eval.v2.txt", "2"),
+    ):
         target = Path(tmp_path) / f"{stage}.unit.txt"
         target.write_text((PROMPTS / name).read_text(encoding="utf-8"), encoding="utf-8")
-        out[stage] = {"id": f"repo.{stage}", "version": "1", "path": str(target)}
+        out[stage] = {"id": f"repo.{stage}", "version": version, "path": str(target)}
     return out
 
 
@@ -346,15 +352,16 @@ def _template():
     )
 
 
-def _assembler(text, *, retries=0):
-    store = EventStore("/tmp/jbt_unit_asm", "ep")
+def _assembler(text, *, retries=0, tmp_path=None):
+    root = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp(prefix="jbt_unit_asm_")
+    store = EventStore(root, "ep")
     guard = BudgetGuard(BudgetLimits(non_target_calls=5), store, "ep")
     gw = MockGateway(guard, store, scripts={"*": [CallResult("", Status.OK, text=text)]})
     return LLMAssembler(gw, _template(), max_format_retries=retries)
 
 
 def test_assembler_rejects_unknown_citation_and_falls_back(tmp_path):
-    asm = _assembler(json.dumps({"answer": "首次需要登记。", "claims": [{"claim_id": "c1", "text": "首次需要登记。", "evidence_ids": ["ev_missing"]}], "gaps": []}))
+    asm = _assembler(json.dumps({"answer": "首次需要登记。", "claims": [{"claim_id": "c1", "text": "首次需要登记。", "evidence_ids": ["ev_missing"]}], "gaps": []}), tmp_path=tmp_path)
     cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), _pack())
     assert cands[0].fallback_render is True
     assert all("ev_missing" not in c.evidence_ids for c in cands[0].claims)
@@ -376,7 +383,7 @@ def test_assembler_rejects_uncovered_answer_lines(tmp_path):
     evidence_text = "\n".join(str(m.get("value", "")) for m in pack.materials)
     ratio, uncovered = uncovered_ratio(payload["answer"], [Claim(claim_id="c1", text="首次需要登记。")], evidence_text)
     assert ratio > 0.25 and uncovered
-    asm = _assembler(json.dumps(payload, ensure_ascii=False))
+    asm = _assembler(json.dumps(payload, ensure_ascii=False), tmp_path=tmp_path)
     cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), pack)
     assert cands[0].fallback_render is True
     assert "秘密检索系统" not in cands[0].answer
@@ -393,7 +400,7 @@ def test_assembler_accepts_paraphrased_claims_when_answer_is_grounded(tmp_path):
         ],
         "gaps": [],
     }
-    asm = _assembler(json.dumps(payload, ensure_ascii=False))
+    asm = _assembler(json.dumps(payload, ensure_ascii=False), tmp_path=tmp_path)
     pack = EvidencePack(
         pack_id="pack_unit",
         task_id="t1",
@@ -882,3 +889,200 @@ def test_judge_sees_full_episode_evidence_not_only_cited(tmp_path, fake):
     payload = json.loads(text.split("INPUT_JSON\n", 1)[1])
     assert len(payload["evidence"]) == len(evidence_rows)
     assert "cited_evidence_ids" in payload
+
+
+# --------------------------------------------------------------------------
+# 10. 审查包 execution1-619709f 的 R1–R6 回归
+# --------------------------------------------------------------------------
+THINK_O = chr(60) + "think" + chr(62)
+THINK_C = chr(60) + "/think" + chr(62)
+SCORED = json.dumps(
+    {
+        "assessment": "scored",
+        "task_fulfillment": "complete",
+        "source_compliance": "met",
+        "evidence_sufficiency": "sufficient",
+        "reason": "neutral fixture",
+    }
+)
+
+
+def test_R1_thought_only_cannot_become_a_verdict():
+    for wrapped in (THINK_O + SCORED + THINK_C, THINK_O + SCORED):
+        parsed = parse_judge_output(wrapped)
+        assert parsed.ok is False and parsed.problems, "推理块不能产生可计分结论"
+
+
+def test_R1_thought_only_cannot_become_an_action():
+    stop = json.dumps({"type": "STOP"})
+    assert _extract_json(THINK_O + stop + THINK_C) is None
+    assert _extract_json(THINK_O + stop) is None
+
+
+def test_R1_final_content_after_thought_is_used():
+    final = json.dumps({"assessment": "unscored", "reason": "no final yet"})
+    parsed = parse_judge_output(THINK_O + SCORED + THINK_C + "\n" + final)
+    assert parsed.ok and parsed.assessment == "unscored"
+    action = _extract_json(
+        THINK_O + json.dumps({"type": "STOP"}) + THINK_C + "\n" + json.dumps({"type": "ASSEMBLE", "rationale": "r"})
+    )
+    assert action and action["type"] == "ASSEMBLE"
+
+
+def test_R1_assembler_thought_only_falls_back(tmp_path):
+    payload = {"answer": "首次需要登记。", "claims": [{"claim_id": "c1", "text": "首次需要登记。", "evidence_ids": ["ev_a"]}], "gaps": []}
+    asm = _assembler(THINK_O + json.dumps(payload, ensure_ascii=False) + THINK_C, tmp_path=tmp_path)
+    cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), _pack())
+    assert cands[0].fallback_render is True
+
+
+def test_R2_late_cited_evidence_enters_judge_input():
+    from framework.evaluation import SemanticJudge
+
+    template = PromptTemplate(
+        stage_id="judge_eval", template_id="unit.judge", version="2", role="judge_eval",
+        text="JBT_STAGE=JUDGE_EVAL\nINPUT_JSON\n{{input_json}}\n", source_path="unit",
+    )
+    judge = SemanticJudge(None, template, rubric={}, max_evidence_chars=12000)
+    candidate = AnswerCandidate(
+        "c1", "The current room is C04.",
+        claims=[Claim("cl1", "The current room is C04.", ["E2"])],
+    )
+    evidence = [{"evidence_id": "E1", "text": "x" * 12000}, {"evidence_id": "E2", "text": "The current room is C04."}]
+    payload = judge.build_input(Task("t", "p", "x"), candidate, evidence)
+    ids = [r["evidence_id"] for r in payload["evidence"]]
+    assert "E2" in ids, "被引用的关键证据必须完整进入裁判输入"
+    assert payload["evidence_plan"]["input_completeness"] == "declared_omission"
+    assert payload["evidence_plan"]["omitted_ids"] == ["E1"]
+    assert payload["evidence_plan"]["truncated"] is False
+
+
+def test_R2_qualifier_is_not_cut_mid_evidence():
+    from framework.evaluation import SemanticJudge
+
+    template = PromptTemplate(
+        stage_id="judge_eval", template_id="unit.judge", version="2", role="judge_eval",
+        text="JBT_STAGE=JUDGE_EVAL\nINPUT_JSON\n{{input_json}}\n", source_path="unit",
+    )
+    judge = SemanticJudge(None, template, rubric={}, max_evidence_chars=12000)
+    candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E2"])])
+    text = "x" * 11998 + "NOT CURRENT"
+    payload = judge.build_input(Task("t", "p", "x"), candidate, [{"evidence_id": "E2", "text": text}])
+    row = payload["evidence"][0]
+    assert row["text"].endswith("NOT CURRENT")
+    assert row["span"]["complete"] is True and row["span"]["included_len"] == len(text)
+
+
+def test_R2_missing_cited_evidence_is_unusable_not_failed():
+    from framework.evaluation import SemanticJudge
+
+    template = PromptTemplate(
+        stage_id="judge_eval", template_id="unit.judge", version="2", role="judge_eval",
+        text="JBT_STAGE=JUDGE_EVAL\nINPUT_JSON\n{{input_json}}\n", source_path="unit",
+    )
+    judge = SemanticJudge(None, template, rubric={}, max_evidence_chars=20000)
+    candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E9"])])
+    verdict = judge.evaluate(Task("t", "p", "x"), candidate, eval_run_id="eval_unit", evidence=[])
+    assert verdict.usable is False
+    assert verdict.basis == "unscored:evidence_input_incomplete"
+
+
+def test_R3_candidate_pack_scope_excludes_late_material(tmp_path):
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "packs.jsonl").write_text(
+        json.dumps({"pack_id": "P1", "materials": [{"kind": "fact", "value": "C04", "evidence_ids": ["E1"]}]}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    rows = [
+        {"evidence_id": "E1", "text": "C04", "source_event_id": "e1", "node_id": "n1"},
+        {"evidence_id": "E2", "text": "later sibling material", "source_event_id": "e2", "node_id": "n2"},
+    ]
+    candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E1"])], evidence_pack_ids=["P1"])
+    scoped, info = runner.candidate_evidence_scope(str(ep), candidate, rows, mode="candidate_pack")
+    assert [r["evidence_id"] for r in scoped] == ["E1"], "冻结后才出现的材料不能替候选补证"
+    assert info["status"] == "pack" and info["episode_pool_count"] == 2
+    pooled, info2 = runner.candidate_evidence_scope(str(ep), candidate, rows, mode="episode_pool")
+    assert len(pooled) == 2 and info2["status"] == "episode_pool"
+
+
+def test_R3_pack_unavailable_falls_back_to_cited(tmp_path):
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    rows = [{"evidence_id": "E1", "text": "C04"}]
+    candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E1"])], evidence_pack_ids=["P_missing"])
+    scoped, info = runner.candidate_evidence_scope(str(ep), candidate, rows, mode="candidate_pack")
+    assert [r["evidence_id"] for r in scoped] == ["E1"]
+    assert info["status"] == "pack_unavailable_cited_fallback"
+
+
+def test_R4_self_claim_cannot_launder_unsupported_answer(tmp_path):
+    source = "The archive room is B17. The room color is not recorded."
+    invented = (
+        "The archive room has violet walls and copper shelves, and its ceiling contains a painted map "
+        "of a fictional island with seven small lakes."
+    )
+    pack = EvidencePack("P1", "t1", materials=[{"kind": "raw_response", "value": source, "evidence_ids": ["E1"]}])
+    data = {"answer": invented, "claims": [{"claim_id": "C1", "text": invented, "evidence_ids": ["E1"]}], "gaps": []}
+    validated, problems = LLMAssembler(None, None)._validate(data, pack)
+    assert validated is None and any(p.startswith("answer_not_grounded_in_pack") for p in problems)
+
+
+def test_R4_diagnostics_separate_structural_relations(tmp_path):
+    source = "The archive room is B17 and the room color is not recorded in this note."
+    short_assertion = "The walls are violet."
+    answer = source + "\n" + short_assertion
+    pack = EvidencePack("P1", "t1", materials=[{"kind": "raw_response", "value": source, "evidence_ids": ["E1"]}])
+    data = {"answer": answer, "claims": [{"claim_id": "C1", "text": source, "evidence_ids": ["E1"]}], "gaps": []}
+    asm = _assembler(json.dumps(data), tmp_path=tmp_path)
+    cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), pack)
+    diag = cands[0].assembly_config["diagnostics"]
+    assert diag["structural_only"] is True
+    # 短断言被豁免：结构门槛过了，但不代表它得到支持
+    assert diag["answer_evidence"]["exempt_short_lines"] == 1
+    assert diag["answer_evidence"]["uncovered_ratio"] == 0.0
+    # 长段落与 claim 对齐、claim 与引用对齐，是两个独立诊断
+    assert diag["answer_claim"]["coverage_ratio"] == 1.0
+    assert diag["claim_citation"]["aligned_ratio"] == 1.0
+
+
+def test_R5_path_is_stable_before_and_after_creation(tmp_path):
+    project = tmp_path / "project"
+    (project / "configs").mkdir(parents=True)
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    cfg = {"_config_path": str(project / "configs" / "experiment.yaml")}
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.chdir(launch)
+        before = runner.resolve_path(cfg, "../results")
+        (project / "results").mkdir()
+        after = runner.resolve_path(cfg, "../results")
+    finally:
+        monkeypatch.undo()
+    assert before == after == str(project / "results")
+
+
+def test_R5_explicit_cwd_base_and_unknown_value(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = {"_config_path": str(tmp_path / "cfg.yaml"), "experiment": {"path_base": "cwd"}}
+    assert runner.resolve_path(cfg, "out") == str(tmp_path / "out")
+    bad = {"_config_path": str(tmp_path / "cfg.yaml"), "experiment": {"path_base": "guess"}}
+    with pytest.raises(ValueError):
+        runner.path_base(bad)
+
+
+def test_R6_template_snapshot_hash_matches_bytes(tmp_path):
+    source = tmp_path / "plan.txt"
+    raw = ("JBT_STAGE=PLAN\r\nINPUT_JSON\r\n{{input_json}}\r\n").encode("utf-8")
+    source.write_bytes(raw)
+    cfg = {"_config_path": str(tmp_path / "cfg.yaml"), "prompts": {"plan": {"id": "p", "version": "1", "path": str(source)}}}
+    registry = PromptRegistry.from_config(cfg)
+    rows = registry.freeze(str(tmp_path / "run"))
+    snapshot = tmp_path / "run" / rows[0]["snapshot_path"]
+    assert snapshot.read_bytes() == raw
+    import hashlib
+
+    assert rows[0]["sha256"] == hashlib.sha256(raw).hexdigest()
+    frozen = PromptRegistry.load_frozen(str(tmp_path / "run"), rows)
+    assert frozen["plan"].text == raw.decode("utf-8")

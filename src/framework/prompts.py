@@ -15,7 +15,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 RENDERER_VERSION = "single-substitute@v1"
 PLACEHOLDER = "{{input_json}}"
@@ -120,8 +120,8 @@ class PromptRegistry:
                 raise PromptError(f"prompts.{stage}.version 缺失（模板必须有显式版本）")
             if not os.path.exists(path):
                 raise PromptError(f"模板文件不存在：{path}")
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
+            # 按字节读取：保留源文件的换行，哈希对象就是实际模板字节
+            text = open(path, "rb").read().decode("utf-8")
             templates[stage] = PromptTemplate(
                 stage_id=stage,
                 template_id=template_id,
@@ -157,8 +157,9 @@ class PromptRegistry:
             tpl = self.templates[stage]
             name = f"{stage.replace('/', '_')}-{tpl.sha256[:12]}.txt"
             path = os.path.join(out_dir, name)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(tpl.text)
+            # R6：按 UTF-8 固定字节落盘，避免 Windows 文本模式改写换行导致文件哈希不一致
+            with open(path, "wb") as f:
+                f.write(tpl.text.encode("utf-8"))
             tpl.snapshot_path = os.path.join("prompts", name)
             rows.append(tpl.manifest_row())
         self._snapshot_root = run_root
@@ -178,9 +179,9 @@ class PromptRegistry:
                 raise PromptError(f"模板快照越出运行目录：{rel}")
             if not os.path.exists(path):
                 raise PromptError(f"模板快照缺失：{path}")
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
-            actual = sha256_text(text)
+            raw = open(path, "rb").read()
+            text = raw.decode("utf-8")
+            actual = hashlib.sha256(raw).hexdigest()
             expected = str(row.get("sha256") or "")
             if expected and actual != expected:
                 raise PromptError(f"模板快照 hash 不符：{rel}（期望 {expected[:12]}，实际 {actual[:12]}）")
@@ -200,22 +201,61 @@ class PromptRegistry:
         return out
 
 
-def strip_think_blocks(text: str) -> str:
-    """去掉服务端内联的完整 think 块；不触碰 Target 自然文本。
+# --------------------------------------------------------------------------
+# 最终内容判定（R1）
+# --------------------------------------------------------------------------
+#: 有版本的适配器：只有"最终内容"能进入动作/装配/裁判解析，推理块一律不算
+THINK_ADAPTER_VERSION = "inline-think@v2"
+THINK_TAGS = (
+    ("<think>", "</think>"),
+    ("<analysis>", "</analysis>"),
+    ("<thinking>", "</thinking>"),
+    ("<reasoning>", "</reasoning>"),
+)
 
-    只处理成对标签；未闭合的块原样保留（由解析失败进入有限恢复，而不是猜测）。
+
+def final_content(text: str) -> Tuple[str, Dict[str, Any]]:
+    """从组件响应里取出"最终内容"，并返回适配器元信息。
+
+    规则（与契约「输出语义」一致）：
+    - 成对的推理块整体删除；
+    - 未闭合的推理块：从块首截断，其后全部视为推理（不能把里面的 JSON 当最终输出）；
+    - 孤立的结束标签：其之前的内容视为推理；
+    - 删除后为空 → 无最终内容，调用方必须按不可用处理。
+
+    只用于组件输出（Controller/Assembler/Judge），不要拿去改写 Target 原始材料。
     """
+    meta: Dict[str, Any] = {
+        "adapter_version": THINK_ADAPTER_VERSION,
+        "stripped_blocks": 0,
+        "unclosed_block": False,
+        "orphan_close": False,
+        "raw_chars": len(str(text or "")),
+    }
     out = str(text or "")
-    for open_tag, close_tag in ((" thinking", "</think>"), ("<analysis>", "</analysis>")):
+    for open_tag, close_tag in THINK_TAGS:
         while True:
             start = out.find(open_tag)
             if start < 0:
                 break
-            end = out.find(close_tag, start)
+            end = out.find(close_tag, start + len(open_tag))
+            meta["stripped_blocks"] += 1
             if end < 0:
+                out = out[:start]
+                meta["unclosed_block"] = True
                 break
             out = out[:start] + out[end + len(close_tag):]
-    return out
+    for _, close_tag in THINK_TAGS:
+        idx = out.find(close_tag)
+        if idx >= 0:
+            out = out[idx + len(close_tag):]
+            meta["orphan_close"] = True
+    out = out.strip()
+    meta["final_chars"] = len(out)
+    meta["has_final_content"] = bool(out)
+    return out, meta
 
 
-THINK_ADAPTER_VERSION = "inline-think-strip@v1"
+def strip_think_blocks(text: str) -> str:
+    """兼容旧调用：返回最终内容（推理块已剔除）。"""
+    return final_content(text)[0]

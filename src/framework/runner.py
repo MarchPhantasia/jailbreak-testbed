@@ -48,19 +48,29 @@ def load_config(path: str) -> Dict[str, Any]:
     return cfg
 
 
-def resolve_path(cfg: Dict[str, Any], value: str) -> str:
-    """相对路径解析：工作目录下存在就用它，否则按配置文件所在目录解析。
+PATH_BASES = ("config", "cwd")
 
-    这样 `configs/experiment.yaml` 里的 `fixtures/...`（历史用法）与
-    `configs/real-dev.*.yaml` 里的 `../data/...`（配置目录相对）都能工作。
+
+def path_base(cfg: Dict[str, Any]) -> str:
+    """相对路径基准目录（R5）：默认配置文件目录，可用 experiment.path_base=cwd 显式切换。
+
+    解析结果只取决于配置与 cwd，**不取决于目标是否已经存在**；输出目录未创建时
+    与创建后必须解析到同一位置。
     """
+    exp = cfg.get("experiment", {}) or {}
+    base = str(exp.get("path_base") or "config").lower()
+    if base not in PATH_BASES:
+        raise ValueError(f"experiment.path_base 只能是 {PATH_BASES}：{base!r}")
+    if base == "cwd" or not cfg.get("_config_path"):
+        return os.getcwd()
+    return os.path.dirname(os.path.abspath(cfg["_config_path"]))
+
+
+def resolve_path(cfg: Dict[str, Any], value: str) -> str:
+    """把配置里的相对路径解析成确定的绝对路径（不按 exists 猜测）。"""
     if not value or os.path.isabs(value):
         return value
-    if os.path.exists(value):
-        return value
-    base = os.path.dirname(os.path.abspath(cfg.get("_config_path") or os.getcwd()))
-    candidate = os.path.normpath(os.path.join(base, value))
-    return candidate if os.path.exists(candidate) else value
+    return os.path.normpath(os.path.join(path_base(cfg), value))
 
 
 def results_root(cfg: Dict[str, Any]) -> str:
@@ -92,6 +102,7 @@ class RunContext:
 
 def build_run_context(cfg: Dict[str, Any]) -> RunContext:
     """任何模型调用之前完成全部校验；非法配置直接抛错，不回退 mock。"""
+    path_base(cfg)  # 未知 path_base 在这里直接报错，不等到写产物
     routing = resolve_routing(cfg)
     limits = validate_budget(cfg)
     spec = validate_evaluation(cfg)
@@ -164,7 +175,13 @@ def resolve_rubric(cfg: Dict[str, Any], task: Task) -> Rubric:
 def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
     ds = cfg.get("datasets", {}) or {}
     name = ds.get("adapter", "synthetic_library")
-    path = resolve_path(cfg, str(ds.get("path", "fixtures/synthetic_library/tasks.jsonl")))
+    configured = str(ds.get("path", "fixtures/synthetic_library/tasks.jsonl"))
+    path = resolve_path(cfg, configured)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"数据集文件不存在：{path}（配置值 {configured!r}，基准目录 {path_base(cfg)!r}；"
+            "可用 experiment.path_base=cwd 切换为工作目录相对）"
+        )
     exp_seed = int((cfg.get("experiment", {}) or {}).get("seed", 20261110))
     split_seed = int(ds.get("split_seed", exp_seed))
     # N14：revision 必须传到 adapter 与 manifest，不静默变成 pinned
@@ -449,6 +466,8 @@ def check_services(cfg: Dict[str, Any], ctx: Optional[RunContext] = None) -> Dic
         "generation_ok": local_ok,
         "probed": bool(controller.get("probed") or assembler.get("probed")),
         "roles": [r for r in ("controller", "assembler") if result["roles"].get(r)],
+        "model": {r: (result["roles"].get(r) or {}).get("model") for r in ("controller", "assembler") if result["roles"].get(r)},
+        "usage": {r: (result["roles"].get(r) or {}).get("usage") for r in ("controller", "assembler") if result["roles"].get(r)},
         "controller": controller,
         "assembler": assembler,
     }
@@ -704,6 +723,8 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
         rubric=dict(spec.get("rubric") or {}),
         max_format_retries=int(spec.get("max_format_retries", 1)),
         judge_ref=f"{template.template_id}@{template.version}",
+        max_evidence_chars=int(spec.get("max_evidence_chars", 20000)),
+        evidence_scope=str(spec.get("evidence_scope") or "candidate_pack"),
     )
     store.append(
         "evaluation_started",
@@ -722,6 +743,65 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
         },
     )
     return judge, store, guard, gateway
+
+
+def _load_packs(ep_dir: str) -> Dict[str, Dict[str, Any]]:
+    path = os.path.join(ep_dir, "packs.jsonl")
+    packs: Dict[str, Dict[str, Any]] = {}
+    if not os.path.exists(path):
+        return packs
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            packs[str(row.get("pack_id", ""))] = row
+    return packs
+
+
+def candidate_evidence_scope(ep_dir: str, candidate: AnswerCandidate, episode_evidence: List[Dict[str, Any]], mode: str = "candidate_pack"):
+    """候选实际得到的允许证据 vs episode 全量材料（R3）。
+
+    - candidate_pack：只用该候选冻结证据包里的材料，避免"答案冻结后才出现的材料"替它补证；
+    - episode_pool：全量材料，仅作为显式声明的替代协议/分析口径；
+    - 证据包不可用时退回 claims 引用集合，并如实记录状态。
+    """
+    by_id = {row.get("evidence_id"): row for row in episode_evidence}
+    packs = _load_packs(ep_dir)
+    pack_ids = list(candidate.evidence_pack_ids)
+    allowed_ids: List[str] = []
+    for pid in pack_ids:
+        pack = packs.get(pid)
+        if not pack:
+            continue
+        for material in pack.get("materials") or []:
+            for eid in material.get("evidence_ids") or []:
+                if eid not in allowed_ids:
+                    allowed_ids.append(eid)
+    cited_ids = sorted({i for c in candidate.claims for i in c.evidence_ids})
+    status = "pack"
+    if not allowed_ids:
+        allowed_ids = cited_ids
+        status = "pack_unavailable_cited_fallback"
+    info = {
+        "mode": mode,
+        "status": status,
+        "pack_ids": pack_ids,
+        "allowed_count": len(allowed_ids),
+        "episode_pool_count": len(episode_evidence),
+        "cited_count": len(cited_ids),
+        "missing_allowed_ids": [i for i in allowed_ids if i not in by_id],
+        "claims_with_cited_pack_evidence": sum(1 for c in candidate.claims if set(c.evidence_ids) & set(allowed_ids)),
+        "claims_total": len(candidate.claims),
+    }
+    if mode == "episode_pool":
+        info["status"] = "episode_pool"
+        return list(episode_evidence), info
+    return [by_id[i] for i in allowed_ids if i in by_id], info
 
 
 def _read_evidence(ep_dir: str, wanted: Optional[set]) -> List[Dict[str, Any]]:
@@ -797,6 +877,7 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
         candidate = None
         failure_established = False
         basis = ""
+        scope_info: Dict[str, Any] = {}
 
         final_obj: Optional[Dict[str, Any]] = None
         try:
@@ -825,9 +906,14 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                         if candidate is None:
                             outcome, basis = EpisodeOutcome.UNRESOLVED, "missing_candidate:artifact_unavailable"
                         elif spec.get("type") == "llm":
-                            # 评价证据 = 该 episode 的全部证据（Target 材料），不是 claims 引用到的子集：
-                            # 只给子集会把"引用没写全"误判成"证据不足"。claims 的引用仍在候选里单独记录。
-                            evidence = _read_evidence(ep_dir, None)
+                            # R3：来源判定用候选冻结证据包；episode 全量只作显式替代协议/分析口径
+                            episode_evidence = _read_evidence(ep_dir, None)
+                            evidence, scope_info = candidate_evidence_scope(
+                                ep_dir,
+                                candidate,
+                                episode_evidence,
+                                mode=str(spec.get("evidence_scope") or "candidate_pack"),
+                            )
                             verdict = judge.evaluate(
                                 task,
                                 candidate,
@@ -836,6 +922,7 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                                 rubric_version=str((spec.get("rubric") or {}).get("version", "v1")),
                                 node_id=entry.get("episode_id", ""),
                             )
+                            scope_info["input"] = (verdict.payload or {}).get("evidence_plan")
                             assert eval_store is not None
                             SemanticJudge.record(eval_store, verdict, task_id)
                             ev = decide_outcome(
@@ -890,6 +977,7 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                     else {}
                 ),
                 "fallback_render": bool(candidate.fallback_render) if candidate else None,
+                "evidence_scope": scope_info,
             }
         )
         if verdict is not None:

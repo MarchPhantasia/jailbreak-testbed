@@ -2,6 +2,40 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.5.0] — 2026-11-13
+
+按审查包 `execution1-619709f`（R1–R6）修复；Target 接线切到 InferKnock（本地未试跑，缺凭证）。
+仓库 217 项、九套检查全过。
+
+### 修复
+
+- **R1** 最终内容适配器 `inline-think@v2`：修正起始标签（原代码写成缺 `<` 的 `" think"`），
+  未闭合块从块首截断，孤立结束标签之前视为推理；Controller / Assembler / Judge 统一使用，
+  只有推理或空内容不再产生动作、答案或计分结论。
+- **R2** 裁判证据选择 `cited-first-whole@v1`：被引用证据优先且完整；其余整条装入，装不下整条省略并记录；
+  不再按 12,000 字符静默切前缀或截断单条证据；新增 `evidence_plan` 与证据区间完整性；
+  引用证据缺失时记 `unscored:evidence_input_incomplete`。上限 `evaluation.max_evidence_chars` 贯通冻结。
+- **R3** 来源判定默认使用候选冻结证据包（`evaluation.evidence_scope=candidate_pack`），
+  episode 全量只作显式替代协议/分析口径；证据包缺失时退回 claims 引用并记录状态。
+- **R4** 覆盖检查改为只与证据原文比对（修掉"answer+claim 同时写材料外内容即通过"），
+  拆分为 `answer_evidence` / `answer_claim` / `claim_citation` 三项结构诊断；短行豁免单独计数；
+  `judge_eval.v2.txt` 明确引用质量是诊断、`source_compliance` 只看实质支持与条件保留。
+- **R5** `experiment.path_base`（config 默认 / cwd 显式）：相对路径确定解析，不再按 exists 猜测；
+  输出目录创建前后一致，换工作目录不漂移。
+- **R6** 模板按 UTF-8 字节读取/落盘/哈希；测试改用临时目录。
+
+### 变更
+
+- Target 路由改为 InferKnock `deepseek-v4.1-flash`（`target_query`: high / 8192 / thinking enabled，无 temperature）；
+  Assembler 关闭 thinking、8192；Judge_eval 同源（报告须注明）。
+- 新增 `prompts/judge_eval.v2.txt`；`configs/real-dev.example.yaml` 增加 `path_base`、证据策略字段。
+- `records.jsonl` 增加 `evidence_scope`；`plan.json.evaluation_spec` 增加 `evidence_scope` / `max_evidence_chars`。
+
+### 已知限制
+
+- InferKnock 未试跑：本会话无 `INFERKNOCK_API_KEY`（接口返回 401），真实小批次与 Assembler 对照待执行。
+- 结构诊断不证明语义支持；裁判仍需人工一致性校准。
+
 ## [code-v0.4.1] — 2026-11-12
 
 远端 CI：[run 43315126285](https://github.com/MarchPhantasia/jailbreak-testbed/actions/runs/43315126285) success（16s）。执行包 `execution1-r2` 六套历史验收 + harness + next + routing 共 290 项在推送前全部通过。

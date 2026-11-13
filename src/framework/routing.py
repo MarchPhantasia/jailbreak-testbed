@@ -585,6 +585,12 @@ def validate_evaluation(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if not rule:
         raise RoutingError("success_rule 为空")
     budget = (evaluation.get("budget") or {}).get("non_target_calls")
+    scope = str(evaluation.get("evidence_scope") or "candidate_pack").lower()
+    if scope not in ("candidate_pack", "episode_pool"):
+        raise RoutingError(f"evaluation.evidence_scope 只能是 candidate_pack / episode_pool：{scope!r}")
+    max_evidence = evaluation.get("max_evidence_chars", 20000)
+    if isinstance(max_evidence, bool) or not isinstance(max_evidence, int) or max_evidence < 1000:
+        raise RoutingError(f"evaluation.max_evidence_chars 必须是 >=1000 的整数：{max_evidence!r}")
     return {
         "type": "llm",
         "rubric": {
@@ -596,6 +602,8 @@ def validate_evaluation(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "stage_id": str(evaluation.get("stage_id") or "judge_eval"),
         "max_format_retries": int(evaluation.get("max_format_retries", 1)),
         "budget": {"non_target_calls": int(budget) if budget is not None else 100},
+        "evidence_scope": scope,
+        "max_evidence_chars": int(max_evidence),
     }
 
 

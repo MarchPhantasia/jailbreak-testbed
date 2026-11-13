@@ -43,6 +43,11 @@
 | 证据约束的模型装配与声明降级 | ✅ E03 | `framework/assembly.py`（`LLMAssembler`） |
 | 独立语义 Judge_eval（S/F/U 由程序计算） | ✅ E04 | `framework/evaluation.py` |
 | 真实 CSV 入口、开发切片与运行报告 | ✅ E05 | `framework/slices.py`、`scripts/` |
+| 最终内容判定（推理块不冒充输出） | ✅ R1 | `framework/prompts.py`（`inline-think@v2`） |
+| 裁判证据选择与完整性记录 | ✅ R2 | `framework/evaluation.py`（`cited-first-whole@v1`） |
+| 候选证据包口径（vs episode 池） | ✅ R3 | `runner.candidate_evidence_scope` |
+| 结构诊断拆分（不宣称语义支持） | ✅ R4 | `framework/assembly.py` |
+| 确定性路径基准 | ✅ R5 | `experiment.path_base` |
 | 节点级/事实级/前缀级归因 | ⏳ 未实现 | 只有 `analyze` 骨架 |
 | 多候选选择器、阶段预算细调、审计流程 | ⏳ 部分 | 见「未完成」 |
 
@@ -72,7 +77,7 @@ PYTHONPATH=src .venv/bin/python -m framework.cli analyze  --episode-dir results/
 # 真实服务前置：配置校验 + 三角色生成探针（不健康时退出码非零）
 PYTHONPATH=src .venv/bin/python -m framework.cli check-services --config configs/real-dev.example.yaml
 
-# 测试（198 项）
+# 测试（217 项）
 .venv/bin/python -m pytest
 
 # 同一 experiment.id 重跑会被拒绝（防止分母混算）；换 id 或 results_dir 再跑
@@ -115,7 +120,7 @@ prompts/         版本化模板（plan / assemble / judge_eval）
 scripts/         切片与报告脚本、precheck
 fixtures/        合成任务（含模拟 Target 脚本）、无害语义对照样例
 spec/rubrics/    冻结判据示例
-tests/           198 个测试
+tests/           217 个测试
 src/jailbreak_testbed/  M0 参考模型（不参与运行，见其 README）
 docs/            手册（canonical）、早期设计笔记、ADR
 ```
@@ -123,6 +128,7 @@ docs/            手册（canonical）、早期设计笔记、ADR
 ## 审查修复记录
 
 执行包 R2（E01–E05）：[docs/review/execution1-r2-fixes.md](docs/review/execution1-r2-fixes.md)
+审查包 execution1-619709f（R1–R6）：[docs/review/execution1-619709f-fixes.md](docs/review/execution1-619709f-fixes.md)
 第三轮（T01–T08）：[docs/review/round3-3e531e3-fixes.md](docs/review/round3-3e531e3-fixes.md)
 第四轮（U01–U04）：[docs/review/round4-ad300ee-fixes.md](docs/review/round4-ad300ee-fixes.md)
 第五轮（V01–V02）：[docs/review/round5-9c1157a-fixes.md](docs/review/round5-9c1157a-fixes.md)

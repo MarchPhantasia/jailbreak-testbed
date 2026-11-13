@@ -1,9 +1,10 @@
 # 冒烟配置：合成任务 + 模拟 Target，不联网
 experiment:
   id: smoke_syn
+  path_base: config            # 相对路径以配置文件目录为基准（可改成 cwd）
   seed: 20261110
   session_mode: stateless      # stateless | server_side
-  results_dir: results
+  results_dir: ../results
   max_steps: 8
 
   budget:
@@ -14,11 +15,11 @@ experiment:
 
 datasets:
   adapter: synthetic_library
-  path: fixtures/synthetic_library/tasks.jsonl
+  path: ../fixtures/synthetic_library/tasks.jsonl
   split: dev
   dev_ratio: 1                 # 1=全部进开发池；正式实验用 2
   split_seed: 20261110
-  manifests_dir: data/manifests
+  manifests_dir: ../data/manifests
 
 method:
   name: independent@v0.1

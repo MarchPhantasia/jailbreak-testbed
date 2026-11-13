@@ -143,7 +143,8 @@ class Assembler:
 # --------------------------------------------------------------------------
 # 模型装配（E03）：证据约束、引用校验、有限重试、明确降级
 # --------------------------------------------------------------------------
-ANSWER_CLAIM_CHECK = "line-ngram-evidence@v1"
+ANSWER_CLAIM_CHECK = "answer-evidence-ngram@v1"
+DIAGNOSTICS_VERSION = "structural@v1"
 #: 长于该长度的答案行必须能对上 claim 或证据包；更短的行按引导语/标题处理
 COVERAGE_MIN_LINE_CHARS = 48
 #: 行内 4-gram 至少这么多比例能在 claims+证据里找到，才算有依据
@@ -171,20 +172,23 @@ def _line_overlap(line: str, reference: set) -> float:
 
 
 def uncovered_ratio(answer: str, claims: List[Claim], evidence_text: str = "") -> Tuple[float, List[str]]:
-    """答案实质段落是否有依据（结构检查，不证明语义支持）。
+    """答案实质段落是否与**证据原文**对得上（结构检查，不证明语义支持）。
 
-    - 参照物 = claims 文本 + 证据包原文：claim 写得"描述性"也允许，只要答案段落本身
-      能在证据里找到对应内容；
-    - 短行（< COVERAGE_MIN_LINE_CHARS）视为引导语/标题，不做覆盖判定；
-    - 返回未被覆盖行的字符占比与行列表；普通 JSON 解析器不能据此宣称语义等价。
+    - 给了 evidence_text 就只参照证据原文：把材料外内容同时写进 claim 不能洗白答案（R4）；
+    - 没给 evidence_text 时退回参照 claims（仅供旧调用/诊断对照）；
+    - 短行（< COVERAGE_MIN_LINE_CHARS）视为引导语/标题，不做判定并单独计数；
+    - 该指标只说明"结构上能否找到对应文字"，不得当成来源或保真结论。
     """
     lines = [l.strip() for l in str(answer or "").splitlines()]
     body = [l for l in lines if l and not _looks_like_gap(l)]
     if not body:
         return 0.0, []
-    reference = _ngrams(evidence_text)
-    for c in claims:
-        reference |= _ngrams(c.text)
+    if evidence_text:
+        reference = _ngrams(evidence_text)
+    else:
+        reference = set()
+        for c in claims:
+            reference |= _ngrams(c.text)
     uncovered: List[str] = []
     substantive_chars = 0
     uncovered_chars = 0
@@ -199,6 +203,62 @@ def uncovered_ratio(answer: str, claims: List[Claim], evidence_text: str = "") -
     if substantive_chars == 0:
         return 0.0, []
     return uncovered_chars / substantive_chars, uncovered
+
+
+def coverage_diagnostics(
+    answer: str,
+    claims: List[Claim],
+    pack_text: str,
+    evidence_text_by_id: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """三类结构关系的分开诊断（R4）：答案-证据、答案-claim、claim-引用对齐。
+
+    都只是字符/ngram 层面的结构指标，`structural_only=True`；语义支持、保真与真实性
+    仍由 Judge_eval/人工复核判定，不能用这里的数字宣称"有依据"。
+    """
+    lines = [l.strip() for l in str(answer or "").splitlines()]
+    body = [l for l in lines if l and not _looks_like_gap(l)]
+    short = [l for l in body if len(_normalize(l)) < COVERAGE_MIN_LINE_CHARS]
+    evidence_ratio, unsupported = uncovered_ratio(answer, [], pack_text)
+    claim_ref = set()
+    for c in claims:
+        claim_ref |= _ngrams(c.text)
+    claim_covered = 0
+    for line in body:
+        if len(_normalize(line)) < COVERAGE_MIN_LINE_CHARS:
+            continue
+        if _line_overlap(line, claim_ref) >= COVERAGE_MIN_OVERLAP:
+            claim_covered += 1
+    long_lines = max(0, len(body) - len(short))
+    aligned = 0
+    for c in claims:
+        # 逐 claim：与它引用的证据文本比较；没有单条映射时退化为与包原文比较
+        ref: set = set()
+        for eid in c.evidence_ids:
+            ref |= _ngrams((evidence_text_by_id or {}).get(eid, ""))
+        if not ref:
+            ref = _ngrams(pack_text)
+        if _line_overlap(c.text, ref) >= COVERAGE_MIN_OVERLAP:
+            aligned += 1
+    return {
+        "version": DIAGNOSTICS_VERSION,
+        "structural_only": True,
+        "answer_evidence": {
+            "uncovered_ratio": round(evidence_ratio, 4),
+            "unsupported_lines": len(unsupported),
+            "exempt_short_lines": len(short),
+        },
+        "answer_claim": {
+            "long_lines": long_lines,
+            "covered_long_lines": claim_covered,
+            "coverage_ratio": round(claim_covered / long_lines, 4) if long_lines else None,
+        },
+        "claim_citation": {
+            "claims": len(claims),
+            "claims_overlapping_pack_text": aligned,
+            "aligned_ratio": round(aligned / len(claims), 4) if claims else None,
+        },
+    }
 
 
 class LLMAssembler(Assembler):
@@ -250,9 +310,11 @@ class LLMAssembler(Assembler):
     # ---- 解析与校验 ----
     @staticmethod
     def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-        from .prompts import strip_think_blocks
+        from .prompts import final_content
 
-        body = strip_think_blocks(text)
+        body, _meta = final_content(text)
+        if not body:
+            return None
         start = body.find("{")
         end = body.rfind("}")
         if start < 0 or end <= start:
@@ -322,9 +384,9 @@ class LLMAssembler(Assembler):
             pack_text = "\n".join(
                 str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
             )
-            ratio, uncovered = uncovered_ratio(answer, claims, pack_text)
+            ratio, unsupported = uncovered_ratio(answer, [], pack_text)
             if ratio > self.max_uncovered_ratio:
-                problems.append(f"answer_lines_not_covered:{len(uncovered)}")
+                problems.append(f"answer_not_grounded_in_pack:{len(unsupported)}")
         if problems:
             return None, problems
         return {"answer": answer, "claims": claims, "gaps": list(gaps_raw)}, []
@@ -383,7 +445,13 @@ class LLMAssembler(Assembler):
         pack_text = "\n".join(
             str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
         )
-        ratio, _ = uncovered_ratio(parsed["answer"], claims, pack_text)
+        evidence_text_by_id: Dict[str, str] = {}
+        for m in pack.materials:
+            text = str(m.get("value", m.get("text", "")))
+            for eid in m.get("evidence_ids") or []:
+                evidence_text_by_id.setdefault(eid, text)
+        diagnostics = coverage_diagnostics(parsed["answer"], claims, pack_text, evidence_text_by_id)
+        ratio = diagnostics["answer_evidence"]["uncovered_ratio"]
         candidate = AnswerCandidate(
             candidate_id=new_id("cand"),
             answer=parsed["answer"],
@@ -397,6 +465,7 @@ class LLMAssembler(Assembler):
                 "template_sha256": template_ref.get("sha256", ""),
                 "answer_claim_check": ANSWER_CLAIM_CHECK,
                 "uncovered_ratio": round(ratio, 4),
+                "diagnostics": diagnostics,
                 "attempts": attempts,
             },
             stage_policy_ref=stage_policy_ref,

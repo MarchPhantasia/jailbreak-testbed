@@ -4,7 +4,8 @@
 # 密钥只放在环境变量：INFERKNOCK_API_KEY / LOCAL_API_KEY / TARGET_API_KEY。
 # 本文件是本轮"待实现接口"的示例；`python -m framework.cli check-services` 会真实生成探针。
 experiment:
-  id: real_dev_p0_r2_001      # 每次改动机制时换新 id：同 id 重跑会污染分母
+  path_base: config
+  id: real_dev_p0_inferknock_001   # 每次改动机制时换新 id：同 id 重跑会污染分母
   profile: real_dev           # real_dev 强制要求语义裁判与冻结模板
   seed: 20261112
   session_mode: stateless
@@ -20,7 +21,7 @@ experiment:
     wall_ms: null
 datasets:
   adapter: strongreject
-  path: /REPLACE/strongreject.dev.seed20261112.csv   # scripts/select_dev_slice.py 产出
+  path: ../data/slices/strongreject_dataset.dev.seed20261112.csv   # scripts/select_dev_slice.py 产出
   revision: f7cad6c17e624e21d8df2278e918ae1dddb4cb56
   split: dev
   dev_ratio: 1
@@ -92,9 +93,9 @@ prompts:
     version: '1'
     path: ../prompts/assemble.v1.txt
   judge_eval:
-    id: judge-semantic-v1
-    version: '1'
-    path: ../prompts/judge_eval.v1.txt
+    id: judge-semantic-v2
+    version: '2'
+    path: ../prompts/judge_eval.v2.txt
 stages:
   ref: component-routing-r2-v1
   common: {}
@@ -114,15 +115,19 @@ stages:
       temperature: 1.0
       top_p: 0.95
       max_tokens: 8192
-      reasoning_effort: medium
+      # 装配是整理已有材料：冒烟显示 thinking 会吃掉输出预算导致截断，下一轮起点关闭
       extra_body:
         top_k: 20
         chat_template_kwargs:
-          enable_thinking: true
+          enable_thinking: false
           preserve_thinking: false
     target_query:
-      temperature: 0.0
-      max_tokens: 4096
+      # InferKnock/DeepSeek thinking：不发送 temperature；上限覆盖推理 + 最终答案
+      max_tokens: 8192
+      reasoning_effort: high
+      extra_body:
+        thinking:
+          type: enabled
     judge_eval:
       max_tokens: 8192
       reasoning_effort: high
@@ -159,6 +164,9 @@ evaluation:
   type: llm
   stage_id: judge_eval
   max_format_retries: 1
+  # 来源判定用候选冻结证据包；episode 全量只作显式替代协议（另报支持率）
+  evidence_scope: candidate_pack
+  max_evidence_chars: 20000
   budget:
     non_target_calls: 60
   rubric:
@@ -188,15 +196,6 @@ services:
     timeout_s: 180
     max_concurrency: 1
     parameter_profile: deepseek_thinking_proxy
-  target:
-    type: openai
-    base_url: https://target.example.invalid/v1
-    model: REPLACE_TARGET_MODEL
-    api_key_env: TARGET_API_KEY
-    auth_required: true
-    timeout_s: 120
-    max_concurrency: 1
-    parameter_profile: openai_chat
 components:
   controller:
     enabled: true
@@ -208,7 +207,7 @@ components:
     stage_id: assemble
   target:
     enabled: true
-    service_ref: target
+    service_ref: general      # 下一轮：Target = InferKnock DeepSeek（与裁判同源，报告须注明）
     stage_id: target_query
   judge_eval:
     enabled: true

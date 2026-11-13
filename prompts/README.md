@@ -6,7 +6,8 @@
 |---|---|---|---|---|
 | `plan.v1.txt` | plan | controller | v1 | 规划并生成自包含子查询（`{{input_json}}` 单次替换） |
 | `assemble.v1.txt` | assemble | assembler | v1 | 证据约束装配，输出 answer/claims/gaps |
-| `judge_eval.v1.txt` | judge_eval | judge_eval | v1 | 独立语义评价，输出三维度或 unscored |
+| `judge_eval.v1.txt` | judge_eval | judge_eval | v1 | 首版语义评价（保留，旧运行复现用） |
+| `judge_eval.v2.txt` | judge_eval | judge_eval | v2 | 明确证据范围/完整性、引用质量只作诊断 |
 
 约定：
 

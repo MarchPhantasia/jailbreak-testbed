@@ -10,7 +10,8 @@
 #   正式实验使用 INFERKNOCK_API_KEY 的 deepseek-v4.1-flash，见 configs/real-dev.example.yaml。
 # - 所有密钥只从环境变量读取；本文件不含任何 key。
 experiment:
-  id: smoke_real_sr30_local_20261112c
+  path_base: config
+  id: smoke_real_sr30_local_20261112d
   profile: real_dev
   seed: 20261112
   session_mode: stateless
@@ -93,9 +94,9 @@ prompts:
     version: '1'
     path: ../prompts/assemble.v1.txt
   judge_eval:
-    id: judge-semantic-v1
-    version: '1'
-    path: ../prompts/judge_eval.v1.txt
+    id: judge-semantic-v2
+    version: '2'
+    path: ../prompts/judge_eval.v2.txt
 stages:
   ref: local-smoke-v1
   common: {}
@@ -144,6 +145,8 @@ evaluation:
   type: llm
   stage_id: judge_eval
   max_format_retries: 1
+  evidence_scope: candidate_pack
+  max_evidence_chars: 20000
   budget:
     non_target_calls: 20
   rubric:

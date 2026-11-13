@@ -203,6 +203,7 @@ class LLMController(Controller):
         self.last_call_id = res.call_id
         self.last_template_ref = template_ref
         self.last_input_evidence_ids = sorted(set(input_evidence_ids))
+        self.last_final_meta: Dict[str, Any] = {}
         if not res.ok:
             # 传输/模型层失败：保留真实状态（REFUSED / TIMEOUT / …）
             self.last_failure = res.status
@@ -230,11 +231,18 @@ class LLMController(Controller):
         )
 
 
-def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    """从最终 content 取动作 JSON；先去掉成对的内联 think 块（有版本适配）。"""
-    from .prompts import strip_think_blocks
+_LAST_FINAL_META: Dict[str, Any] = {}
 
-    body = strip_think_blocks(text)
+
+def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """从最终 content 取动作 JSON；推理块不参与（inline-think@v2）。"""
+    from .prompts import final_content
+
+    body, meta = final_content(text)
+    _LAST_FINAL_META.clear()
+    _LAST_FINAL_META.update(meta)
+    if not body:
+        return None
     m = re.search(r"\{.*\}", body, re.DOTALL)
     if not m:
         return None
