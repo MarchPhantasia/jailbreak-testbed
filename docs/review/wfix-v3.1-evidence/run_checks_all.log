@@ -1,0 +1,5 @@
+review: 7 passed in 0.25s
+previous: 9 passed in 0.27s
+boundaries: 18 passed in 0.32s
+legacy: CHECK_OUTPUT=/home/pha/sci-deepseek/handoff-v3.1-src/review-f8249dc-handoff-v3.1/legacy_checks/artifacts/20261114T110049Z_69d2bbda
+ARTIFACTS=/home/pha/sci-deepseek/handoff-v3.1-src/review-f8249dc-handoff-v3.1/artifacts/20261114T110047Z_85f8b858

@@ -127,17 +127,20 @@
 - **W02**：三个 episode 的 `evidence_scope.status=pack`、`integrity_complete=true`、
   `allowed_count` 60/45/202、`missing_allowed_ids=[]`，与 `evidence_plan` 的
   `policy=cited-first-whole@v2` 一致。
-- **W03**：`plan.json.assembly_policy.lexical_policy=diagnostic_only`；一处候选的字面覆盖率为 0.9113
-  （答案与材料语言不同），在旧硬门槛下会被判 `answer_not_grounded_in_pack` 并降级，本轮只记诊断、
-  候选按结构保留，语义支持交给裁判。
+- **W03**：`plan.json.assembly_policy.lexical_policy=diagnostic_only`；一处候选的
+  `uncovered_ratio=0.9113`——这是**未覆盖比例**（答案 4-gram 中未在证据原文里出现的占比，
+  该候选答案与材料语言不同），不是"覆盖率"，两者方向相反。在旧硬门槛（阈值 0.25）下它会被判
+  `answer_not_grounded_in_pack` 并降级；本轮只记诊断、候选按结构保留，语义支持交给裁判。
 
 这组数字只说明链路、预算与账本可用，**不是**越狱 ASR，也不代表模型能力或方法效果；
 同源裁判的偏差同样未校准。
 
 ## 6. 未验证 / 下一步
 
-- 未做真实 InferKnock Target / Judge_eval 调用：本会话没有可用的 `INFERKNOCK_API_KEY`，也没有真实
-  StrongREJECT 切片产物。不报告 ASR、服务健康或模型能力。
+- 未做**对齐 Target**（InferKnock `deepseek-v4.1-flash`）的真实调用：本会话没有可用的
+  `INFERKNOCK_API_KEY`，因此没有 InferKnock 的 Target/Judge 产物。这里缺的是对齐 Target 的凭证与
+  对应实验产物；本机 StrongREJECT dev 切片与上节本地替身产物是存在的（§5.1 就是它们的记录），
+  两者不能互相替代。不报告 ASR、服务健康或模型能力。
 - 估算器仍是 `cjk-aware@v1`，不是 token 上界；真实 usage 校准与超窗错误率统计待真实批次。
 - Target/Judge 同模型的同源评价偏差仍需人工校准。
 - 本轮未实现丢失原文的自动恢复、三层归因、Assembler 对照平台与 heldout 实验。

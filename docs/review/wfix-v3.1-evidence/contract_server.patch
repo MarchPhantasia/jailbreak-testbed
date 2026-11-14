@@ -1,0 +1,17 @@
+--- /tmp/contract_server.orig.py	2026-11-14 10:38:31.746294654 +0000
++++ legacy_checks/tools/contract_server.py	2026-11-14 10:38:39.536467838 +0000
+@@ -41,9 +41,12 @@
+                 self.calls.append({'role': role, 'body': body, 'stage_input': {}, 'phase': 'preflight'})
+             return {'id': 'fixture-preflight', 'model': model, 'choices': [{'message': {'content': 'OK'}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 2, 'completion_tokens': 1}}
+         data = {}
+-        if 'INPUT_JSON\n' in text:
++        # X03 test migration: the historical double only matched LF; production templates keep
++        # their bytes, so a Windows temp template may be CRLF. Normalize only in the double.
++        normalized = str(text).replace('\r\n', '\n').replace('\r', '\n')
++        if 'INPUT_JSON\n' in normalized:
+             try:
+-                data, _ = json.JSONDecoder().raw_decode(text.split('INPUT_JSON\n', 1)[1].lstrip())
++                data, _ = json.JSONDecoder().raw_decode(normalized.split('INPUT_JSON\n', 1)[1].lstrip())
+             except (ValueError, TypeError):
+                 data = {}
+         with self._lock:

@@ -1,0 +1,20 @@
+{
+  "repo": "/home/pha/sci-deepseek/jailbreak-testbed",
+  "mode": "all",
+  "exit_code": 0,
+  "network": "intercepted fixture only",
+  "command": [
+    "/home/pha/sci-deepseek/.venv/bin/python",
+    "-m",
+    "pytest",
+    "/home/pha/sci-deepseek/handoff-v2.1-src/review-1bdc47b-handoff-v2.1/test_review_followup.py",
+    "/home/pha/sci-deepseek/handoff-v2.1-src/review-1bdc47b-handoff-v2.1/test_review_guards.py",
+    "-q",
+    "-o",
+    "addopts=",
+    "--tb=short",
+    "-p",
+    "no:cacheprovider",
+    "--basetemp=/home/pha/sci-deepseek/handoff-v2.1-src/review-1bdc47b-handoff-v2.1/artifacts/20261113T224737Z_710bcfb0/pytest"
+  ]
+}

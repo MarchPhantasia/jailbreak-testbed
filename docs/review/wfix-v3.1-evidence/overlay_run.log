@@ -1,0 +1,31 @@
+{"services_overlay": "/home/pha/sci-deepseek/wfix-v3-delivery/services.local.yaml", "services_overlay_sha256": "5bd7ed0dfb536c758b785fbfe48aaa87a0564338b0e097912e845602228127d8", "replaced_service_ids": ["local_uncensored"], "added_service_ids": []}
+{
+  "command": "run",
+  "calls_model": true,
+  "phase": "online",
+  "experiment_id": "smoke_wfix_overlay_20261114b",
+  "episodes": 3,
+  "target_calls": [
+    1,
+    1,
+    1
+  ],
+  "calls_by_role": {
+    "controller": 7,
+    "target": 3,
+    "assembler": 3
+  },
+  "calls_by_stage": {
+    "plan": 7,
+    "target_query": 3,
+    "assemble": 3
+  },
+  "ledger_total": {
+    "target_calls": 3,
+    "served_calls": 13,
+    "cache_hits": 0,
+    "tokens_in": 41400,
+    "tokens_out": 21774,
+    "tokens_in_unknown_calls": 0
+  }
+}

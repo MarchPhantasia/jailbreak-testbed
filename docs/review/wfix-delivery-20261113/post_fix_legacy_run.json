@@ -1,0 +1,13 @@
+{
+  "repo": "/home/pha/sci-deepseek/jailbreak-testbed",
+  "mode": "legacy",
+  "exit_code": 0,
+  "network": "intercepted fixture only",
+  "command": [
+    "/home/pha/sci-deepseek/.venv/bin/python",
+    "/home/pha/sci-deepseek/handoff-v2.1-src/review-1bdc47b-handoff-v2.1/legacy_checks/tools/run_checks.py",
+    "all",
+    "--repo",
+    "/home/pha/sci-deepseek/jailbreak-testbed"
+  ]
+}

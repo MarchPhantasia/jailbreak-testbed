@@ -2,6 +2,42 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.6.0] — 2026-11-14
+
+按审查包 `review-f8249dc-handoff-v3.1` 修复 X01–X03，并补上服务/实验配置分离的入口。
+
+### 修复
+
+- X01：评价前对原文与冻结包做确定性校验——`text` 必须是字符串、`checksum` 必须等于 `sha256(text)`、
+  同 ID 冲突记录不可核验、包 `input_hash` 必须与 `materials` 一致（与 `Engine._freeze_pack()` 同一序列化）、
+  同 `pack_id` 冲突不覆盖。任一项失败 → `unscored:evidence_input_incomplete`，不发 Judge_eval、
+  不缩分母；诊断字段（`failure_reason`、`pack_problems`、`evidence_problems` 等）从 scope 贯通到 records。
+  完整空包仍是合法情形，不当作丢文件。
+- X02：`LLMAssembler.assemble_from_pack()` 每次装配重置诊断、失败状态与调用引用；模型正文不可用的
+  回退候选把字面诊断记为"未计算"（`uncovered_ratio=None`）并标 `diagnostics_subject=fallback_render`，
+  不沿用上一次装配的数字，`processing_refs` 只引用本次调用与本次冻结包。
+- X03：仓库裁判请求断言改用与换行无关的 `FakeService._input()`；历史包 `contract_server.py`
+  替身的解析兼容 CRLF（仅审查包副本，附 diff）。生产模板字节保留与哈希规则不变。
+
+### 新增
+
+- `--services FILE`：本机服务覆盖文件（只允许顶层 `services`），按 service ID 整项替换实验 YAML 的
+  同名服务；未覆盖的保留、可新增 ID；路径仍按实验 YAML 的 `path_base`；覆盖文件路径与 SHA-256
+  记入 `plan.json.config_sources`。所有读写配置的命令都接受该选项。
+- `jbt show-config`：不调用模型地展示每个启用角色的 service/base_url/model/参数协议/`context_window`
+  与最终阶段参数，标出共用同一服务的角色；密钥只显示变量名与是否已设置。
+- `jbt evaluate --eval-service SID`：旧实验重评的连接层迁移（只换 `base_url`/`api_key_env`/
+  `auth_required`/`timeout_s`/`service_id`）；模型、参数协议与窗口必须与冻结值一致，否则报错。
+  迁移记录写入新 `eval_run_id` 的 `config.json` 与 `evaluation_started` 事件，旧 plan 不被改写。
+- `configs/services.example.yaml`：服务文件结构与规则示例（占位符，不是可运行配置）。
+
+### 测试
+
+- 新增 `tests/test_config_overlay.py`（8 项）：覆盖确实进入网关与冻结计划、不串角色、迁移留痕、
+  改变实验条件被拒、不传选项时不隐式迁移、`show-config` 不回显密钥。
+- 最小单元夹具补齐合法 `checksum`/`input_hash`（`tests/helpers.py` 的 `evidence_record`/`pack_record`），
+  保留原有行为断言。
+
 ## [code-v0.5.3] — 2026-11-14
 
 按审查包 `review-1bdc47b-handoff-v2.1` 修复 W01/W02 并落实 W03 默认策略。

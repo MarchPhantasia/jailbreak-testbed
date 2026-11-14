@@ -116,6 +116,43 @@ tokenizer，用偏保守的估算（CJK 1 token/字、其他 0.3 token/字符 + 
 32k 窗口的起点配置：Target/Judge `max_tokens=8192`，Assembler `8192`，Controller `4096`；
 裁判 `max_evidence_chars=60000`（ASCII 约 18k token，中文则由 token 预算先约束）。
 
+## 服务与实验配置分离
+
+实验 YAML 管数据、方法、组件分工与阶段参数；具体连接（base_url / model / 密钥变量 / 超时 / 声明窗口）
+可以放在一个只含 `services` 的本机文件里，用 `--services` 覆盖：
+
+```bash
+jbt show-config   --config configs/real-dev.wfix.local.yaml --services services.local.yaml
+jbt check-services --config configs/real-dev.wfix.local.yaml --services services.local.yaml --env-file .env
+jbt run           --config configs/real-dev.wfix.local.yaml --services services.local.yaml --env-file .env --limit 3
+```
+
+规则（`runner.apply_service_overlay`）：
+
+- 覆盖文件只允许顶层 `services`；其他键直接报错，避免"半个实验配置"混进来；
+- 按 service ID **整项替换**，不合并字段、不残留旧 model 或参数协议；未覆盖的服务保留，也可以新增 ID；
+- 数据/模板路径仍按实验 YAML 的 `experiment.path_base` 解析，加载服务文件不改变它；
+- 覆盖文件的路径与 SHA-256 写进 `plan.json.config_sources`，便于复核这批用了哪份连接配置；
+- 密钥仍由环境变量或 `--env-file` 提供，配置文件里只写变量名。
+
+`show-config` 不调用模型，打印每个启用角色最终接到的 service ID、base_url、model、参数协议、
+`context_window` 与阶段发送参数，并标出哪些角色共用同一服务（同源评价偏差要单独报告）。
+结构示例见 [`configs/services.example.yaml`](configs/services.example.yaml)。
+
+### 旧实验重评时的连接迁移
+
+`evaluate` 默认使用被评价目录 `plan.json` 里冻结的服务。接口迁移后要对旧实验重评，用显式迁移：
+
+```bash
+jbt evaluate --config configs/real-dev.wfix.local.yaml --root results/<run> \
+             --services services.local.yaml --eval-service judge_api --env-file .env
+```
+
+只允许替换连接层（`base_url` / `api_key_env` / `auth_required` / `timeout_s` / `service_id`）；
+`model`、`parameter_profile`、阶段参数与 `context_window` 必须与冻结值一致，否则报错要求另建评价协议。
+迁移在 `<eval_run_id>/config.json` 与 `evaluation_started` 事件中留下"原服务 / 实际服务 / 改了哪些字段"，
+旧 plan、候选与证据不被改写；新评价使用新的 `eval_run_id`。
+
 ## 凭证怎么放
 
 框架只从 `os.environ` 读取密钥；**不会自动搜索 `.env`**，也不把值写进日志、事件或产物。
