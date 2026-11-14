@@ -35,3 +35,6 @@ hf_token*
 
 # 审查包（不入库）
 *review*.zip
+
+# 本机服务连接（含内网/远端地址，不入库）
+configs/services.local.yaml

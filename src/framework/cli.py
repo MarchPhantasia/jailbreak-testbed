@@ -21,7 +21,7 @@ def _print(obj: Any) -> None:
 
 
 def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
-    """先加载可选的 env 文件（显式/`JBT_ENV_FILE`），再读配置。"""
+    """先加载可选的 env 文件（显式/`JBT_ENV_FILE`），再读配置，最后套用可选的 --services 覆盖。"""
     try:
         info = load_env_if_configured(getattr(args, "env_file", None))
     except EnvFileError as exc:
@@ -41,7 +41,26 @@ def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
             ),
             file=sys.stderr,
         )
-    return runner.load_config(args.config)
+    cfg = runner.load_config(args.config)
+    overlay_path = getattr(args, "services", None)
+    if overlay_path:
+        try:
+            info = runner.apply_service_overlay(cfg, overlay_path)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"服务覆盖文件加载失败：{exc}")
+        print(
+            json.dumps(
+                {
+                    "services_overlay": info["path"],
+                    "services_overlay_sha256": info["sha256"],
+                    "replaced_service_ids": info["replaced_service_ids"],
+                    "added_service_ids": info["added_service_ids"],
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+    return cfg
 
 
 def cmd_prepare_data(args: argparse.Namespace) -> int:
@@ -56,6 +75,18 @@ def cmd_check_data(args: argparse.Namespace) -> int:
     out = runner.check_data(cfg)
     _print({"command": "check-data", "calls_model": False, **out})
     return 0 if out["ok"] else 1
+
+
+def cmd_show_config(args: argparse.Namespace) -> int:
+    """展示最终解析的角色→服务→参数，不调用模型。"""
+    cfg = _load_config(args)
+    try:
+        out = runner.describe_routes(cfg)
+    except (ValueError, RuntimeError) as exc:
+        _print({"command": "show-config", "ok": False, "error": str(exc)})
+        return 1
+    _print(out)
+    return 0
 
 
 def cmd_check_services(args: argparse.Namespace) -> int:
@@ -89,7 +120,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         spec = runner.load_plan_from_root(root).get("evaluation_spec") or {"type": "rule"}
     except FileNotFoundError:
         spec = {"type": "rule"}
-    out = runner.evaluate_experiment(cfg, root=args.root)
+    try:
+        out = runner.evaluate_experiment(cfg, root=args.root, eval_service=getattr(args, "eval_service", None))
+    except ValueError as exc:
+        _print({"command": "evaluate", "ok": False, "error": str(exc), "phase": "validation"})
+        return 1
     _print({"command": "evaluate", "calls_model": spec.get("type") == "llm", "phase": "analysis", **out})
     return 0
 
@@ -166,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("prepare-data", cmd_prepare_data, "生成数据清单与划分（不调用模型）"),
         ("check-data", cmd_check_data, "校验清单、重复组与划分交集（不调用模型）"),
         ("check-services", cmd_check_services, "客户端可达性检查（preflight，单独记账）"),
+        ("show-config", cmd_show_config, "展示最终角色路由与发送参数（不调用模型）"),
         ("run", cmd_run, "执行 episode（会调用模型/模拟服务）"),
         ("evaluate", cmd_evaluate, "对已保存答案执行 Judge_eval（不重跑 Target）"),
     ):
@@ -176,11 +212,21 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="可选的 KEY=VALUE 文件（如 .env）；系统环境优先，只报告键名",
         )
+        sp.add_argument(
+            "--services",
+            default=None,
+            help="可选的本机服务文件（只含顶层 services）；按 service ID 整项替换实验 YAML 的同名服务",
+        )
         if name == "run":
             sp.add_argument("--limit", type=int, default=None)
             sp.add_argument("--offset", type=int, default=0)
         if name == "evaluate":
             sp.add_argument("--root", default=None)
+            sp.add_argument(
+                "--eval-service",
+                default=None,
+                help="旧实验重评时的裁判连接迁移目标服务 ID（只替换连接层，不改实验条件）",
+            )
         sp.set_defaults(func=fn)
 
     sp = sub.add_parser("report", help="导出逐题结果与汇总（不调用模型）")

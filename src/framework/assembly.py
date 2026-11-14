@@ -434,7 +434,26 @@ class LLMAssembler(Assembler):
         return {"answer": answer, "claims": claims, "gaps": list(gaps_raw)}, []
 
     # ---- 装配 ----
+    def _reset_call_state(self) -> None:
+        """每次装配从干净状态开始（X02）：诊断、失败状态与调用引用不得跨调用沿用。"""
+        self.last_call_ids = []
+        self.last_failure = ""
+        self.last_lexical_diagnostics = {}
+
+    def _not_computed_diagnostics(self, reason: str) -> Dict[str, Any]:
+        """本次没有可校验的模型正文时的诊断：明确"未计算"，不用 0 冒充"没有未覆盖部分"。"""
+        return {
+            "version": LEXICAL_DIAGNOSTIC_VERSION,
+            "uncovered_ratio": None,
+            "unsupported_lines": None,
+            "gate": self.lexical_policy,
+            "threshold": self.max_uncovered_ratio if self.lexical_policy == "hard_gate" else None,
+            "triggered": False,
+            "note": f"本次没有可校验的模型正文（{reason}）；字面诊断未计算",
+        }
+
     def assemble_from_pack(self, task: Task, pack: EvidencePack, *, k: int = 1, stage_policy_ref: str = "", node_id: str = "", view_id: str = "") -> List[AnswerCandidate]:
+        self._reset_call_state()
         payload = self._input_payload(task, pack)
         template_ref = self.template.ref() if hasattr(self.template, "ref") else {}
         attempts: List[Dict[str, Any]] = []
@@ -538,7 +557,10 @@ class LLMAssembler(Assembler):
                     "failure": self.last_failure,
                     "lexical_policy": self.lexical_policy,
                     "lexical_policy_version": LEXICAL_POLICY_VERSION,
-                    "lexical_diagnostics": dict(self.last_lexical_diagnostics),
+                    # 回退候选不是"模型输出"：本次没有可校验正文，字面诊断明确记为未计算，
+                    # 不能把上一次装配（或其他包）的诊断挂到这条候选上（X02）
+                    "lexical_diagnostics": self._not_computed_diagnostics(self.last_failure or "invalid_output"),
+                    "diagnostics_subject": "fallback_render",
                 },
                 stage_policy_ref=stage_policy_ref,
                 processing_refs=[f"fallback:material_template@v1", f"pack:{pack.pack_id}"],

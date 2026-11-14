@@ -1,0 +1,33 @@
+# 本机服务连接覆盖文件（可选）：jbt run --config <实验.yaml> --services configs/services.example.yaml
+#
+# 只放"连接与模型"，不放数据、方法、组件分工或阶段参数——那些留在实验 YAML。
+# 规则（见 CONFIG_AND_EXPERIMENT_PRIORITY）：
+#   * 顶层只允许 services，出现其他键直接报错；
+#   * 按 service ID 整项替换实验 YAML 中的同名服务，不合并字段、不残留旧 model / 参数协议；
+#   * 未覆盖的服务保留；可以新增 ID（例如只给裁判加一个独立服务）；
+#   * 路径仍按实验 YAML 的 experiment.path_base 解析；
+#   * 密钥只写变量名，值放进环境或 --env-file 指向的文件，不要写在这个文件里。
+#
+# 注意：所有值都要按用户实际迁移后的服务填写。下面用占位符说明结构，不能直接运行。
+
+services:
+  target_api:
+    type: openai
+    base_url: "https://<migrated-target-host>/v1"   # 占位符：替换为迁移后的真实地址
+    model: "<target-model-id>"                       # 占位符：服务实际接受的模型 ID
+    api_key_env: TARGET_API_KEY
+    auth_required: true
+    parameter_profile: deepseek_thinking_proxy       # 占位符：按服务协议选择已有 profile
+    timeout_s: 180
+    max_concurrency: 1
+    context_window: 32768
+  judge_api:
+    type: openai
+    base_url: "https://<judge-host>/v1"              # 占位符：替换为真实地址
+    model: "<judge-model-id>"                        # 占位符：Judge 模型 ID
+    api_key_env: JUDGE_API_KEY
+    auth_required: true
+    parameter_profile: deepseek_thinking_proxy       # 占位符：按服务协议选择已有 profile
+    timeout_s: 180
+    max_concurrency: 1
+    context_window: 32768

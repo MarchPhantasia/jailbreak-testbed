@@ -51,7 +51,67 @@ def load_config(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     cfg["_config_path"] = os.path.abspath(path)
+    cfg["_config_sha256"] = _file_sha256(path)
     return cfg
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+SERVICE_OVERLAY_KEY = "_service_overlay"
+
+
+def apply_service_overlay(cfg: Dict[str, Any], overlay_path: str) -> Dict[str, Any]:
+    """用本机服务文件覆盖实验 YAML 的 services（CONFIG_AND_EXPERIMENT_PRIORITY）。
+
+    规则（明确、可审计）：
+
+    1. 覆盖文件只允许顶层 `services`；其他键直接报错，避免"半个实验配置"混进来。
+    2. 按 service ID **整项替换**：不合并字段，不残留旧服务的 model / 参数协议。
+    3. 未覆盖的服务保留；可以新增服务 ID。
+    4. 实验的数据/模板路径仍按原实验 YAML 的 `path_base` 解析：这里不改 `_config_path`。
+    5. 只记录文件路径与 SHA-256，不把任何密钥值写进配置或产物。
+    """
+    overlay_path = os.path.abspath(overlay_path)
+    with open(overlay_path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f) or {}
+    if not isinstance(doc, dict):
+        raise ValueError(f"服务覆盖文件必须是 YAML 对象：{overlay_path}")
+    extra = [k for k in doc if k != "services"]
+    if extra:
+        raise ValueError(
+            f"服务覆盖文件只允许顶层 services，发现其他键 {extra}：{overlay_path}（数据/方法/参数请留在实验 YAML）"
+        )
+    services = doc.get("services")
+    if not isinstance(services, dict) or not services:
+        raise ValueError(f"服务覆盖文件需要非空 services 映射：{overlay_path}")
+    target = cfg.setdefault("services", {})
+    if not isinstance(target, dict):
+        raise ValueError("实验配置里的 services 必须是对象，无法被服务覆盖文件替换")
+    replaced: List[str] = []
+    added: List[str] = []
+    for sid, spec in services.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"服务 {sid} 的定义必须是对象：{overlay_path}")
+        if sid in target:
+            replaced.append(str(sid))
+        else:
+            added.append(str(sid))
+        target[str(sid)] = dict(spec)
+    info = {
+        "path": overlay_path,
+        "sha256": _file_sha256(overlay_path),
+        "replaced_service_ids": sorted(replaced),
+        "added_service_ids": sorted(added),
+        "note": "按 service ID 整项替换；未覆盖的服务保留。密钥仍由环境变量/--env-file 提供。",
+    }
+    cfg[SERVICE_OVERLAY_KEY] = info
+    return info
 
 
 PATH_BASES = ("config", "cwd")
@@ -164,6 +224,80 @@ def build_run_context(cfg: Dict[str, Any]) -> RunContext:
         if registry is None:
             raise PromptError("experiment.profile=real_dev 缺少模板注册表")
     return RunContext(routing=routing, limits=limits, evaluation_spec=spec, prompts=registry, real_profile=real)
+
+
+def describe_routes(cfg: Dict[str, Any], ctx: Optional[RunContext] = None) -> Dict[str, Any]:
+    """不调用模型地展示"每个角色最终接到哪个服务、发送什么参数"（show-config）。
+
+    只报密钥变量名与是否已设置，绝不回显值。
+    """
+    ctx = ctx or build_run_context(cfg)
+    routing = ctx.routing
+    roles: Dict[str, Any] = {}
+    for role in routing.enabled_roles():
+        route = routing.components[role]
+        svc = routing.service(route)
+        key_env = svc.api_key_env or ""
+        roles[role] = {
+            "stage_id": route.stage_id,
+            "service_id": svc.service_id,
+            "base_url": svc.base_url,
+            "model": svc.model,
+            "parameter_profile": svc.parameter_profile,
+            "context_window": svc.context_window,
+            "auth_required": svc.auth_required,
+            "api_key_env": key_env,
+            "api_key_set": bool(os.environ.get(key_env, "").strip()) if key_env else None,
+            "resolved_params": routing.resolved_params(role),
+        }
+    spec = ctx.evaluation_spec
+    evaluation: Dict[str, Any] = {"type": spec.get("type")}
+    if spec.get("type") == "llm":
+        route = routing.components["judge_eval"]
+        svc = routing.service(route)
+        evaluation.update(
+            {
+                "stage_id": route.stage_id,
+                "service_id": svc.service_id,
+                "base_url": svc.base_url,
+                "model": svc.model,
+                "parameter_profile": svc.parameter_profile,
+                "context_window": svc.context_window,
+                "max_evidence_chars": (cfg.get("evaluation") or {}).get("max_evidence_chars"),
+                "evidence_scope": spec.get("evidence_scope"),
+                "resolved_params": routing.resolved_params("judge_eval"),
+            }
+        )
+    by_url: Dict[str, List[str]] = {}
+    for role, row in roles.items():
+        by_url.setdefault(f"{row['base_url']}|{row['model']}", []).append(role)
+    shared = [
+        {"roles": sorted(v), "note": "同一服务/模型：报告同源偏差时需说明"}
+        for v in by_url.values()
+        if len(v) > 1
+    ]
+    return {
+        "command": "show-config",
+        "calls_model": False,
+        "config": {
+            "path": cfg.get("_config_path", ""),
+            "sha256": cfg.get("_config_sha256", ""),
+            "path_base": path_base(cfg),
+            "results_root": results_root(cfg),
+        },
+        "services_overlay": cfg.get(SERVICE_OVERLAY_KEY),
+        "roles": roles,
+        "evaluation": evaluation,
+        "assembly_policy": {
+            "type": str((((cfg.get("method") or {}).get("assembly") or {}).get("type")) or "material_template"),
+            "lexical_policy": resolve_lexical_policy(((cfg.get("method") or {}).get("assembly") or {}).get("lexical_policy")),
+        },
+        "shared_services": shared,
+        "notes": [
+            "show-config 不调用模型；参数是否被服务接受由 check-services 的真实探针确认。",
+            "密钥只显示变量名与是否设置，不回显值。",
+        ],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -314,6 +448,13 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optio
             else None
         ),
         "fallback": str(assembly_cfg.get("fallback") or "verbatim").lower(),
+    }
+    plan["config_sources"] = {
+        "experiment": {
+            "path": (cfg or {}).get("_config_path", ""),
+            "sha256": (cfg or {}).get("_config_sha256", ""),
+        },
+        "services_overlay": (cfg or {}).get(SERVICE_OVERLAY_KEY),
     }
     plan["budget"] = ctx.limits.to_dict()
     if ctx.prompts is not None:
@@ -707,7 +848,13 @@ def load_plan_from_root(root: str) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any], eval_run_id: str):
+def _build_eval_judge(
+    eval_dir: str,
+    plan: Dict[str, Any],
+    spec: Dict[str, Any],
+    eval_run_id: str,
+    migration: Optional[Dict[str, Any]] = None,
+):
     """按冻结 EvaluationPlan 构造语义裁判与其独立事件/账本。"""
     from .budget import BudgetGuard
     from .clients import OpenAICompatGateway
@@ -771,19 +918,22 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
             "eval_run_id": eval_run_id,
             "stage_id": stage_id,
             "service_id": service.get("service_id", ""),
+            "base_url": str(service["base_url"]),
             "model": service.get("model", ""),
             "parameter_profile": profile,
             "resolved_params": resolved,
+            "context_window": int(context_window) if context_window else None,
             "template": template.ref(),
             "rubric": dict(spec.get("rubric") or {}),
             "budget": limits.to_dict(),
+            **({"service_migration": migration} if migration else {}),
         },
     )
     return judge, store, guard, gateway
 
 
 def _load_packs(ep_dir: str) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
-    """读取冻结证据包；损坏行如实记为 problems，不静默当成"没有这个包"。"""
+    """读取冻结证据包；损坏行、重复且冲突的 pack_id 都如实记为 problems（X01）。"""
     path = os.path.join(ep_dir, "packs.jsonl")
     packs: Dict[str, Dict[str, Any]] = {}
     problems: List[Dict[str, Any]] = []
@@ -802,7 +952,16 @@ def _load_packs(ep_dir: str) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, 
             if not isinstance(row, dict) or not str(row.get("pack_id") or ""):
                 problems.append({"line": lineno, "reason": "not_a_pack_object"})
                 continue
-            packs[str(row["pack_id"])] = row
+            pid = str(row["pack_id"])
+            if pid in packs and packs[pid] != row:
+                # 同一 pack_id 的冲突记录不能"最后一条覆盖"：该包整体不可核验
+                problems.append({"line": lineno, "reason": "conflicting_pack_record", "pack_id": pid})
+                packs.pop(pid, None)
+                continue
+            if pid in packs:
+                problems.append({"line": lineno, "reason": "duplicate_pack_record", "pack_id": pid})
+                continue
+            packs[pid] = row
     return packs, problems
 
 
@@ -820,35 +979,131 @@ def _pack_materials(pack: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     return materials
 
 
+def pack_material_hash(materials: List[Dict[str, Any]]) -> str:
+    """与 Engine._freeze_pack 完全相同的 material 序列化与哈希（X01）。"""
+    return hashlib.sha256(
+        json.dumps(materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def verify_pack_row(pack: Dict[str, Any]) -> Tuple[Optional[List[Dict[str, Any]]], List[str]]:
+    """校验一个冻结包行的结构与冻结身份（X01）。
+
+    返回 (materials 或 None, problems)。problems 为空表示可核验：
+    结构合法、且 materials 与冻结时写入的 `input_hash` 一致。
+    """
+    materials = _pack_materials(pack)
+    if materials is None:
+        return None, ["invalid_pack_structure"]
+    problems: List[str] = []
+    recorded = pack.get("input_hash")
+    if not isinstance(recorded, str) or not recorded.strip():
+        problems.append("pack_hash_missing")
+    elif pack_material_hash(materials) != recorded.strip():
+        problems.append("pack_hash_mismatch")
+    return materials, problems
+
+
+def _evidence_text_checksum(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _index_evidence(episode_evidence: List[Dict[str, Any]]) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    """建立可核验的证据索引（X01）。
+
+    - 行必须是对象，`evidence_id` 非空字符串，`text` 必须是字符串（不能默认成空串或 str(obj)）；
+    - 有 `checksum` 时必须等于 sha256(text)（不改动换行、空白、Unicode）；
+    - 同 ID 多条：完全一致 → 去重并记重复数；正文/校验和冲突 → 该 ID 不可核验；
+    - 不为了无关 ID 的问题把整批判死：问题按 ID 记录，由调用方只作用于实际用到的 ID。
+    """
+    by_id: Dict[str, Dict[str, Any]] = {}
+    problems: List[Dict[str, Any]] = []
+    duplicates: Dict[str, int] = {}
+    for position, row in enumerate(episode_evidence, start=1):
+        if not isinstance(row, dict):
+            problems.append({"position": position, "evidence_id": "", "problem": "not_an_object"})
+            continue
+        eid = row.get("evidence_id")
+        if not isinstance(eid, str) or not eid.strip():
+            problems.append({"position": position, "evidence_id": "", "problem": "bad_evidence_id"})
+            continue
+        if "text" not in row:
+            problems.append({"evidence_id": eid, "problem": "text_missing"})
+            continue
+        text = row["text"]
+        if not isinstance(text, str):
+            problems.append({"evidence_id": eid, "problem": "text_not_string"})
+            continue
+        checksum = row.get("checksum")
+        if checksum is None or checksum == "":
+            problems.append({"evidence_id": eid, "problem": "checksum_missing"})
+            continue
+        if not isinstance(checksum, str) or _evidence_text_checksum(text) != checksum:
+            problems.append({"evidence_id": eid, "problem": "checksum_mismatch"})
+            continue
+        existing = by_id.get(eid)
+        if existing is None:
+            by_id[eid] = row
+            continue
+        if existing.get("text") == text and existing.get("checksum") == checksum:
+            duplicates[eid] = duplicates.get(eid, 1) + 1
+            continue
+        problems.append({"evidence_id": eid, "problem": "conflicting_evidence_record"})
+        by_id.pop(eid, None)
+    for eid, count in duplicates.items():
+        problems.append({"evidence_id": eid, "problem": "duplicate_identical_record", "records": count,
+                         "note": "完全一致的行已去重，仍是可核验的原文"})
+    return by_id, problems
+
+
+def _conflicting_ids(problems: List[Dict[str, Any]]) -> List[str]:
+    blocking = ("text_missing", "text_not_string", "checksum_missing", "checksum_mismatch",
+                "conflicting_evidence_record", "bad_evidence_id", "not_an_object")
+    return sorted({str(p.get("evidence_id") or "") for p in problems if p.get("problem") in blocking and p.get("evidence_id")})
+
+
 def candidate_evidence_scope(
     ep_dir: str,
     candidate: AnswerCandidate,
     episode_evidence: List[Dict[str, Any]],
     mode: str = "candidate_pack",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """候选实际得到的允许证据 vs episode 全量材料（R3 + W02）。
+    """候选实际得到的允许证据 vs episode 全量材料（R3 + W02 + X01）。
 
-    - candidate_pack（默认协议）：只用该候选**冻结证据包**里的材料。包缺失、只找到部分包、
-      包结构不合法或包指向的原文缺失时，完整性无法确认 → `integrity_complete=False`，
-      调用方必须判该 episode 为 U，**不能**退回候选自己写的引用来认证来源（W02）。
-    - episode_pool：全量材料，仅作为显式声明的替代协议/分析口径。
+    - candidate_pack（默认协议）：只用该候选**冻结证据包**里的材料，并且要求
+      包结构合法、包内容与 `input_hash` 一致、引用到的原文存在且正文校验和正确。
+      任一条件不满足 → `integrity_complete=False`，调用方必须判 U，
+      **不能**退回候选自己写的引用来认证来源（W02），也不能用"格式有效的 JSON"代替内容校验（X01）。
+    - episode_pool：全量材料，仅作为显式声明的替代协议/分析口径（不做冻结包身份校验）。
     """
-    by_id = {row.get("evidence_id"): row for row in episode_evidence}
+    indexed, evidence_problems = _index_evidence(list(episode_evidence or []))
     mode = str(mode or "candidate_pack")
     packs, pack_problems = _load_packs(ep_dir)
+    conflicted = {
+        str(p.get("pack_id"))
+        for p in pack_problems
+        if p.get("reason") == "conflicting_pack_record" and p.get("pack_id")
+    }
     requested = [str(p) for p in (candidate.evidence_pack_ids or [])]
     resolved: List[str] = []
     missing: List[str] = []
     invalid: List[str] = []
+    unverified: List[str] = []
+    pack_issues: List[Dict[str, Any]] = []
     allowed_ids: List[str] = []
     for pid in requested:
         pack = packs.get(pid)
         if pack is None:
             missing.append(pid)
             continue
-        materials = _pack_materials(pack)
+        materials, issues = verify_pack_row(pack)
         if materials is None:
             invalid.append(pid)
+            pack_issues.append({"pack_id": pid, "problems": issues})
+            continue
+        if issues:
+            unverified.append(pid)
+            pack_issues.append({"pack_id": pid, "problems": issues})
             continue
         resolved.append(pid)
         for material in materials:
@@ -856,15 +1111,23 @@ def candidate_evidence_scope(
                 if eid not in allowed_ids:
                     allowed_ids.append(eid)
     cited_ids = sorted({i for c in candidate.claims for i in c.evidence_ids})
-    missing_allowed = [i for i in allowed_ids if i not in by_id]
+    missing_allowed = [i for i in allowed_ids if i not in indexed]
+    blocking_ids = set(_conflicting_ids(evidence_problems))
+    unverifiable_allowed = [i for i in allowed_ids if i in blocking_ids]
     if not requested:
         failure = "pack_not_declared"
+    elif [p for p in requested if p in conflicted]:
+        failure = "conflicting_pack"
     elif missing:
         failure = "missing_pack"
     elif invalid:
         failure = "invalid_pack"
+    elif unverified:
+        failure = "unverified_pack"
     elif missing_allowed:
         failure = "missing_allowed_evidence"
+    elif unverifiable_allowed:
+        failure = "unverifiable_allowed_evidence"
     else:
         failure = ""
     info: Dict[str, Any] = {
@@ -875,13 +1138,17 @@ def candidate_evidence_scope(
         "resolved_pack_ids": resolved,
         "missing_pack_ids": missing,
         "invalid_pack_ids": invalid,
-        "pack_problems": pack_problems,
+        "unverified_pack_ids": unverified,
+        "pack_problems": pack_problems + pack_issues,
         "allowed_ids": allowed_ids,
         "allowed_count": len(allowed_ids),
         "missing_allowed_ids": missing_allowed,
+        "unverifiable_allowed_ids": unverifiable_allowed,
+        "evidence_problems": evidence_problems,
+        "evidence_verified_count": len(indexed),
         "cited_ids": cited_ids,
         "cited_count": len(cited_ids),
-        "episode_pool_count": len(episode_evidence),
+        "episode_pool_count": len(episode_evidence or []),
         "integrity_complete": not failure,
         "failure_reason": failure,
         "claims_with_cited_pack_evidence": sum(1 for c in candidate.claims if set(c.evidence_ids) & set(allowed_ids)),
@@ -891,11 +1158,11 @@ def candidate_evidence_scope(
         info["status"] = "episode_pool"
         info["integrity_complete"] = True
         info["failure_reason"] = ""
-        return list(episode_evidence), info
+        return list(episode_evidence or []), info
     if not info["integrity_complete"]:
         # 明确不可用：不带任何"看起来像证据"的替代集合进入评价
         return [], info
-    return [by_id[i] for i in allowed_ids if i in by_id], info
+    return [indexed[i] for i in allowed_ids if i in indexed], info
 
 
 def _read_evidence(ep_dir: str, wanted: Optional[set]) -> List[Dict[str, Any]]:
@@ -918,11 +1185,81 @@ def _read_evidence(ep_dir: str, wanted: Optional[set]) -> List[Dict[str, Any]]:
     return rows
 
 
-def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict[str, Any]:
+CONNECTION_FIELDS = ("base_url", "api_key_env", "auth_required", "timeout_s", "service_id")
+EVALUATION_IDENTITY_FIELDS = ("model", "parameter_profile", "context_window")
+
+
+def plan_evaluation_migration(
+    spec: Dict[str, Any], service: Dict[str, Any], service_id: str
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """把旧实验的裁判连接迁移到新地址（只允许连接层替换）。
+
+    返回 (迁移后的 service 定义, 迁移记录)。实验条件（model、parameter_profile、
+    阶段参数、context_window 等）必须与冻结值一致；不一致时明确要求另建评价协议，
+    不做静默解释。
+    """
+    frozen = dict(spec.get("service") or {})
+    if not frozen:
+        raise ValueError("冻结 plan 里没有 evaluation_spec.service，无法做连接迁移")
+    changed: Dict[str, Any] = {}
+    for field in CONNECTION_FIELDS:
+        if field not in service:
+            continue
+        if service.get(field) != frozen.get(field):
+            changed[field] = {"frozen": frozen.get(field), "actual": service.get(field)}
+    blocked: Dict[str, Any] = {}
+    for field in EVALUATION_IDENTITY_FIELDS:
+        value = service.get(field)
+        frozen_value = frozen.get(field)
+        if field == "context_window":
+            value = int(value) if value else None
+            frozen_value = int(frozen_value) if frozen_value else None
+        if (value or None) != (frozen_value or None):
+            blocked[field] = {"frozen": frozen_value, "actual": value}
+    if blocked:
+        raise ValueError(
+            "指定的评价服务改变了实验条件 "
+            + json.dumps(blocked, ensure_ascii=False)
+            + "：连接迁移只允许 base_url/api_key_env/auth_required/timeout_s/service_id；"
+            "要改模型或参数协议请另建评价运行与判据。"
+        )
+    migrated = dict(frozen)
+    for field in CONNECTION_FIELDS:
+        if field in service:
+            migrated[field] = service.get(field)
+    record = {
+        "requested_service_id": str(service_id),
+        "frozen": {k: frozen.get(k) for k in CONNECTION_FIELDS + EVALUATION_IDENTITY_FIELDS},
+        "actual": {k: migrated.get(k) for k in CONNECTION_FIELDS + EVALUATION_IDENTITY_FIELDS},
+        "changed_fields": changed,
+        "identity_checked": list(EVALUATION_IDENTITY_FIELDS),
+        "source": "cfg.services (may come from --services overlay)",
+        "note": (
+            "只替换连接层；原始请求、答案、rubric、模板、阶段参数与窗口仍按冻结值。"
+            "同 model 名称不证明后端权重相同：实际响应 model 与可用版本信息缺失时标 unknown。"
+        ),
+    }
+    return migrated, record
+
+
+def evaluate_experiment(
+    cfg: Dict[str, Any], root: Optional[str] = None, *, eval_service: Optional[str] = None
+) -> Dict[str, Any]:
     root = root or results_root(cfg)
     # S08：评价必须使用被评价目录自己的冻结计划；config 只用于定位默认 root
     plan = load_plan_from_root(root)
     spec = plan.get("evaluation_spec") or {"type": "rule", "judge_ref": "rule@v1", "rubric": {}}
+    migration: Optional[Dict[str, Any]] = None
+    if eval_service:
+        services = cfg.get("services") or {}
+        if eval_service not in services:
+            raise ValueError(
+                f"evaluate --eval-service 指定的服务不存在：{eval_service}（可用：{sorted(services)}）"
+            )
+        migrated_service, migration = plan_evaluation_migration(spec, dict(services[eval_service]), eval_service)
+        spec = dict(spec)
+        spec["service"] = migrated_service
+        spec["service_migration"] = migration
     eval_run_id = new_id("eval")
     eval_dir = os.path.join(root, "evaluations", eval_run_id)
     os.makedirs(eval_dir, exist_ok=True)
@@ -933,6 +1270,8 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
             "evaluation_spec": spec,
             "prompt_manifest": plan.get("prompt_manifest") or [],
             "rubric_source": "plan.json#/evaluation_spec/rubric" if spec.get("type") == "llm" else "plan.json#/episodes",
+            **({"service_migration": migration} if migration else {}),
+            **({"services_overlay": cfg.get(SERVICE_OVERLAY_KEY)} if cfg.get(SERVICE_OVERLAY_KEY) else {}),
         },
         os.path.join(eval_dir, "config.json"),
     )
@@ -947,6 +1286,7 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
             ],
             "judge_ref": spec.get("judge_ref") or (spec.get("rubric") or {}).get("id", "semantic"),
             "frozen": True,
+            **({"service_migration": migration} if migration else {}),
         },
         os.path.join(eval_dir, "plan.json"),
     )
@@ -954,7 +1294,9 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
     judge = None
     eval_store = None
     if spec.get("type") == "llm":
-        judge, eval_store, _eval_guard, _eval_gw = _build_eval_judge(eval_dir, plan, spec, eval_run_id)
+        judge, eval_store, _eval_guard, _eval_gw = _build_eval_judge(
+            eval_dir, plan, spec, eval_run_id, migration=migration
+        )
 
     evaluations: List[EpisodeEvaluation] = []
     records: List[Dict[str, Any]] = []

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from typing import Any, Dict, List, Optional
 
 from framework.assembly import Assembler, make_selector
@@ -89,3 +90,31 @@ def make_engine(
     )
     engine.start()
     return engine, store, guard, gw
+
+
+# --------------------------------------------------------------------------
+# 证据/冻结包的最小合法记录（X01 起：正文与冻结身份要能被校验）
+# --------------------------------------------------------------------------
+def evidence_record(evidence_id: str, text: str, **extra: Any) -> Dict[str, Any]:
+    """带正确 checksum 的证据行；测试仍可显式构造损坏行来验证拒绝路径。"""
+    record = {
+        "evidence_id": evidence_id,
+        "text": text,
+        "checksum": hashlib.sha256(str(text).encode("utf-8")).hexdigest(),
+    }
+    record.update(extra)
+    return record
+
+
+def pack_record(pack_id: str, materials: List[Dict[str, Any]], task_id: str = "t1") -> Dict[str, Any]:
+    """带正确 input_hash 的冻结包行（与 Engine._freeze_pack 同一序列化）。"""
+    from framework.runner import pack_material_hash
+
+    return {
+        "pack_id": pack_id,
+        "task_id": task_id,
+        "materials": materials,
+        "gaps": [],
+        "notes": [],
+        "input_hash": pack_material_hash(materials),
+    }

@@ -20,6 +20,7 @@ from framework.assembly import EvidencePack, LLMAssembler, uncovered_ratio
 from framework.contracts import AnswerCandidate, BudgetLimits, Claim, Status, Task
 from framework.clients import CallResult, MockGateway, OpenAICompatGateway, ResponseCache
 from framework.evaluation import parse_judge_output, success_from_rule
+from helpers import evidence_record, pack_record
 from framework.prompts import PromptError, PromptRegistry, PromptTemplate
 from framework.controller import _extract_json
 from framework.requests import RequestLedger
@@ -898,7 +899,10 @@ def test_real_strongreject_slice_plan_keeps_revision_and_ids(tmp_path):
 
 
 def test_judge_sees_full_episode_evidence_not_only_cited(tmp_path, fake):
-    """评价证据是 episode 的全部 Target 材料；只给 claims 引用子集会把"引用没写全"误判成证据不足。"""
+    """X03 澄清：默认协议仍是 candidate_pack；本夹具的冻结包恰好覆盖 episode 的全部证据，
+    所以"裁判看到全部证据"在这里成立。断言用与换行无关的解析（`FakeService._input`），
+    不依赖临时模板的 LF/CRLF 字节，也不改生产模板的字节保留规则。
+    """
     cfg = routed_cfg(tmp_path)
     root, ep, plan, _ = run_once(cfg)
     runner.evaluate_experiment(cfg, root=str(root))
@@ -910,7 +914,8 @@ def test_judge_sees_full_episode_evidence_not_only_cited(tmp_path, fake):
     ]
     assert judge_calls
     text = judge_calls[-1]["messages"][0]["content"]
-    payload = json.loads(text.split("INPUT_JSON\n", 1)[1])
+    payload = FakeService._input(text)
+    assert payload, "裁判请求必须能被与换行无关的解析器读出（X03）"
     assert len(payload["evidence"]) == len(evidence_rows)
     assert "cited_evidence_ids" in payload
 
@@ -1015,12 +1020,12 @@ def test_R3_candidate_pack_scope_excludes_late_material(tmp_path):
     ep = tmp_path / "ep"
     ep.mkdir()
     (ep / "packs.jsonl").write_text(
-        json.dumps({"pack_id": "P1", "materials": [{"kind": "fact", "value": "C04", "evidence_ids": ["E1"]}]}, ensure_ascii=False) + "\n",
+        json.dumps(pack_record("P1", [{"kind": "fact", "value": "C04", "evidence_ids": ["E1"]}]), ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     rows = [
-        {"evidence_id": "E1", "text": "C04", "source_event_id": "e1", "node_id": "n1"},
-        {"evidence_id": "E2", "text": "later sibling material", "source_event_id": "e2", "node_id": "n2"},
+        evidence_record("E1", "C04", source_event_id="e1", node_id="n1"),
+        evidence_record("E2", "later sibling material", source_event_id="e2", node_id="n2"),
     ]
     candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E1"])], evidence_pack_ids=["P1"])
     scoped, info = runner.candidate_evidence_scope(str(ep), candidate, rows, mode="candidate_pack")

@@ -27,6 +27,7 @@ from framework.evaluation import SemanticJudge
 from framework.events import EventStore
 from framework.prompts import PromptTemplate
 from framework.routing import RoutingError
+from helpers import evidence_record, pack_record
 from test_execution1_r2 import FakeService, fake, routed_cfg, rows, run_once  # noqa: F401  fake 是 fixture
 
 JUDGE_RUBRIC = {
@@ -190,11 +191,11 @@ def test_S01_one_missing_pack_among_several_is_unscorable(tmp_path):
     ep = tmp_path / "ep"
     ep.mkdir()
     (ep / "packs.jsonl").write_text(
-        json.dumps({"pack_id": "P1", "materials": [{"kind": "fact", "value": "C04", "evidence_ids": ["E1"]}]}) + "\n",
+        json.dumps(pack_record("P1", [{"kind": "fact", "value": "C04", "evidence_ids": ["E1"]}])) + "\n",
         encoding="utf-8",
     )
     candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E1"])], evidence_pack_ids=["P1", "P2"])
-    scoped, info = runner.candidate_evidence_scope(str(ep), candidate, [{"evidence_id": "E1", "text": "C04"}])
+    scoped, info = runner.candidate_evidence_scope(str(ep), candidate, [evidence_record("E1", "C04")])
     assert scoped == []
     assert info["integrity_complete"] is False
     assert info["missing_pack_ids"] == ["P2"]
@@ -235,7 +236,7 @@ def test_S02_corrupt_pack_line_isolates_one_episode(tmp_path, fake):
 def test_S03_empty_pack_is_complete_not_missing(tmp_path):
     ep = tmp_path / "ep"
     ep.mkdir()
-    (ep / "packs.jsonl").write_text(json.dumps({"pack_id": "P1", "materials": []}) + "\n", encoding="utf-8")
+    (ep / "packs.jsonl").write_text(json.dumps(pack_record("P1", [])) + "\n", encoding="utf-8")
     candidate = AnswerCandidate("c1", "没有材料", claims=[], evidence_pack_ids=["P1"])
     scoped, info = runner.candidate_evidence_scope(str(ep), candidate, [])
     assert scoped == []
