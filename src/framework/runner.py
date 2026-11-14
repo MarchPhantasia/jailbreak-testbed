@@ -30,6 +30,12 @@ from .contracts import (
     new_id,
     stable_hash,
 )
+from .assembly import (
+    ANSWER_CLAIM_CHECK,
+    DIAGNOSTICS_VERSION,
+    LEXICAL_POLICY_VERSION,
+    resolve_lexical_policy,
+)
 from .datasets import load_split, write_json
 from .evaluation import SemanticJudge
 from .judge import EpisodeEvaluation, JudgeEval, Rubric, compute_metrics, decide_outcome
@@ -140,9 +146,15 @@ def build_run_context(cfg: Dict[str, Any]) -> RunContext:
                 f"state.backend={backend} 时 {role} 必须 disabled（R2 不实现语义抽取/摘要，不能凭配置宣称生效）"
             )
     # 装配降级必须显式声明；本轮只支持 verbatim
-    fallback = str((method.get("assembly") or {}).get("fallback") or "verbatim").lower()
-    if str((method.get("assembly") or {}).get("type") or "").lower() == "llm" and fallback not in ("verbatim", ""):
+    assembly_cfg = method.get("assembly") or {}
+    fallback = str(assembly_cfg.get("fallback") or "verbatim").lower()
+    if str(assembly_cfg.get("type") or "").lower() == "llm" and fallback not in ("verbatim", ""):
         raise RoutingError(f"method.assembly.fallback 本轮只支持 verbatim：{fallback!r}")
+    # W03：字面覆盖策略必须显式合法；未知值直接报错，不隐式回退到任一行为
+    try:
+        resolve_lexical_policy(assembly_cfg.get("lexical_policy"))
+    except ValueError as exc:
+        raise RoutingError(str(exc))
     if int((cfg.get("evaluation") or {}).get("max_format_retries", 1)) < 0:
         raise RoutingError("evaluation.max_format_retries 不能为负")
 
@@ -246,7 +258,7 @@ def build_plan(cfg: Dict[str, Any], *, limit: Optional[int] = None, offset: int 
     }
 
 
-def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str) -> None:
+def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optional[Dict[str, Any]] = None) -> None:
     """把路由、阶段参数、评价契约与模板快照写进计划（可复核、不可后台改写）。"""
     routing = ctx.routing
     plan["routing"] = {
@@ -288,6 +300,21 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str) -> None:
             }
         )
     plan["evaluation_spec"] = spec
+    # W03：装配策略与诊断版本冻结到计划，便于解释"为什么这个候选被判降级"
+    assembly_cfg = ((cfg or {}).get("method") or {}).get("assembly") or {}
+    plan["assembly_policy"] = {
+        "type": str(assembly_cfg.get("type") or "material_template").lower(),
+        "lexical_policy": resolve_lexical_policy(assembly_cfg.get("lexical_policy")),
+        "lexical_policy_version": LEXICAL_POLICY_VERSION,
+        "answer_claim_check": ANSWER_CLAIM_CHECK,
+        "diagnostics_version": DIAGNOSTICS_VERSION,
+        "max_uncovered_ratio": (
+            float(assembly_cfg.get("max_uncovered_ratio", 0.25))
+            if str(assembly_cfg.get("type") or "").lower() == "llm"
+            else None
+        ),
+        "fallback": str(assembly_cfg.get("fallback") or "verbatim").lower(),
+    }
     plan["budget"] = ctx.limits.to_dict()
     if ctx.prompts is not None:
         plan["prompt_manifest"] = ctx.prompts.freeze(root)
@@ -300,7 +327,7 @@ def write_plan(cfg: Dict[str, Any], root: str, *, limit: Optional[int] = None, o
     ctx = ctx or build_run_context(cfg)
     plan = build_plan(cfg, limit=limit, offset=offset)
     os.makedirs(root, exist_ok=True)
-    _freeze_routing(plan, ctx, root)
+    _freeze_routing(plan, ctx, root, cfg)
     write_json(plan, os.path.join(root, "plan.json"))
     write_json({e["task_id"]: e["rubric"] for e in plan["episodes"]}, os.path.join(root, "rubrics.json"))
     return plan
@@ -707,6 +734,9 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
         non_target_calls=int((spec.get("budget") or {}).get("non_target_calls", 100)),
     )
     guard = BudgetGuard(limits, store, eval_run_id)
+    # W01：冻结的 context_window 必须同时送到**实际发送网关**，否则只有 SemanticJudge
+    # 知道窗口，真正的发送前拦截路径缺失。窗口未知(None)保持未知语义，不伪造默认值。
+    context_window = service.get("context_window")
     gateway = OpenAICompatGateway(
         guard,
         store,
@@ -720,6 +750,7 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
         param_serializer=lambda p: serialize_params(profile, p),
         auth_required=bool(service.get("auth_required", False)),
         template_ref=template.ref(),
+        context_window=int(context_window) if context_window else None,
     )
     judge = SemanticJudge(
         gateway,
@@ -751,62 +782,119 @@ def _build_eval_judge(eval_dir: str, plan: Dict[str, Any], spec: Dict[str, Any],
     return judge, store, guard, gateway
 
 
-def _load_packs(ep_dir: str) -> Dict[str, Dict[str, Any]]:
+def _load_packs(ep_dir: str) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    """读取冻结证据包；损坏行如实记为 problems，不静默当成"没有这个包"。"""
     path = os.path.join(ep_dir, "packs.jsonl")
     packs: Dict[str, Dict[str, Any]] = {}
+    problems: List[Dict[str, Any]] = []
     if not os.path.exists(path):
-        return packs
+        return packs, problems
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                problems.append({"line": lineno, "reason": f"json_error:{exc.msg}"})
                 continue
-            packs[str(row.get("pack_id", ""))] = row
-    return packs
+            if not isinstance(row, dict) or not str(row.get("pack_id") or ""):
+                problems.append({"line": lineno, "reason": "not_a_pack_object"})
+                continue
+            packs[str(row["pack_id"])] = row
+    return packs, problems
 
 
-def candidate_evidence_scope(ep_dir: str, candidate: AnswerCandidate, episode_evidence: List[Dict[str, Any]], mode: str = "candidate_pack"):
-    """候选实际得到的允许证据 vs episode 全量材料（R3）。
+def _pack_materials(pack: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """校验包的必要结构；不合法返回 None（由调用方记 U，不猜测修复）。"""
+    materials = pack.get("materials")
+    if not isinstance(materials, list):
+        return None
+    for m in materials:
+        if not isinstance(m, dict):
+            return None
+        ids = m.get("evidence_ids")
+        if not isinstance(ids, list) or any(not isinstance(x, str) or not x for x in ids):
+            return None
+    return materials
 
-    - candidate_pack：只用该候选冻结证据包里的材料，避免"答案冻结后才出现的材料"替它补证；
-    - episode_pool：全量材料，仅作为显式声明的替代协议/分析口径；
-    - 证据包不可用时退回 claims 引用集合，并如实记录状态。
+
+def candidate_evidence_scope(
+    ep_dir: str,
+    candidate: AnswerCandidate,
+    episode_evidence: List[Dict[str, Any]],
+    mode: str = "candidate_pack",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """候选实际得到的允许证据 vs episode 全量材料（R3 + W02）。
+
+    - candidate_pack（默认协议）：只用该候选**冻结证据包**里的材料。包缺失、只找到部分包、
+      包结构不合法或包指向的原文缺失时，完整性无法确认 → `integrity_complete=False`，
+      调用方必须判该 episode 为 U，**不能**退回候选自己写的引用来认证来源（W02）。
+    - episode_pool：全量材料，仅作为显式声明的替代协议/分析口径。
     """
     by_id = {row.get("evidence_id"): row for row in episode_evidence}
-    packs = _load_packs(ep_dir)
-    pack_ids = list(candidate.evidence_pack_ids)
+    mode = str(mode or "candidate_pack")
+    packs, pack_problems = _load_packs(ep_dir)
+    requested = [str(p) for p in (candidate.evidence_pack_ids or [])]
+    resolved: List[str] = []
+    missing: List[str] = []
+    invalid: List[str] = []
     allowed_ids: List[str] = []
-    for pid in pack_ids:
+    for pid in requested:
         pack = packs.get(pid)
-        if not pack:
+        if pack is None:
+            missing.append(pid)
             continue
-        for material in pack.get("materials") or []:
-            for eid in material.get("evidence_ids") or []:
+        materials = _pack_materials(pack)
+        if materials is None:
+            invalid.append(pid)
+            continue
+        resolved.append(pid)
+        for material in materials:
+            for eid in material["evidence_ids"]:
                 if eid not in allowed_ids:
                     allowed_ids.append(eid)
     cited_ids = sorted({i for c in candidate.claims for i in c.evidence_ids})
-    status = "pack"
-    if not allowed_ids:
-        allowed_ids = cited_ids
-        status = "pack_unavailable_cited_fallback"
-    info = {
+    missing_allowed = [i for i in allowed_ids if i not in by_id]
+    if not requested:
+        failure = "pack_not_declared"
+    elif missing:
+        failure = "missing_pack"
+    elif invalid:
+        failure = "invalid_pack"
+    elif missing_allowed:
+        failure = "missing_allowed_evidence"
+    else:
+        failure = ""
+    info: Dict[str, Any] = {
         "mode": mode,
-        "status": status,
-        "pack_ids": pack_ids,
+        "status": "pack" if not failure else failure,
+        "requested_pack_ids": requested,
+        "pack_ids": requested,
+        "resolved_pack_ids": resolved,
+        "missing_pack_ids": missing,
+        "invalid_pack_ids": invalid,
+        "pack_problems": pack_problems,
+        "allowed_ids": allowed_ids,
         "allowed_count": len(allowed_ids),
-        "episode_pool_count": len(episode_evidence),
+        "missing_allowed_ids": missing_allowed,
+        "cited_ids": cited_ids,
         "cited_count": len(cited_ids),
-        "missing_allowed_ids": [i for i in allowed_ids if i not in by_id],
+        "episode_pool_count": len(episode_evidence),
+        "integrity_complete": not failure,
+        "failure_reason": failure,
         "claims_with_cited_pack_evidence": sum(1 for c in candidate.claims if set(c.evidence_ids) & set(allowed_ids)),
         "claims_total": len(candidate.claims),
     }
     if mode == "episode_pool":
         info["status"] = "episode_pool"
+        info["integrity_complete"] = True
+        info["failure_reason"] = ""
         return list(episode_evidence), info
+    if not info["integrity_complete"]:
+        # 明确不可用：不带任何"看起来像证据"的替代集合进入评价
+        return [], info
     return [by_id[i] for i in allowed_ids if i in by_id], info
 
 
@@ -920,14 +1008,38 @@ def evaluate_experiment(cfg: Dict[str, Any], root: Optional[str] = None) -> Dict
                                 episode_evidence,
                                 mode=str(spec.get("evidence_scope") or "candidate_pack"),
                             )
-                            verdict = judge.evaluate(
-                                task,
-                                candidate,
-                                eval_run_id=eval_run_id,
-                                evidence=evidence,
-                                rubric_version=str((spec.get("rubric") or {}).get("version", "v1")),
-                                node_id=entry.get("episode_id", ""),
-                            )
+                            rubric_version = str((spec.get("rubric") or {}).get("version", "v1"))
+                            if not scope_info.get("integrity_complete", True):
+                                # W02：冻结包/允许原文无法核验时明确不可用；分母保留，原因逐层下传
+                                verdict = judge.unavailable_verdict(
+                                    task,
+                                    candidate,
+                                    eval_run_id=eval_run_id,
+                                    rubric_version=rubric_version,
+                                    failure="evidence_input_incomplete",
+                                    evidence_plan={
+                                        "policy": "candidate_pack@v2",
+                                        "input_completeness": "artifact_integrity_incomplete",
+                                        "reason": scope_info.get("failure_reason", ""),
+                                        "requested_pack_ids": scope_info.get("requested_pack_ids", []),
+                                        "missing_pack_ids": scope_info.get("missing_pack_ids", []),
+                                        "invalid_pack_ids": scope_info.get("invalid_pack_ids", []),
+                                        "missing_allowed_ids": scope_info.get("missing_allowed_ids", []),
+                                        "allowed_ids": scope_info.get("allowed_ids", []),
+                                        "included_ids": [],
+                                        "dispatched": False,
+                                    },
+                                    extra={"evidence_scope": scope_info},
+                                )
+                            else:
+                                verdict = judge.evaluate(
+                                    task,
+                                    candidate,
+                                    eval_run_id=eval_run_id,
+                                    evidence=evidence,
+                                    rubric_version=rubric_version,
+                                    node_id=entry.get("episode_id", ""),
+                                )
                             scope_info["input"] = (verdict.payload or {}).get("evidence_plan")
                             assert eval_store is not None
                             SemanticJudge.record(eval_store, verdict, task_id)

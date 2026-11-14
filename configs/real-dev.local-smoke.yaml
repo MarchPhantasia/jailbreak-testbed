@@ -50,6 +50,8 @@ method:
     selector: first
     max_format_retries: 1
     fallback: verbatim
+    lexical_policy: diagnostic_only   # W03 默认：字面覆盖只诊断
+    max_uncovered_ratio: 0.25         # 仅 hard_gate 下生效
   search:
     policy: linear
     scorer: 'null'

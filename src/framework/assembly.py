@@ -145,10 +145,26 @@ class Assembler:
 # --------------------------------------------------------------------------
 ANSWER_CLAIM_CHECK = "answer-evidence-ngram@v1"
 DIAGNOSTICS_VERSION = "structural@v1"
+#: 诊断版本（两种 lexical_policy 都记录，便于对照）
+LEXICAL_DIAGNOSTIC_VERSION = "answer-evidence-ngram@v1"
+#: 字面覆盖策略：diagnostic_only = 只诊断（默认）；hard_gate = 旧行为，低覆盖触发重试/降级
+LEXICAL_POLICY_VERSION = "lexical-policy@v1"
+LEXICAL_POLICIES = ("diagnostic_only", "hard_gate")
+DEFAULT_LEXICAL_POLICY = "diagnostic_only"
 #: 长于该长度的答案行必须能对上 claim 或证据包；更短的行按引导语/标题处理
 COVERAGE_MIN_LINE_CHARS = 48
 #: 行内 4-gram 至少这么多比例能在 claims+证据里找到，才算有依据
 COVERAGE_MIN_OVERLAP = 0.30
+
+
+def resolve_lexical_policy(value: Any) -> str:
+    """解析 method.assembly.lexical_policy；未知值直接报错，不隐式回退。"""
+    if value is None or value == "":
+        return DEFAULT_LEXICAL_POLICY
+    text = str(value).strip().lower()
+    if text not in LEXICAL_POLICIES:
+        raise ValueError(f"method.assembly.lexical_policy 只能是 {' / '.join(LEXICAL_POLICIES)}：{value!r}")
+    return text
 
 
 def _looks_like_gap(line: str) -> bool:
@@ -264,8 +280,12 @@ def coverage_diagnostics(
 class LLMAssembler(Assembler):
     """把冻结证据包交给 Assembler 角色模型，产出 answer/claims/gaps。
 
-    校验只做结构与引用归属：引用 ID 属于该包、schema 字段合法、答案实质行能被 claims
-    覆盖。语义支持与保真度仍为未核验，不在这里自证。
+    校验分两层（W03）：
+
+    - 结构层（两种策略都执行）：answer 非空且长度合法、claims/gaps schema 合法、引用 ID
+      存在且属于冻结包、无重复 ID；语义支持与保真度仍交给冻结语义 Judge_eval，不在这里自证。
+    - 字面层：``lexical_policy=diagnostic_only``（默认）只记录 answer—evidence 4-gram 覆盖率；
+      ``hard_gate`` 保留旧行为，低覆盖触发格式重试或原文降级（明确限制跨语言/改写）。
     """
 
     def __init__(
@@ -277,6 +297,7 @@ class LLMAssembler(Assembler):
         max_uncovered_ratio: float = 0.25,
         stage_id: str = "assemble",
         output_limit: int = 20000,
+        lexical_policy: str = DEFAULT_LEXICAL_POLICY,
     ):
         self.gateway = gateway
         self.template = template
@@ -285,8 +306,10 @@ class LLMAssembler(Assembler):
         self.stage_id = stage_id
         self.output_limit = int(output_limit)
         self.name = "llm_assembler"
+        self.lexical_policy = resolve_lexical_policy(lexical_policy)
         self.last_call_ids: List[str] = []
         self.last_failure = ""
+        self.last_lexical_diagnostics: Dict[str, Any] = {}
 
     # ---- 输入 ----
     def _input_payload(self, task: Task, pack: EvidencePack) -> Dict[str, Any]:
@@ -385,8 +408,27 @@ class LLMAssembler(Assembler):
                 str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
             )
             ratio, unsupported = uncovered_ratio(answer, [], pack_text)
-            if ratio > self.max_uncovered_ratio:
+            self.last_lexical_diagnostics = {
+                "version": LEXICAL_DIAGNOSTIC_VERSION,
+                "uncovered_ratio": round(ratio, 4),
+                "unsupported_lines": len(unsupported),
+                "gate": self.lexical_policy,
+                "threshold": self.max_uncovered_ratio if self.lexical_policy == "hard_gate" else None,
+                "triggered": bool(self.lexical_policy == "hard_gate" and ratio > self.max_uncovered_ratio),
+            }
+            if self.lexical_policy == "hard_gate" and ratio > self.max_uncovered_ratio:
+                # 旧行为（研究变体）：低字面覆盖视为格式问题，触发有限重试或原文降级
                 problems.append(f"answer_not_grounded_in_pack:{len(unsupported)}")
+        else:
+            self.last_lexical_diagnostics = {
+                "version": LEXICAL_DIAGNOSTIC_VERSION,
+                "uncovered_ratio": None,
+                "unsupported_lines": None,
+                "gate": self.lexical_policy,
+                "threshold": self.max_uncovered_ratio if self.lexical_policy == "hard_gate" else None,
+                "triggered": False,
+                "note": "结构问题优先：未计算字面诊断",
+            }
         if problems:
             return None, problems
         return {"answer": answer, "claims": claims, "gaps": list(gaps_raw)}, []
@@ -466,6 +508,9 @@ class LLMAssembler(Assembler):
                 "answer_claim_check": ANSWER_CLAIM_CHECK,
                 "uncovered_ratio": round(ratio, 4),
                 "diagnostics": diagnostics,
+                "lexical_policy": self.lexical_policy,
+                "lexical_policy_version": LEXICAL_POLICY_VERSION,
+                "lexical_diagnostics": dict(self.last_lexical_diagnostics),
                 "attempts": attempts,
             },
             stage_policy_ref=stage_policy_ref,
@@ -491,6 +536,9 @@ class LLMAssembler(Assembler):
                     "k": k,
                     "attempts": attempts,
                     "failure": self.last_failure,
+                    "lexical_policy": self.lexical_policy,
+                    "lexical_policy_version": LEXICAL_POLICY_VERSION,
+                    "lexical_diagnostics": dict(self.last_lexical_diagnostics),
                 },
                 stage_policy_ref=stage_policy_ref,
                 processing_refs=[f"fallback:material_template@v1", f"pack:{pack.pack_id}"],
@@ -515,6 +563,7 @@ def make_assembler(cfg: Dict[str, Any], *, gateway=None, template=None):
             template,
             max_format_retries=int(spec.get("max_format_retries", 1)),
             max_uncovered_ratio=float(spec.get("max_uncovered_ratio", 0.25)),
+            lexical_policy=resolve_lexical_policy(spec.get("lexical_policy")),
         )
     raise ValueError(f"未支持的 assembly.type：{kind}（不做隐式回退）")
 

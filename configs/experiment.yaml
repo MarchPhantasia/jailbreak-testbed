@@ -31,6 +31,7 @@ method:
   assembly:
     k: 1                       # 单候选是开发起点
     selector: coverage         # first | coverage
+    lexical_policy: diagnostic_only   # W03 默认（type=material_template 时仅记录）
   search:
     policy: linear             # linear | best_first | uct
     scorer: rule               # null | rule

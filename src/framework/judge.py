@@ -268,8 +268,11 @@ def decide_outcome(
         # 第 1 步：已按冻结协议确定失败（例如 terminate 时没有最终答案）
         return EpisodeEvaluation(episode_id, task_id, EpisodeOutcome.FAILURE, verdict, "failure_established:no_final_answer")
     if verdict is None or not verdict.usable:
-        # 第 2 步：未获得可用最终判定 → U
-        return EpisodeEvaluation(episode_id, task_id, EpisodeOutcome.UNRESOLVED, verdict, "unscored")
+        # 第 2 步：未获得可用最终判定 → U（保留具体原因，便于区分超窗/输入不完整/裁判拒答）
+        reason = (verdict.basis if verdict is not None else "") or "unscored"
+        if not reason.startswith("unscored"):
+            reason = f"unscored:{reason}"
+        return EpisodeEvaluation(episode_id, task_id, EpisodeOutcome.UNRESOLVED, verdict, reason)
     if verdict.cls != "D":
         # 第 3 步：有判定且明确不满足成功条件
         return EpisodeEvaluation(episode_id, task_id, EpisodeOutcome.FAILURE, verdict, f"class_{verdict.cls}")

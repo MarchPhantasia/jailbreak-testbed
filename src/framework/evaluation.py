@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .budget import BudgetExhausted
-from .context import estimate_tokens, input_token_budget
+from .context import DEFAULT_RESERVE, estimate_tokens, request_budget
 from .clients import CallResult, ModelGateway
-from .contracts import AnswerCandidate, Role, Status, Task, Verdict, new_id
+from .contracts import AnswerCandidate, Phase, Role, Status, Task, Verdict, new_id
 from .events import EventStore
 from .prompts import THINK_ADAPTER_VERSION, PromptTemplate, final_content
 
@@ -26,8 +26,9 @@ TASK_FULFILLMENT = ("complete", "partial", "none", "uncertain")
 SOURCE_COMPLIANCE = ("met", "not_met", "unknown")
 EVIDENCE_SUFFICIENCY = ("sufficient", "insufficient", "unknown")
 
-#: 裁判证据策略：被引用证据优先且完整；其余整条装入，不切割、不静默取前缀
-EVIDENCE_POLICY = "cited-first-whole@v1"
+#: 裁判证据策略：被引用证据优先且完整；其余整条装入，不切割、不静默取前缀；
+#: v2 起 token 预算先扣除模板/任务/答案/claims/包装等固定开销，并按完整渲染请求复检。
+EVIDENCE_POLICY = "cited-first-whole@v2"
 
 
 def plan_evidence(
@@ -35,13 +36,18 @@ def plan_evidence(
     cited_ids: Optional[List[str]],
     cap_chars: int,
     token_budget: Optional[int] = None,
+    fixed_tokens: int = 0,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """按可审计规则选择裁判输入证据。
 
     - 被 claims 引用的证据必须**完整**进入（即使超过 cap/预算，也保留并声明 over_cap/over_context）；
     - 其余证据整条装入，装不下就整条省略并记录 id；绝不切割单条证据；
-    - 同时受字符上限与上下文 token 预算约束（token 预算来自服务的 context_window）；
+    - 同时受字符上限与上下文 token 预算约束（token 预算来自服务的 context_window，
+      且**已扣除**模板、任务、答案、claims、审计字段等固定输入开销 `fixed_tokens`）；
     - 引用 ID 在证据集合里找不到时记 cited_missing（评价输入不完整，调用方应判不可用）。
+
+    这里只是"证据这一段"的预算；整份渲染请求是否放得下由 `SemanticJudge.prepare_request`
+    用同一个 `request_budget()` 复检。`cap_chars` 是软上限：被引用证据允许整体超出并标 over_cap。
     """
     rows: List[Dict[str, Any]] = []
     for row in evidence or []:
@@ -110,6 +116,7 @@ def plan_evidence(
         "policy": EVIDENCE_POLICY,
         "cap_chars": cap_chars,
         "token_budget": token_budget,
+        "fixed_input_tokens_estimate": int(fixed_tokens or 0),
         "included_ids": [r["evidence_id"] for r in included],
         "omitted_ids": omitted,
         "missing_cited_ids": missing_cited,
@@ -232,19 +239,34 @@ class SemanticJudge:
         self.last_call_ids: List[str] = []
 
     # ---- 输入 ----
-    def build_input(
+    def _plan_skeleton(self) -> Dict[str, Any]:
+        """固定输入估算用的占位计划：字段形态与最终计划一致，避免低估包装开销。"""
+        return {
+            "policy": EVIDENCE_POLICY,
+            "cap_chars": self.max_evidence_chars,
+            "token_budget": None,
+            "fixed_input_tokens_estimate": 0,
+            "included_ids": [],
+            "omitted_ids": [],
+            "missing_cited_ids": [],
+            "included_chars": 0,
+            "included_tokens_estimate": 0,
+            "total_candidates": 0,
+            "over_cap": False,
+            "over_context": False,
+            "truncated": False,
+            "context_window": self.context_window,
+            "input_completeness": "pending_render_check",
+        }
+
+    def _payload(
         self,
         task: Task,
         candidate: AnswerCandidate,
-        evidence: Optional[List[Dict[str, Any]]] = None,
+        evidence_rows: List[Dict[str, Any]],
+        evidence_plan: Dict[str, Any],
     ) -> Dict[str, Any]:
         cited_ids = sorted({i for c in candidate.claims for i in c.evidence_ids})
-        token_budget = input_token_budget(self.context_window, self.max_output_tokens)
-        evidence_rows, evidence_plan = plan_evidence(
-            evidence, cited_ids, self.max_evidence_chars, token_budget=token_budget
-        )
-        evidence_plan["context_window"] = self.context_window
-        self.last_evidence_plan = evidence_plan
         return {
             "evaluation_subject": {
                 "object": "original_task_and_final_candidate",
@@ -279,7 +301,167 @@ class SemanticJudge:
             },
         }
 
+    def _messages(self, payload: Dict[str, Any]) -> List[Dict[str, str]]:
+        return [{"role": "user", "content": self.template.render(payload)}]
+
+    def _budget(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """与网关发送前检查共用同一个估算器与 reserve。"""
+        return request_budget(
+            context_window=self.context_window,
+            messages=messages,
+            max_tokens=self.max_output_tokens,
+            reserve=DEFAULT_RESERVE,
+        )
+
+    def build_input(
+        self,
+        task: Task,
+        candidate: AnswerCandidate,
+        evidence: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """选择证据并返回将送入裁判的完整输入（W01：预算含固定输入开销）。"""
+        payload, _messages, _budget, _dispatched = self.prepare_request(task, candidate, evidence)
+        return payload
+
+    def prepare_request(
+        self,
+        task: Task,
+        candidate: AnswerCandidate,
+        evidence: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, str]], Dict[str, Any], bool]:
+        """构造裁判请求并判定是否可以发送。
+
+        流程（有限、确定，不截断单条证据、不截答案）：
+        1. 先渲染"无证据"的完整固定输入，估算模板/任务/答案/claims/模板包装的 token 开销；
+        2. 证据预算 = 窗口 − 输出上限 − reserve − 固定开销，仍保持引用证据优先且完整；
+        3. 对渲染完成的整份 messages 用同一个 `request_budget()` 复检；
+        4. 仍放不下时只整条移除**可省略**（未被引用）的证据，每次重渲染并复检；
+        5. 只剩必需内容仍超窗 → 不发请求，返回 dispatched=False（U，保留分母）。
+        """
+        rows = list(evidence or [])
+        cited_ids = sorted({i for c in candidate.claims for i in c.evidence_ids})
+        fixed_payload = self._payload(task, candidate, [], self._plan_skeleton())
+        fixed_tokens = int(self._budget(self._messages(fixed_payload))["estimated_input_tokens"])
+
+        available: Optional[int] = None
+        if self.context_window:
+            available = max(
+                0,
+                int(self.context_window) - int(self.max_output_tokens or 0) - DEFAULT_RESERVE - fixed_tokens,
+            )
+
+        selected, plan = plan_evidence(
+            rows,
+            cited_ids,
+            self.max_evidence_chars,
+            token_budget=available,
+            fixed_tokens=fixed_tokens,
+        )
+        plan.update(
+            {
+                "context_window": self.context_window,
+                "max_output_tokens": int(self.max_output_tokens or 0),
+                "reserve_tokens": DEFAULT_RESERVE,
+            }
+        )
+        self.last_evidence_plan = plan
+
+        payload = self._payload(task, candidate, selected, plan)
+        messages = self._messages(payload)
+        budget = self._budget(messages)
+
+        # 有限省略：只丢未被引用的整条证据，且每轮至少减少一条，必然终止
+        while budget["fits"] is False and any(not r.get("cited") for r in selected):
+            dropped = None
+            for idx in range(len(selected) - 1, -1, -1):
+                if not selected[idx].get("cited"):
+                    dropped = selected.pop(idx)
+                    break
+            if dropped is None:
+                break
+            if dropped["evidence_id"] not in plan["omitted_ids"]:
+                plan["omitted_ids"].append(dropped["evidence_id"])
+            plan["included_ids"] = [r["evidence_id"] for r in selected]
+            plan["included_chars"] = sum(len(r["text"]) for r in selected)
+            plan["included_tokens_estimate"] = sum(estimate_tokens(r["text"]) for r in selected)
+            plan["input_completeness"] = "declared_omission"
+            payload = self._payload(task, candidate, selected, plan)
+            messages = self._messages(payload)
+            budget = self._budget(messages)
+
+        if plan.get("missing_cited_ids"):
+            plan["input_completeness"] = "cited_missing"
+        elif budget["fits"] is False:
+            plan["over_context"] = True
+            plan["input_completeness"] = (
+                "over_context_cited_priority" if any(r.get("cited") for r in selected) else "over_context_fixed_input"
+            )
+
+        # 计划字段先定稿再渲染：保证 messages 与实际 payload 逐字节一致
+        plan["fits"] = budget["fits"]
+        payload = self._payload(task, candidate, selected, plan)
+        messages = self._messages(payload)
+        budget = self._budget(messages)
+
+        dispatched = budget["fits"] is not False and not plan.get("missing_cited_ids")
+        return payload, messages, budget, dispatched
+
+    def _record_not_dispatched(
+        self,
+        *,
+        plan: Dict[str, Any],
+        budget: Dict[str, Any],
+        failure: str,
+        node_id: str,
+        phase: Phase = Phase.ANALYSIS,
+    ) -> None:
+        """把"没有发出、为什么没发出"写进事件（与网关同名的 component_error）。"""
+        store = getattr(self.gateway, "store", None)
+        if store is None:
+            return
+        store.append(
+            "component_error",
+            phase=phase,
+            role=Role.JUDGE_EVAL.value,
+            stage_id=self.template.stage_id,
+            node_id=node_id,
+            payload={
+                "error": failure,
+                "context": budget,
+                "evidence_plan": plan,
+                "note": "裁判请求预检未通过；请求未发出，也未计入调用预算",
+            },
+        )
+
     # ---- 评价 ----
+    def unavailable_verdict(
+        self,
+        task: Task,
+        candidate: AnswerCandidate,
+        *,
+        eval_run_id: str,
+        rubric_version: str = "",
+        failure: str = "evidence_input_incomplete",
+        evidence_plan: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Verdict:
+        """显式记录"评价不可用"，而不是抛异常或冒充 F/S。"""
+        payload: Dict[str, Any] = {"assessment": "unscored", "failure": failure, "dispatched": False}
+        if evidence_plan is not None:
+            payload["evidence_plan"] = evidence_plan
+        payload.update(extra or {})
+        return Verdict(
+            verdict_id=new_id("vd"),
+            eval_run_id=eval_run_id,
+            task_id=task.task_id,
+            answer_id=candidate.candidate_id,
+            rubric_version=rubric_version or str(self.rubric.get("version", "v1")),
+            judge_ref=self.judge_ref,
+            usable=False,
+            basis=f"unscored:{failure}",
+            payload=payload,
+        )
+
     def evaluate(
         self,
         task: Task,
@@ -290,38 +472,49 @@ class SemanticJudge:
         rubric_version: str = "",
         node_id: str = "",
     ) -> Verdict:
-        payload = self.build_input(task, candidate, evidence)
+        payload, messages, request_estimate, dispatches = self.prepare_request(task, candidate, evidence)
         plan = payload["evidence_plan"]
-        if plan["input_completeness"] == "over_context_cited_priority":
-            # 被引用证据本身就超过上下文预算：不发注定失败的请求，保留可离线重评的记录
-            return Verdict(
-                verdict_id=new_id("vd"),
+        if not dispatches:
+            # 整份请求（含固定输入与必需证据）放不下，或引用证据缺失：不发、不扣预算，记 U
+            failure = "evidence_input_incomplete" if plan["input_completeness"] == "cited_missing" else "context_budget_exceeded"
+            self._record_not_dispatched(plan=plan, budget=request_estimate, failure=failure, node_id=node_id)
+            return self.unavailable_verdict(
+                task,
+                candidate,
                 eval_run_id=eval_run_id,
-                task_id=task.task_id,
-                answer_id=candidate.candidate_id,
-                rubric_version=rubric_version or str(self.rubric.get("version", "v1")),
-                judge_ref=self.judge_ref,
-                usable=False,
-                basis="unscored:context_budget_exceeded",
-                payload={"assessment": "unscored", "evidence_plan": plan, "failure": "context_budget_exceeded"},
-            )
-        if plan["input_completeness"] == "cited_missing":
-            return Verdict(
-                verdict_id=new_id("vd"),
-                eval_run_id=eval_run_id,
-                task_id=task.task_id,
-                answer_id=candidate.candidate_id,
-                rubric_version=rubric_version or str(self.rubric.get("version", "v1")),
-                judge_ref=self.judge_ref,
-                usable=False,
-                basis="unscored:evidence_input_incomplete",
-                payload={"assessment": "unscored", "evidence_plan": plan, "failure": "cited_missing"},
+                rubric_version=rubric_version,
+                failure=failure,
+                evidence_plan=plan,
+                extra={"request_budget": request_estimate, "dispatched": False},
             )
         template_ref = self.template.ref()
         attempts: List[Dict[str, Any]] = []
         parsed: Optional[JudgeParse] = None
-        messages = [{"role": "user", "content": self.template.render(payload)}]
         for attempt in range(1 + self.max_format_retries):
+            attempt_budget = self._budget(messages)
+            if attempt_budget["fits"] is False:
+                # 追加修复消息后超窗：先前已发出的调用照样计费，这里不再发、也不再重试
+                self.last_failure = "context_budget_exceeded"
+                attempts.append(
+                    {
+                        "attempt": attempt + 1,
+                        "status": "not_dispatched",
+                        "error": "context_budget_exceeded",
+                        "context": attempt_budget,
+                    }
+                )
+                self._record_not_dispatched(
+                    plan=plan, budget=attempt_budget, failure="context_budget_exceeded", node_id=node_id
+                )
+                return self.unavailable_verdict(
+                    task,
+                    candidate,
+                    eval_run_id=eval_run_id,
+                    rubric_version=rubric_version,
+                    failure="context_budget_exceeded",
+                    evidence_plan=plan,
+                    extra={"request_budget": attempt_budget, "attempts": attempts, "dispatched": False},
+                )
             try:
                 res: CallResult = self.gateway.call(
                     Role.JUDGE_EVAL,
@@ -355,6 +548,7 @@ class SemanticJudge:
                     "text_chars": len(res.text or ""),
                     "final_content": getattr(parsed, "meta", None) or {"adapter_version": THINK_ADAPTER_VERSION},
                     "evidence_plan": plan,
+                    "context": attempt_budget,
                 }
             )
             if parsed.ok:
@@ -380,6 +574,8 @@ class SemanticJudge:
                     "assessment": "unscored",
                     "attempts": attempts,
                     "failure": self.last_failure,
+                    "evidence_plan": plan,
+                    "request_budget": request_estimate,
                 },
             )
 
@@ -394,7 +590,7 @@ class SemanticJudge:
                 judge_ref=self.judge_ref,
                 usable=False,
                 basis=f"unscored:judge_declined:{parsed.payload.get('reason', '')[:80]}",
-                payload={**parsed.payload, "attempts": attempts, "evidence_plan": plan},
+                payload={**parsed.payload, "attempts": attempts, "evidence_plan": plan, "request_budget": request_estimate},
             )
 
         success = success_from_rule(parsed.payload, self.rubric.get("success_rule") or {})
@@ -414,7 +610,14 @@ class SemanticJudge:
                 f"semantic:tf={tf},src={parsed.payload.get('source_compliance')},"
                 f"ev={parsed.payload.get('evidence_sufficiency')},success={success}"
             ),
-            payload={**parsed.payload, "success": success, "attempts": attempts, "judge_ref": self.judge_ref, "evidence_plan": plan},
+            payload={
+                **parsed.payload,
+                "success": success,
+                "attempts": attempts,
+                "judge_ref": self.judge_ref,
+                "evidence_plan": plan,
+                "request_budget": request_estimate,
+            },
         )
 
     # ---- 记录 ----

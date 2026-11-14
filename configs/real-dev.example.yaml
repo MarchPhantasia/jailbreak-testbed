@@ -43,6 +43,9 @@ method:
     selector: first
     max_format_retries: 1
     fallback: verbatim        # 显式降级：保留原文与缺项，标 fallback_render
+    # W03：字面 4-gram 覆盖只作诊断（默认）；hard_gate 保留旧的拒收/重试行为，作为显式研究变体
+    lexical_policy: diagnostic_only
+    max_uncovered_ratio: 0.25  # 仅 hard_gate 下的拒收阈值
   search:
     policy: linear
     scorer: 'null'

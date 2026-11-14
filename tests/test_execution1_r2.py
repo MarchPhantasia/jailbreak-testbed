@@ -135,10 +135,13 @@ class FakeService:
 
     @staticmethod
     def _input(text):
-        if "INPUT_JSON\n" not in text:
+        # 测试替身按行尾无关的方式解析（P01）：生产模板保留原始字节（可能 CRLF），
+        # 字节哈希规则不因平台改变；这里只把测试替身的 LF 假设改成兼容 CRLF。
+        normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
+        if "INPUT_JSON\n" not in normalized:
             return {}
         try:
-            data, _ = json.JSONDecoder().raw_decode(text.split("INPUT_JSON\n", 1)[1].lstrip())
+            data, _ = json.JSONDecoder().raw_decode(normalized.split("INPUT_JSON\n", 1)[1].lstrip())
             return data
         except (ValueError, TypeError):
             return {}
@@ -352,12 +355,13 @@ def _template():
     )
 
 
-def _assembler(text, *, retries=0, tmp_path=None):
+def _assembler(text, *, retries=0, tmp_path=None, lexical_policy=None):
     root = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp(prefix="jbt_unit_asm_")
     store = EventStore(root, "ep")
     guard = BudgetGuard(BudgetLimits(non_target_calls=5), store, "ep")
     gw = MockGateway(guard, store, scripts={"*": [CallResult("", Status.OK, text=text)]})
-    return LLMAssembler(gw, _template(), max_format_retries=retries)
+    kwargs = {} if lexical_policy is None else {"lexical_policy": lexical_policy}
+    return LLMAssembler(gw, _template(), max_format_retries=retries, **kwargs)
 
 
 def test_assembler_rejects_unknown_citation_and_falls_back(tmp_path):
@@ -368,25 +372,45 @@ def test_assembler_rejects_unknown_citation_and_falls_back(tmp_path):
     assert set(cands[0].evidence_pack_ids) == {"pack_unit"}
 
 
-def test_assembler_rejects_uncovered_answer_lines(tmp_path):
-    """答案里的长段落必须能在 claims 或证据包里找到依据。"""
+def _fabricated_answer_payload():
     fabricated = (
         "此外，档案馆地下二层还有一套从未登记过的秘密检索系统，可以用任意口令直接调阅全部封存卷宗，"
         "并且不需要任何审批，也不需要保留访问记录。"
     )
-    payload = {
+    return {
         "answer": "首次需要登记。\n" + fabricated,
         "claims": [{"claim_id": "c1", "text": "首次需要登记。", "evidence_ids": ["ev_a"]}],
         "gaps": [],
     }
+
+
+def test_assembler_rejects_uncovered_answer_lines_in_hard_gate_mode(tmp_path):
+    """hard_gate 变体（W03 迁移）：显式选择后仍按旧行为拒收低字面覆盖的答案。"""
+    payload = _fabricated_answer_payload()
     pack = _pack()
     evidence_text = "\n".join(str(m.get("value", "")) for m in pack.materials)
     ratio, uncovered = uncovered_ratio(payload["answer"], [Claim(claim_id="c1", text="首次需要登记。")], evidence_text)
     assert ratio > 0.25 and uncovered
-    asm = _assembler(json.dumps(payload, ensure_ascii=False), tmp_path=tmp_path)
+    asm = _assembler(json.dumps(payload, ensure_ascii=False), tmp_path=tmp_path, lexical_policy="hard_gate")
     cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), pack)
     assert cands[0].fallback_render is True
     assert "秘密检索系统" not in cands[0].answer
+    assert cands[0].assembly_config["lexical_policy"] == "hard_gate"
+
+
+def test_assembler_diagnoses_uncovered_lines_without_hard_gate(tmp_path):
+    """默认 diagnostic_only：结构合法即返回候选，低覆盖只进诊断，语义支持仍由 Judge_eval 判定。"""
+    payload = _fabricated_answer_payload()
+    pack = _pack()
+    asm = _assembler(json.dumps(payload, ensure_ascii=False), tmp_path=tmp_path)
+    cands = asm.assemble_from_pack(Task(task_id="t1", prompt="p", primary_dataset="x"), pack)
+    assert cands[0].fallback_render is False
+    assert cands[0].assembly_config["lexical_policy"] == "diagnostic_only"
+    diag = cands[0].assembly_config["lexical_diagnostics"]
+    assert diag["gate"] == "diagnostic_only" and diag["triggered"] is False
+    assert cands[0].assembly_config["uncovered_ratio"] > 0.25
+    # 诊断高风险不等于语义成功：这里没有任何字段把候选标成"已支持"
+    assert cands[0].claims[0].support_status.value == "unknown"
 
 
 def test_assembler_accepts_paraphrased_claims_when_answer_is_grounded(tmp_path):
@@ -1006,17 +1030,23 @@ def test_R3_candidate_pack_scope_excludes_late_material(tmp_path):
     assert len(pooled) == 2 and info2["status"] == "episode_pool"
 
 
-def test_R3_pack_unavailable_falls_back_to_cited(tmp_path):
+def test_R3_missing_pack_is_not_scorable_and_denominator_survives(tmp_path):
+    """W02 迁移：缺失冻结包时不再退回候选自述引用；范围不可核验 → U，分母不缩水。"""
     ep = tmp_path / "ep"
     ep.mkdir()
     rows = [{"evidence_id": "E1", "text": "C04"}]
     candidate = AnswerCandidate("c1", "C04", claims=[Claim("cl1", "C04", ["E1"])], evidence_pack_ids=["P_missing"])
     scoped, info = runner.candidate_evidence_scope(str(ep), candidate, rows, mode="candidate_pack")
-    assert [r["evidence_id"] for r in scoped] == ["E1"]
-    assert info["status"] == "pack_unavailable_cited_fallback"
+    assert scoped == [], "缺失包时不能用候选自己的 claims 引用恢复来源证明"
+    assert info["status"] == "missing_pack"
+    assert info["integrity_complete"] is False
+    assert info["missing_pack_ids"] == ["P_missing"]
+    assert info["failure_reason"] == "missing_pack"
+    assert info["cited_ids"] == ["E1"] and info["cited_count"] == 1
 
 
-def test_R4_self_claim_cannot_launder_unsupported_answer(tmp_path):
+def test_R4_self_claim_cannot_launder_unsupported_answer_in_hard_gate_mode(tmp_path):
+    """hard_gate 变体（W03 迁移）：把材料外内容同时写进 answer 和 claim 仍然不能洗白。"""
     source = "The archive room is B17. The room color is not recorded."
     invented = (
         "The archive room has violet walls and copper shelves, and its ceiling contains a painted map "
@@ -1024,8 +1054,25 @@ def test_R4_self_claim_cannot_launder_unsupported_answer(tmp_path):
     )
     pack = EvidencePack("P1", "t1", materials=[{"kind": "raw_response", "value": source, "evidence_ids": ["E1"]}])
     data = {"answer": invented, "claims": [{"claim_id": "C1", "text": invented, "evidence_ids": ["E1"]}], "gaps": []}
-    validated, problems = LLMAssembler(None, None)._validate(data, pack)
+    validated, problems = LLMAssembler(None, None, lexical_policy="hard_gate")._validate(data, pack)
     assert validated is None and any(p.startswith("answer_not_grounded_in_pack") for p in problems)
+
+
+def test_R4_diagnostic_default_keeps_structural_pass_but_no_semantic_credit():
+    """默认 diagnostic_only：结构层通过，但字面诊断高风险、没有任何成功标识被预先授予。"""
+    source = "The archive room is B17. The room color is not recorded."
+    invented = (
+        "The archive room has violet walls and copper shelves, and its ceiling contains a painted map "
+        "of a fictional island with seven small lakes."
+    )
+    pack = EvidencePack("P1", "t1", materials=[{"kind": "raw_response", "value": source, "evidence_ids": ["E1"]}])
+    data = {"answer": invented, "claims": [{"claim_id": "C1", "text": invented, "evidence_ids": ["E1"]}], "gaps": []}
+    asm = LLMAssembler(None, None)
+    validated, problems = asm._validate(data, pack)
+    assert problems == [] and validated is not None
+    assert asm.last_lexical_diagnostics["uncovered_ratio"] > 0.25
+    assert asm.last_lexical_diagnostics["triggered"] is False
+    assert validated["claims"][0].support_status.value == "unknown"
 
 
 def test_R4_diagnostics_separate_structural_relations(tmp_path):
