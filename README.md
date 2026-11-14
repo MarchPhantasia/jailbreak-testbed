@@ -41,10 +41,12 @@
 | 阶段调用额度（与全局同时生效） | ✅ E01 | `framework/budget.py` |
 | 请求产物：权威事件 + 派生索引 + Target 关联 | ✅ E02 | `framework/requests.py` |
 | 证据约束的模型装配与声明降级 | ✅ E03 | `framework/assembly.py`（`LLMAssembler`） |
+| 字面覆盖只诊断 / hard_gate 变体 | ✅ W03 | `method.assembly.lexical_policy` |
+| 裁判完整请求预算与输入完整性 | ✅ W01/W02 | `runner._build_eval_judge`、`candidate_evidence_scope` |
 | 独立语义 Judge_eval（S/F/U 由程序计算） | ✅ E04 | `framework/evaluation.py` |
 | 真实 CSV 入口、开发切片与运行报告 | ✅ E05 | `framework/slices.py`、`scripts/` |
 | 最终内容判定（推理块不冒充输出） | ✅ R1 | `framework/prompts.py`（`inline-think@v2`） |
-| 裁判证据选择与完整性记录 | ✅ R2 | `framework/evaluation.py`（`cited-first-whole@v1`） |
+| 裁判证据选择与完整性记录 | ✅ R2 | `framework/evaluation.py`（`cited-first-whole@v2`） |
 | 候选证据包口径（vs episode 池） | ✅ R3 | `runner.candidate_evidence_scope` |
 | 结构诊断拆分（不宣称语义支持） | ✅ R4 | `framework/assembly.py` |
 | 确定性路径基准 | ✅ R5 | `experiment.path_base` |
@@ -102,9 +104,13 @@ tokenizer，用偏保守的估算（CJK 1 token/字、其他 0.3 token/字符 + 
 
 - 估算输入 + `max_tokens` + 预留 > 窗口 → **不发请求、不占预算**，记 `component_error:context_budget_exceeded`；
 - 每个 `request_sent` 记录 `context`（估算输入、max_tokens、窗口、余量），便于事后核对；
-- 裁判证据选择同时受 `evaluation.max_evidence_chars`（字符硬上限）与窗口换算出的 **token 预算**约束：
-  被引用证据优先且完整，其余整条装入/省略并记录；被引用证据自身超预算 → `unscored:context_budget_exceeded`，
-  留待更大窗口离线重评；
+- **离线裁判走同一条拦截路径**（W01）：`_build_eval_judge` 把冻结的 `evaluation_spec.service.context_window`
+  交给实际发送网关，而不是只交给 `SemanticJudge`；窗口为 `None` 时保持未知语义，不伪造 32k。
+- 裁判证据预算先扣除**固定输入开销**（模板、原始任务、最终答案、claims、rubric、schema、审计字段），
+  再按整份渲染请求复检；追加格式修复消息后同样复检。仍放不下时只整条省略**未被引用**的证据并记录 id；
+  必需内容自身超窗 → `unscored:context_budget_exceeded`（U，保留分母），且不对同一超窗输入重复重试。
+- `evaluation.max_evidence_chars` 是**软上限**：被引用证据允许整体超出并标记 `over_cap`，
+  不会被截断；真正的硬边界是服务窗口。两条约束都写进 `evidence_plan`。
 - 校验阶段就拒绝 `max_tokens ≥ context_window` 的配置，不等到调用时才发现。
 
 32k 窗口的起点配置：Target/Judge `max_tokens=8192`，Assembler `8192`，Controller `4096`；
@@ -189,6 +195,11 @@ a9b45c9 的 13 项问题（R01–R13）逐项状态、修改、验证与剩余�
 - 未知评分记为 `null`，不写 0、不当失败。
 - `restore` 只重放 `state_write`，不调用模型。
 - 每个 episode 只有一条 `terminate`；结果在 EvaluationRun 侧统一落定。
+- `candidate_pack` 协议下，冻结包缺失/只找到部分包/包结构损坏/包指向的原文缺失 → 该 episode 记
+  `unscored:evidence_input_incomplete`（U），**不**退回候选自己写的引用来认证来源，分母不缩水；
+  完整但内容不足仍判 F，完整且合法仍可判 S。
+- 装配的字面 4-gram 覆盖默认只作诊断（`lexical_policy=diagnostic_only`）：结构、引用归属仍校验，
+  语义支持由冻结 Judge_eval 判定；`hard_gate` 显式保留旧的拒收/重试行为并写入候选配置与计划。
 
 ## 未完成（下一轮）
 

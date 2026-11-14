@@ -2,6 +2,35 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.5.3] — 2026-11-14
+
+按审查包 `review-1bdc47b-handoff-v2.1` 修复 W01/W02 并落实 W03 默认策略。
+
+### 修复
+
+- W01：离线 `_build_eval_judge()` 把冻结 `context_window` 传给实际发送网关（此前只有 `SemanticJudge`
+  知道窗口，网关为 `None`）；裁判证据预算先扣除模板/任务/答案/claims/包装等固定开销，并对整份渲染请求
+  复检，追加格式修复消息后同样复检；超窗不发请求、不 reserve/dispatch、不重复无意义重试，记
+  `unscored:context_budget_exceeded`（U，保留分母）。`evidence_plan` 升到 `cited-first-whole@v2`。
+- W02：`candidate_pack` 完整性状态贯通 `candidate_evidence_scope → evidence_plan → Verdict → records`。
+  冻结包缺失、只找到部分包、包结构损坏或包指向的原文缺失时记 `unscored:evidence_input_incomplete`，
+  不再退回候选自述引用计分；损坏包行如实记 `pack_problems`。
+
+### 变更
+
+- W03：新增 `method.assembly.lexical_policy = diagnostic_only | hard_gate`，默认 `diagnostic_only`
+  （字面 4-gram 覆盖只诊断，不再触发重试/降级）；`hard_gate` 显式保留旧门槛。未知值在配置校验与
+  `make_assembler()` 直接报错。候选 `assembly_config` 与 `plan.json.assembly_policy` 记录策略与版本。
+- `evaluation.max_evidence_chars` 在文档中改称软上限：被引用证据允许整体超出并标 `over_cap`，
+  不会被截断；真正的硬边界是服务窗口。
+
+### 测试
+
+- 迁移三处因语义改变而需显式选择策略的旧断言（`hard_gate`），并各补一条默认策略对照；
+  `FakeService` 的 `INPUT_JSON` 标记解析兼容 CRLF（生产模板字节哈希规则不变）。
+- 新增 `tests/test_w01_w02_w03_boundaries.py`：C01–C05、S01–S05、A01–A04、P01 共 18 项。
+- 本轮验收 9/9；仓库 250 passed；九套历史检查全过；`scripts/precheck.sh` 通过。
+
 ## [code-v0.5.2] — 2026-11-14
 
 ### 新增
