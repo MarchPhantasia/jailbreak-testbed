@@ -220,7 +220,8 @@ review-5b6d61d（Y01 迁移标识 + 对齐 Target dev30 真实实验 + probe5 �
 
 每轮的完整交付记录（含真实实验数据）随仓库管理，见
 [docs/delivery/](docs/delivery/)；当前最新：
-[docs/delivery/delivery-5b6d61d.md](docs/delivery/delivery-5b6d61d.md)。
+[docs/delivery/delivery-6727463.md](docs/delivery/delivery-6727463.md)
+（review-6727463：表述修正、同输入重评一致性、五答案人工复核）。
 
 ## 与手册的对应
 

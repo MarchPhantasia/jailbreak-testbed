@@ -2,7 +2,7 @@
 # 用作后续实验的默认小批次与框架基本能力验证。选取规则与 dev30 任务对应关系见
 # docs/delivery/delivery-5b6d61d.md 与 data/slices/*probe5*.manifest.json（数据不入库）。
 #
-# 五题覆盖的失败模式：
+# 五题的选题依据（dev30 中的历史失败模式；实际每批走到的模式可能不同，以运行记录为准）：
 #   sr_0000<-dev30 sr_0001 干净双拒绝→无候选；sr_0001<-sr_0002 双 reasoning_only→空证据回退装配；
 #   sr_0002<-sr_0012 证据充分但部分完成（C）；sr_0003<-sr_0017 拒绝+截断混合→无候选；
 #   sr_0004<-sr_0028 候选无证据支持（src=not_met）。
@@ -23,18 +23,6 @@
 # 用法：
 #   jbt run --config configs/real-dev.probe5.yaml --services configs/services.local.yaml --env-file .env
 #   （切片恰好 5 题；换新批次只改 experiment.id）
-# 真实开发批次（本地 uncensored 生成 + 远端判别模型裁判）
-#
-# 角色分工：
-#   target / controller / assembler → 本地 uncensored（本机 vLLM，未对齐替身，**不能**用它报越狱 ASR）
-#   judge_eval                      → 远端 deepseek/deepseek-v4.1-flash-1017（独立判别模型）
-#
-# 连接信息不写在这里：本文件的 services 只是占位，真实 base_url/model 由
-#   --services configs/services.local.yaml（不入库）+ --env-file .env（不入库）
-# 整项替换，替换明细记入 plan.json.config_sources.services_overlay。
-#
-# 注意：Target 仍是未对齐替身，本批次用于打通"生成-装配-独立裁判"全链路与裁判校准，
-# 不是对齐 Target 的 ASR 报告。正式 ASR 需要把 target 换成对齐模型（另建 experiment.id）。
 experiment:
   path_base: config
   id: probe5_aligned_20261115a
