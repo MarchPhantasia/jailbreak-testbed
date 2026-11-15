@@ -2,6 +2,24 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.10] — 2026-11-16
+
+mainflow1 配置：把主流程新能力接入可运行的实验配置（未运行，等授权）。
+
+- 新增 `configs/real-dev.mainflow1.yaml`（基线 repr6 同切片同判据，新 experiment.id）：
+  stopping online（C06 反馈闭环）+ search best_first/rule/branch_width 2（C04 分支）+
+  assembly k=2/selector coverage（C08 双候选，同一冻结包两次独立采样）+
+  plan.v3 -> plan.v4（查询记忆/候选反馈消费规则、online 停止语义；v3 实测有效策略保留）。
+  Target 输入面显式声明 ancestor（与 repr6 可比；isolated 留作独立变量）。
+- 预算：target 20 不变（主终点固定）；assemble 阶段 4 -> 6、non_target 32 -> 34（k=2 采样组）。
+- 跨分支材料合并保持关闭：收尾装配用当前选中分支材料（规格默认，注释写明）。
+- runner：`plan.method_policy`（state/search/stopping/assembly/controller 解析后行为）随计划冻结。
+- 静态验证（不出网）：build_plan + _freeze_routing 通过——任务 sr_0000/sr_0001、
+  request_policy=ancestor、method_policy 与配置一致、prompt manifest 含
+  plan-evidence-v4(1ebd4b77)/assemble-evidence-v2/judge-semantic-v2、budget 20/34/28/6。
+- 注意：本配置同时改 4 个行为变量，与 repr6 的差异不能单变量归因；阶梯配置待后续。
+- 新增冻结记录回归测试；全量 282 passed；precheck 通过；无真实实验。
+
 ## [code-v0.9.0] — 2026-11-16
 
 主流程四条行为链的最小可用实现（按 CORE_CAPABILITIES §3 工作组；离线验证，无真实实验）。

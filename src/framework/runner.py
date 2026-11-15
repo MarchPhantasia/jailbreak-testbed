@@ -464,6 +464,27 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optio
         ).lower(),
         "note": "ancestor 把历史查询/回复重放给 Target；isolated 下 Target 只见当前查询+固定背景+显式 system 提示；与 session_mode（传输会话模式）相互独立",
     }
+    # 方法行为策略随计划冻结（SPEC §4：解析后行为配置可回查，不依赖默认值推断）
+    _m = (cfg or {}).get("method") or {}
+    _st = _m.get("state") or {}
+    _se = _m.get("search") or {}
+    _as = _m.get("assembly") or {}
+    _sp = _m.get("stopping") or {}
+    plan["method_policy"] = {
+        "state_backend": str(_st.get("backend", "fox")),
+        "search": {
+            "policy": str(_se.get("policy", "linear")),
+            "scorer": str(_se.get("scorer", "null")),
+            "branch_width": int(_se.get("branch_width", 1) or 1),
+        },
+        "stopping": str(_sp.get("policy", "after_assembly")),
+        "assembly": {
+            "type": str(_as.get("type") or "material_template"),
+            "k": int(_as.get("k", 1) or 1),
+            "selector": str(_as.get("selector", "first")),
+        },
+        "controller": {"type": str((_m.get("controller") or {}).get("type", "element"))},
+    }
     plan["budget"] = ctx.limits.to_dict()
     if ctx.prompts is not None:
         plan["prompt_manifest"] = ctx.prompts.freeze(root)

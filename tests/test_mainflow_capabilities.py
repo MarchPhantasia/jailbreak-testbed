@@ -357,3 +357,25 @@ class _BranchThenStop(Controller):
         action, query = seq[min(self.i, len(seq) - 1)]
         self.i += 1
         return self._mk(action, query, node_id, view_id, state.source_event_seq, "bts")
+
+
+# --------------------------------------------------------------------------
+# 冻结记录：method_policy / request_policy 随计划写入（SPEC §4）
+# --------------------------------------------------------------------------
+def test_method_policy_is_frozen_in_plan(tmp_path, monkeypatch):
+    from test_execution1_r2 import FakeService, routed_cfg, run_once
+
+    svc = FakeService()
+    monkeypatch.setattr("urllib.request.urlopen", svc)
+    monkeypatch.setenv("JBT_UNIT_KEY", "unit-placeholder")
+    cfg = routed_cfg(tmp_path)
+    cfg["method"]["state"]["target_history"] = "isolated"
+    cfg["method"]["search"] = {"policy": "best_first", "scorer": "rule", "branch_width": 2}
+    cfg["method"]["stopping"] = {"policy": "online"}
+    cfg["method"]["assembly"]["k"] = 2
+    root, ep, plan, _ = run_once(cfg)
+    mp = plan["method_policy"]
+    assert mp["search"] == {"policy": "best_first", "scorer": "rule", "branch_width": 2}
+    assert mp["stopping"] == "online"
+    assert mp["assembly"]["k"] == 2 and mp["assembly"]["selector"]
+    assert plan["request_policy"]["target_history"] == "isolated"
