@@ -108,6 +108,11 @@ class Engine:
         self.stop_action_requested = False
         # call_id → evidence_ids 的派生索引（复用事件流，不另立历史）
         self._evidence_ids_by_call: Dict[str, List[str]] = {}
+        # call_id → 观察子节点：request_sent 挂在扩展前的父节点上，
+        # 查询的分支归属应按它产生的观察子节点判断（4.1），不能用父节点祖先链代替
+        self._observation_node_by_call: Dict[str, str] = {}
+        # 当前有效候选的在线反馈（C06）：候选/包/节点/版本关联，派生记录
+        self.last_online_verdict: Dict[str, Any] = {}
 
         self.nodes: Dict[str, SearchNode] = {}
         self.states: Dict[str, AgentState] = {}
@@ -280,6 +285,8 @@ class Engine:
         new_state.extractor_version = getattr(self.backend, "name", "") + "@v1"
 
         child_id = new_id("n")
+        if res.call_id:
+            self._observation_node_by_call[res.call_id] = child_id
         new_state.node_id = child_id
         new_state.open = compute_open(new_state, self.elements)
 
@@ -376,7 +383,7 @@ class Engine:
         """从事件流派生"已执行查询及其结果"记忆，供 Controller 下一轮规划使用。
 
         复用 request_sent / response_received / target_refusal 事件与 call→evidence 索引，
-        不另立一套需要维护的历史。区分：
+        不另立一套需要维护的历史。分支归属按执行边（call→观察子节点），不用父节点祖先链代替。区分：
           - current_branch：当前节点祖先链上的查询，带完整结果（含拒答、截断、传输失败）；
           - other_branch_failures：兄弟分支上"没有取得有效材料"的查询（全局失败记忆），
             只给查询文本与状态，不给材料，避免无说明地合并兄弟分支材料。
@@ -405,7 +412,10 @@ class Engine:
             status = str(resp.payload.get("status") or "") if resp else "no_response_event"
             # REFUSED 状态本身即拒答；文本标签（target_refusal 事件）作为补充信号
             refusal = ev.call_id in refusals or status == "REFUSED"
-            on_branch = (ev.node_id or "") in chain
+            # 分支归属按执行边：request_sent 挂在扩展前的父节点上，
+            # 该查询实际产生的观察子节点才是它的归属（兄弟查询不会误入当前分支）
+            obs_node = self._observation_node_by_call.get(ev.call_id) or ev.node_id or ""
+            on_branch = obs_node in chain
             entry = {
                 "order": order,
                 "request_id": str(getattr(ev, "request_id", "") or ""),
@@ -425,6 +435,40 @@ class Engine:
                     {"order": order, "query": query, "node_id": ev.node_id or "", "status": status, "refusal": refusal}
                 )
         return {"current_branch": current, "other_branch_failures": global_failures}
+
+    def latest_candidate_feedback(self) -> Optional[Dict[str, Any]]:
+        """当前有效候选及其反馈（C06）：进入 Controller 输入，驱动继续/切换/停止。
+
+        - 反馈是待判断信息：gaps 是装配模型的判断、verdict 是在线规则检查，
+          都不是已证明的事实，更不是 Target 证据或最终成功标签；
+        - 版本关联：pack_input_hash 标识反馈针对的材料版本；stale=True 表示当前
+          分支材料已变化，反馈针对旧版本，不能直接当作新状态的结论。
+        """
+        cand = self.final_candidate
+        if cand is None:
+            return None
+        verdict = dict(self.last_online_verdict or {})
+        if verdict.get("candidate_id") != cand.candidate_id:
+            verdict = {}
+        pack_ids = set(cand.evidence_pack_ids or [])
+        pack_hash = verdict.get("pack_input_hash") or ""
+        if not pack_hash:
+            hashes = [str(p.get("input_hash") or "") for p in self.packs if p.get("pack_id") in pack_ids]
+            pack_hash = hashes[0] if hashes else ""
+        stale = False
+        if pack_hash:
+            stale = self.materials_fingerprint(self.current_node_id) != pack_hash
+        return {
+            "candidate_id": cand.candidate_id,
+            "answer_excerpt": (cand.answer or "")[:400],
+            "gaps": list(cand.gaps or []),
+            "online_verdict": {k: verdict.get(k) for k in ("decision", "ratio", "basis")} if verdict else None,
+            "pack_id": (cand.evidence_pack_ids or [None])[0],
+            "pack_input_hash": pack_hash,
+            "node_id": verdict.get("node_id", ""),
+            "stale": stale,
+            "note": "反馈是待判断信息（gaps 为装配模型判断），不是 Target 证据或最终成功标签；stale=True 表示材料已变化",
+        }
 
     def materials_fingerprint(self, node_id: str) -> str:
         """当前活跃材料指纹：与 pack 的 input_hash 使用同一序列化方式（V01）。"""
@@ -517,12 +561,32 @@ class Engine:
             payload={"candidate_id": chosen.candidate_id, "selector": self.selector.name},
         )
         verdict, ratio, why = self.judge_online.check(self.task, chosen.answer, self.rubric)
+        pack_hash = next(
+            (str(r.get("input_hash") or "") for r in self.packs if r.get("pack_id") == frozen.pack_id), ""
+        )
         self.store.append(
             "online_verdict",
             role="judge_online",
             node_id=node_id,
-            payload={"decision": verdict, "ratio": ratio, "basis": why},
+            payload={
+                "decision": verdict,
+                "ratio": ratio,
+                "basis": why,
+                "candidate_id": chosen.candidate_id,
+                "pack_id": frozen.pack_id,
+                "pack_input_hash": pack_hash,
+            },
         )
+        # C06：当前有效候选的反馈（候选/包/版本关联），供 Controller 下一轮读取
+        self.last_online_verdict = {
+            "decision": verdict,
+            "ratio": ratio,
+            "basis": why,
+            "candidate_id": chosen.candidate_id,
+            "pack_id": frozen.pack_id,
+            "pack_input_hash": pack_hash,
+            "node_id": node_id,
+        }
         if verdict == "stop":
             self.stop_reason = f"online_success:{why}"
         return StepResult(action.action_id, Status.OK, f"装配完成：{verdict}（{why}）")
@@ -631,13 +695,35 @@ class Engine:
         if nid:
             self.current_node_id = nid
             # 选择不是样本：不在这里增加访问次数（否则会稀释均值）
+            ids = self.frontier.ids()
             self.store.append(
                 "node_selected",
                 role="engine",
                 node_id=nid,
-                payload={"policy": self.policy.name, "visits": self.frontier.visits.get(nid, 0)},
+                payload={
+                    "policy": self.policy.name,
+                    "visits": self.frontier.visits.get(nid, 0),
+                    # 可检查的选择：当时的可选前沿、各自分数（None=未知，不等于零）与依据
+                    "frontier": [
+                        {"node_id": i, "score": self.frontier.score(i), "visits": self.frontier.visits.get(i, 0)}
+                        for i in ids
+                    ],
+                    "basis": self._selection_basis(nid, ids),
+                },
             )
         return nid
+
+    def _selection_basis(self, chosen: str, ids: List[str]) -> str:
+        name = self.policy.name
+        if name == "linear":
+            return "linear:扩展最新创建的节点"
+        if name == "best_first":
+            if self.frontier.score(chosen) is None:
+                return "best_first:未知分节点优先探索"
+            return "best_first:取最高分节点"
+        if name == "uct":
+            return "uct:exploit+探索项最大"
+        return f"{name}:策略选择"
 
     def terminate(self, reason: str) -> None:
         if self.terminated:

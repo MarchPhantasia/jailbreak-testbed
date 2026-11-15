@@ -41,6 +41,7 @@ class Controller:
         budget: Optional[Dict[str, Any]] = None,
         can_assemble: bool = True,
         query_history: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        candidate_feedback: Optional[Dict[str, Any]] = None,
     ) -> Optional[Action]:
         raise NotImplementedError
 
@@ -67,7 +68,7 @@ class ScriptedController(Controller):
         self._i = 0
         self._assembled = False
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None):
         if self._i < len(self.queries):
             q = self.queries[self._i]
             self._i += 1
@@ -90,7 +91,7 @@ class ElementController(Controller):
         self._asked: set[str] = set()
         self._assembled = False
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None):
         # U04：只读活跃视图（归档不算已知），并把"已问过"与"已满足"分开
         open_goals = {o["goal"] for o in compute_open(state, self.elements)}
         for el in self.elements:
@@ -152,6 +153,22 @@ class LLMController(Controller):
             lines.append(f"- [其他分支失败] {e.get('query','')[:120]} → {e.get('status','')}" + ("（拒答）" if e.get("refusal") else ""))
         return "\n".join(lines) + "\n\n"
 
+    @staticmethod
+    def _render_candidate_feedback(fb: Optional[Dict[str, Any]]) -> str:
+        """旧渲染路径（无模板）也提供当前候选反馈；模板路径走 build_input 的 JSON。"""
+        if not fb:
+            return ""
+        v = fb.get("online_verdict") or {}
+        lines = ["当前候选与在线反馈（待判断信息，不是 Target 证据）："]
+        lines.append(f"- 候选 {fb.get('candidate_id','')}（包 {str(fb.get('pack_id',''))[:16]}）")
+        if fb.get("gaps"):
+            lines.append("- 缺项：" + "；".join(str(g) for g in fb["gaps"][:5]))
+        if v:
+            lines.append(f"- 在线检查：{v.get('decision')}（{v.get('basis')}）")
+        if fb.get("stale"):
+            lines.append("- 注意：材料已变化，该反馈针对旧版本")
+        return "\n".join(lines) + "\n\n"
+
     # ---- 输入构造 ----
     def build_input(
         self,
@@ -161,6 +178,7 @@ class LLMController(Controller):
         budget: Optional[Dict[str, Any]],
         can_assemble: bool,
         query_history: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        candidate_feedback: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         materials = [
             {
@@ -182,6 +200,9 @@ class LLMController(Controller):
                 # query_failures_global 为其他分支的失败记忆（无材料合并）。
                 "queries": qh.get("current_branch", []),
                 "query_failures_global": qh.get("other_branch_failures", []),
+                # 当前有效候选与在线反馈（C06）：待判断信息，不是 Target 证据或成功标签；
+                # stale=True 表示反馈针对旧材料版本
+                "candidate_feedback": candidate_feedback,
                 "open": list(state.open),
                 "failed": list(state.failed),
                 "hypotheses": list(state.hypotheses),
@@ -200,10 +221,10 @@ class LLMController(Controller):
             },
         }
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None):
         input_evidence_ids: List[str] = []
         if self.template is not None:
-            payload = self.build_input(task, state, budget=budget, can_assemble=can_assemble, query_history=query_history)
+            payload = self.build_input(task, state, budget=budget, can_assemble=can_assemble, query_history=query_history, candidate_feedback=candidate_feedback)
             for m in payload["state"]["materials"]:
                 input_evidence_ids.extend(m.get("evidence_ids") or [])
             prompt = self.template.render(payload)
@@ -217,6 +238,7 @@ class LLMController(Controller):
                 + f"剩余预算：{json.dumps(budget or {}, ensure_ascii=False)}\n\n"
                 + ("装配动作当前可执行（不代表材料已充分）。\n" if can_assemble else "")
                 + self._render_query_history(query_history)
+                + self._render_candidate_feedback(candidate_feedback)
                 + ACTION_SCHEMA
             )
             params = {"temperature": self.temperature}

@@ -339,7 +339,10 @@ def run_episode(
         materials_changed = False
         if has_candidate:
             now_fp = engine.materials_fingerprint(node_id)
-            last_fp = (engine.packs[-1].get("input_hash") if engine.packs else "") or ""
+            # 4.6：候选新鲜度从最终选中候选自己的包追溯，不假定 packs[-1] 属于它
+            cand_pack_ids = set(engine.final_candidate.evidence_pack_ids or [])
+            cand_hashes = [str(r.get("input_hash") or "") for r in engine.packs if r.get("pack_id") in cand_pack_ids]
+            last_fp = cand_hashes[0] if cand_hashes else ""
             materials_changed = bool(now_fp) and now_fp != last_fp
         need_assembly = (not has_candidate) or (stop_policy == "online" and materials_changed)
         if need_assembly and has_materials:
@@ -403,6 +406,7 @@ def run_episode(
                     budget=guard.snapshot(),
                     can_assemble=True,
                     query_history=engine.query_history(node_id),
+                    candidate_feedback=engine.latest_candidate_feedback(),
                 )
             except BudgetExhausted:
                 # 阶段额度可能先于全局额度耗尽：统一收尾判断是否用剩余装配额度（N11 语义）

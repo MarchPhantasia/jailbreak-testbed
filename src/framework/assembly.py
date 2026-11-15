@@ -452,13 +452,28 @@ class LLMAssembler(Assembler):
             "note": f"本次没有可校验的模型正文（{reason}）；字面诊断未计算",
         }
 
-    def assemble_from_pack(self, task: Task, pack: EvidencePack, *, k: int = 1, stage_policy_ref: str = "", node_id: str = "", view_id: str = "") -> List[AnswerCandidate]:
-        self._reset_call_state()
+    def _generate_sample(
+        self,
+        task: Task,
+        pack: EvidencePack,
+        *,
+        sample_index: int,
+        cache_bypass: bool,
+        stage_policy_ref: str,
+        node_id: str,
+        view_id: str,
+    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], bool]:
+        """生成一个候选样本：独立请求 + 各自格式重试。
+
+        返回 (解析结果, 本次样本的 attempts, 预算是否耗尽)。样本之间互不共享调用；
+        一个样本失败不中止其余样本（C08）。
+        """
         payload = self._input_payload(task, pack)
         template_ref = self.template.ref() if hasattr(self.template, "ref") else {}
         attempts: List[Dict[str, Any]] = []
         parsed: Optional[Dict[str, Any]] = None
         last_status = ""
+        budget_out = False
         for attempt in range(1 + self.max_format_retries):
             rendered = self.template.render(payload)
             try:
@@ -469,13 +484,15 @@ class LLMAssembler(Assembler):
                     {},
                     node_id=node_id,
                     view_id=view_id,
-                    attempt_id=f"assemble_{attempt + 1}",
+                    attempt_id=f"assemble_s{sample_index}_{attempt + 1}",
                     template_ref=template_ref,
                     input_evidence_ids=pack.evidence_ids(),
+                    cache_bypass=cache_bypass,
                 )
             except BudgetExhausted:
                 self.last_failure = "budget_exhausted"
-                attempts.append({"attempt": attempt + 1, "status": "BUDGET_EXHAUSTED"})
+                attempts.append({"sample": sample_index, "attempt": attempt + 1, "status": "BUDGET_EXHAUSTED"})
+                budget_out = True
                 break
             self.last_call_ids.append(res.call_id)
             last_status = res.status.value
@@ -486,6 +503,7 @@ class LLMAssembler(Assembler):
                 problems = [f"call_status:{res.status.value}:{res.error}"]
             attempts.append(
                 {
+                    "sample": sample_index,
                     "attempt": attempt + 1,
                     "call_id": res.call_id,
                     "status": res.status.value,
@@ -497,47 +515,90 @@ class LLMAssembler(Assembler):
             if data is not None:
                 parsed = data
                 break
-        self.last_failure = "" if parsed else (last_status or "invalid_output")
+        if parsed is None and not budget_out:
+            self.last_failure = last_status or "invalid_output"
+        return parsed, attempts, budget_out
 
-        if parsed is None:
-            return self._fallback(task, pack, stage_policy_ref, attempts, k=k)
+    def assemble_from_pack(self, task: Task, pack: EvidencePack, *, k: int = 1, stage_policy_ref: str = "", node_id: str = "", view_id: str = "") -> List[AnswerCandidate]:
+        """在同一个冻结证据包上生成至多 k 个候选（C08）。
 
-        claims = parsed["claims"]
-        pack_text = "\n".join(
-            str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
-        )
-        evidence_text_by_id: Dict[str, str] = {}
-        for m in pack.materials:
-            text = str(m.get("value", m.get("text", "")))
-            for eid in m.get("evidence_ids") or []:
-                evidence_text_by_id.setdefault(eid, text)
-        diagnostics = coverage_diagnostics(parsed["answer"], claims, pack_text, evidence_text_by_id)
-        ratio = diagnostics["answer_evidence"]["uncovered_ratio"]
-        candidate = AnswerCandidate(
-            candidate_id=new_id("cand"),
-            answer=parsed["answer"],
-            claims=claims,
-            evidence_pack_ids=[pack.pack_id],
-            gaps=parsed["gaps"],
-            assembly_config={
-                "assembler": self.name,
-                "k": k,
-                "template_id": template_ref.get("template_id", ""),
-                "template_sha256": template_ref.get("sha256", ""),
-                "answer_claim_check": ANSWER_CLAIM_CHECK,
-                "uncovered_ratio": round(ratio, 4),
-                "diagnostics": diagnostics,
-                "lexical_policy": self.lexical_policy,
-                "lexical_policy_version": LEXICAL_POLICY_VERSION,
-                "lexical_diagnostics": dict(self.last_lexical_diagnostics),
-                "attempts": attempts,
-            },
-            stage_policy_ref=stage_policy_ref,
-            processing_refs=[f"assembler:{cid}" for cid in self.last_call_ids if cid] + [f"pack:{pack.pack_id}"],
-            fallback_render=False,
-            end_state="assembled",
-        )
-        return [candidate]
+        - 每个样本是独立真实请求（k>1 时绕过响应缓存），失败/重试逐样本记录；
+        - 预算中途耗尽时保留已生成样本；全部失败走既定原文回退；
+        - 两个样本产出相同答案是真实重复调用的事实，保留候选并标注 duplicate_of_sample，
+          不删除也不冒充不同内容；候选择优由冻结在线标准负责，本层不做语义排序。
+        """
+        self._reset_call_state()
+        k = max(1, int(k))
+        template_ref = self.template.ref() if hasattr(self.template, "ref") else {}
+        all_attempts: List[Dict[str, Any]] = []
+        candidates: List[AnswerCandidate] = []
+        seen_answers: Dict[str, int] = {}
+        budget_out = False
+        for sample in range(1, k + 1):
+            parsed, attempts, budget_out = self._generate_sample(
+                task,
+                pack,
+                sample_index=sample,
+                cache_bypass=k > 1,
+                stage_policy_ref=stage_policy_ref,
+                node_id=node_id,
+                view_id=view_id,
+            )
+            all_attempts.extend(attempts)
+            if parsed is None:
+                continue
+            claims = parsed["claims"]
+            pack_text = "\n".join(
+                str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
+            )
+            evidence_text_by_id: Dict[str, str] = {}
+            for m in pack.materials:
+                text = str(m.get("value", m.get("text", "")))
+                for eid in m.get("evidence_ids") or []:
+                    evidence_text_by_id.setdefault(eid, text)
+            diagnostics = coverage_diagnostics(parsed["answer"], claims, pack_text, evidence_text_by_id)
+            ratio = diagnostics["answer_evidence"]["uncovered_ratio"]
+            dup_of = seen_answers.get(parsed["answer"])
+            seen_answers.setdefault(parsed["answer"], sample)
+            candidates.append(
+                AnswerCandidate(
+                    candidate_id=new_id("cand"),
+                    answer=parsed["answer"],
+                    claims=claims,
+                    evidence_pack_ids=[pack.pack_id],
+                    gaps=parsed["gaps"],
+                    assembly_config={
+                        "assembler": self.name,
+                        "k": k,
+                        "sample_index": sample,
+                        **({"duplicate_of_sample": dup_of} if dup_of is not None else {}),
+                        "template_id": template_ref.get("template_id", ""),
+                        "template_sha256": template_ref.get("sha256", ""),
+                        "answer_claim_check": ANSWER_CLAIM_CHECK,
+                        "uncovered_ratio": round(ratio, 4),
+                        "diagnostics": diagnostics,
+                        "lexical_policy": self.lexical_policy,
+                        "lexical_policy_version": LEXICAL_POLICY_VERSION,
+                        "lexical_diagnostics": dict(self.last_lexical_diagnostics),
+                        "attempts": attempts,
+                    },
+                    stage_policy_ref=stage_policy_ref,
+                    processing_refs=[f"assembler:{cid}" for cid in (a.get("call_id") for a in attempts) if cid]
+                    + [f"pack:{pack.pack_id}"],
+                    fallback_render=False,
+                    end_state="assembled",
+                )
+            )
+            if budget_out:
+                break
+        if budget_out and candidates:
+            # 预算中途耗尽：保留已生成样本，如实记录未完成的采样数
+            candidates[-1].assembly_config["samples_completed"] = len(candidates)
+            candidates[-1].assembly_config["sampling_interrupted"] = True
+        if not candidates:
+            self.last_failure = self.last_failure or "invalid_output"
+            return self._fallback(task, pack, stage_policy_ref, all_attempts, k=k)
+        return candidates
 
     def _fallback(self, task: Task, pack: EvidencePack, stage_policy_ref: str, attempts: List[Dict[str, Any]], *, k: int = 1) -> List[AnswerCandidate]:
         """声明的原文回退：保留 Target 原文与缺项，明确标记 fallback_render。"""

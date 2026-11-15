@@ -2,6 +2,50 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.0] — 2026-11-16
+
+主流程四条行为链的最小可用实现（按 CORE_CAPABILITIES §3 工作组；离线验证，无真实实验）。
+
+### C06 在线反馈进入再规划
+
+- `Engine.latest_candidate_feedback()`：当前有效候选的 answer 摘录、gaps、在线检查
+  （decision/ratio/basis）、候选/包/节点关联、`pack_input_hash` 版本与 `stale` 过期标记。
+- `online_verdict` 事件补 candidate_id / pack_id / pack_input_hash（可追溯）；反馈进入
+  `LLMController` 模板输入（`state.candidate_feedback`）与旧渲染路径。
+- 语义边界写在输入里：反馈是待判断信息（gaps 为装配模型判断），不是 Target 证据或
+  最终成功标签；stale=True 表示材料已变化、反馈针对旧版本。未新增模型调用。
+
+### C02/C04 分支闭环（含 4.1 归属修复）
+
+- 查询分支归属改为按执行边：`call_id → 观察子节点` 索引，request_sent 挂在父节点
+  不再导致兄弟查询误入当前分支；当前分支/全局失败记忆的判据随之修正。
+- `node_selected` 事件记录当时可选前沿（node/score/visits，None=未知不等于零）与
+  策略依据（`_selection_basis`）。
+- best_first + branch_width=2 + rule 评分下验证：兄弟方向真实保存、状态不串支、
+  拒答兄弟查询进全局失败记忆、成本不回退。
+
+### C08 真多候选
+
+- `LLMAssembler.assemble_from_pack` 重构为逐样本生成：k 个独立真实请求（k>1 时
+  `cache_bypass` 绕过响应缓存）、逐样本 attempts/call_id、预算中途耗尽保留已生成样本
+  并标记 `sampling_interrupted`；全部失败走既定原文回退。
+- 相同答案如实标注 `duplicate_of_sample`，不删除也不冒充不同内容；候选择优仍由冻结
+  在线标准（selector）负责，最终 Judge_eval 不参与选择。
+- Gateway `call` 新增 `cache_bypass` 参数（查找与写入都跳过）。
+
+### 4.6 收尾追溯
+
+- `_finalize` 的候选新鲜度改为从最终选中候选自己的 `evidence_pack_ids` 追溯包
+  input_hash，不再假定 `packs[-1]` 属于它。
+
+### 验证
+
+- 新增 `tests/test_mainflow_capabilities.py`（8 项）：反馈进入输入与版本一致、
+  stale 翻转、分支隔离与失败记忆、选择日志含前沿与依据、k=2 独立调用与重复标注、
+  episode 级 k=2 事件面、收尾候选包追溯。
+- 仓库全量 281 passed（273 旧 + 8 新）；precheck 通过。
+- 未做：真实模型实验、上下文窗口测试、C03/C13 状态对照研究能力（需授权运行）。
+
 ## [code-v0.8.0] — 2026-11-16
 
 三项结构性修复（无真实实验、无上下文容量测试；默认行为除 STOP 收尾外不变）。

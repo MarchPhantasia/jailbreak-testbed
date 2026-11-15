@@ -135,6 +135,7 @@ class ModelGateway:
         request_id: str = "",
         template_ref: Optional[Dict[str, Any]] = None,
         input_evidence_ids: Optional[List[str]] = None,
+        cache_bypass: bool = False,
     ) -> CallResult:
         role_name = role.value if isinstance(role, Role) else str(role)
         params = self._merge_params(params)
@@ -174,7 +175,7 @@ class ModelGateway:
             stage_id=stage_id,
             template_sha256=str((template_ref or self.template_ref or {}).get("sha256", "")),
         )
-        cached = self.cache.get(key)
+        cached = None if cache_bypass else self.cache.get(key)
         if cached is not None:
             self.store.append(
                 "cache_hit",
@@ -270,7 +271,8 @@ class ModelGateway:
         )
         self.guard.settle(ticket, cost, call_id=call_id)
         res.response_event_id = response_ev.event_id if response_ev is not None else ""
-        self.cache.put(key, res)
+        if not cache_bypass:
+            self.cache.put(key, res)
         self.calls.append(
             {
                 "role": role_name,
