@@ -102,9 +102,16 @@ def test_evaluate_migration_records_actual_connection(tmp_path, fake):
     assert migration["actual"]["base_url"] == "http://migrated.invalid/v1"
     assert migration["frozen"]["base_url"] == "http://fixture.invalid/v1"
     assert "base_url" in migration["changed_fields"]
+    # Y01：CLI 选中的外层 SID 是权威服务标识，贯通 config/events，不沿用冻结旧名
+    assert migration["requested_service_id"] == "judge_api"
+    assert migration["actual"]["service_id"] == "judge_api"
+    assert migration["changed_fields"]["service_id"] == {"frozen": "general", "actual": "judge_api"}
     events = [json.loads(l) for l in (eval_dir / "events.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     started = next(e for e in events if e["type"] == "evaluation_started")
     assert started["payload"]["base_url"] == "http://migrated.invalid/v1", "网关必须实际使用迁移后的地址"
+    assert started["payload"]["service_id"] == "judge_api"
+    sent = [e for e in events if e["type"] == "request_sent"]
+    assert sent and all(e["payload"]["service_id"] == "judge_api" for e in sent)
     # 旧实验的 plan 不被重写
     assert json.loads((root / "plan.json").read_text(encoding="utf-8")) == frozen_plan
     assert out["N"] == 1 and out["S"] == 1

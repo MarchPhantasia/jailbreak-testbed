@@ -149,7 +149,9 @@ jbt evaluate --config configs/real-dev.wfix.local.yaml --root results/<run> \
 ```
 
 只允许替换连接层（`base_url` / `api_key_env` / `auth_required` / `timeout_s` / `service_id`）；
-`model`、`parameter_profile`、阶段参数与 `context_window` 必须与冻结值一致，否则报错要求另建评价协议。
+`model`、`parameter_profile` 与 `context_window` 必须与冻结值一致，否则报错要求另建评价协议。
+阶段参数（温度、`max_tokens`、effort 等）始终使用冻结值：当前 YAML 的阶段改动不生效、也不报错，
+要改阶段参数请另建评价运行。
 迁移在 `<eval_run_id>/config.json` 与 `evaluation_started` 事件中留下"原服务 / 实际服务 / 改了哪些字段"，
 旧 plan、候选与证据不被改写；新评价使用新的 `eval_run_id`。
 
@@ -210,6 +212,15 @@ docs/            手册（canonical）、早期设计笔记、ADR
 
 a9b45c9 的 13 项问题（R01–R13）逐项状态、修改、验证与剩余限制见
 [docs/review/a9b45c9-fixes.md](docs/review/a9b45c9-fixes.md)。
+
+handoff-v3.1（X01–X03 + `--services`/`show-config`/`--eval-service`）见
+[docs/review/handoff-v3.1-fixes.md](docs/review/handoff-v3.1-fixes.md)；
+review-5b6d61d（Y01 迁移标识 + 对齐 Target dev30 真实实验 + probe5 失败探针集）见
+[docs/review/handoff-5b6d61d-fixes.md](docs/review/handoff-5b6d61d-fixes.md)。
+
+每轮的完整交付记录（含真实实验数据）随仓库管理，见
+[docs/delivery/](docs/delivery/)；当前最新：
+[docs/delivery/delivery-5b6d61d.md](docs/delivery/delivery-5b6d61d.md)。
 
 ## 与手册的对应
 

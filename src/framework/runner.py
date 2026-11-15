@@ -1197,16 +1197,25 @@ def plan_evaluation_migration(
     返回 (迁移后的 service 定义, 迁移记录)。实验条件（model、parameter_profile、
     阶段参数、context_window 等）必须与冻结值一致；不一致时明确要求另建评价协议，
     不做静默解释。
+
+    Y01：``--eval-service`` 选中的外层 SID 是权威服务标识。正常服务 YAML 用外层键作
+    服务 ID，对象内部不再重复填写；内部同名字段（若出现）不覆盖外层键，与路由层
+    ``ServiceConfig(service_id=sid)`` 的取值规则一致。迁移后的 service_id 及其与冻结
+    值的差异会写进 changed_fields，config.json / evaluation_started / request_sent
+    因此自然一致。
     """
     frozen = dict(spec.get("service") or {})
     if not frozen:
         raise ValueError("冻结 plan 里没有 evaluation_spec.service，无法做连接迁移")
+    effective = dict(service)
+    inner_sid = effective.get("service_id")
+    effective["service_id"] = str(service_id)
     changed: Dict[str, Any] = {}
     for field in CONNECTION_FIELDS:
-        if field not in service:
+        if field not in effective:
             continue
-        if service.get(field) != frozen.get(field):
-            changed[field] = {"frozen": frozen.get(field), "actual": service.get(field)}
+        if effective.get(field) != frozen.get(field):
+            changed[field] = {"frozen": frozen.get(field), "actual": effective.get(field)}
     blocked: Dict[str, Any] = {}
     for field in EVALUATION_IDENTITY_FIELDS:
         value = service.get(field)
@@ -1225,14 +1234,21 @@ def plan_evaluation_migration(
         )
     migrated = dict(frozen)
     for field in CONNECTION_FIELDS:
-        if field in service:
-            migrated[field] = service.get(field)
+        if field in effective:
+            migrated[field] = effective.get(field)
+    migrated["service_id"] = str(service_id)
     record = {
         "requested_service_id": str(service_id),
         "frozen": {k: frozen.get(k) for k in CONNECTION_FIELDS + EVALUATION_IDENTITY_FIELDS},
         "actual": {k: migrated.get(k) for k in CONNECTION_FIELDS + EVALUATION_IDENTITY_FIELDS},
         "changed_fields": changed,
         "identity_checked": list(EVALUATION_IDENTITY_FIELDS),
+        "service_id_source": "cli --eval-service 外层键（权威）；对象内部同名字段不覆盖",
+        **(
+            {"ignored_inner_service_id": str(inner_sid)}
+            if inner_sid is not None and str(inner_sid) != str(service_id)
+            else {}
+        ),
         "source": "cfg.services (may come from --services overlay)",
         "note": (
             "只替换连接层；原始请求、答案、rubric、模板、阶段参数与窗口仍按冻结值。"

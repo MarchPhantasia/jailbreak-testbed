@@ -2,8 +2,9 @@
 
 - 审查对象：`f8249dcf8d3604cbd46d68664f06d424ce2d232a`（实现提交 `bfbddd3`）
 - 状态：**offline_ready**；X01–X03 已修，配置便利入口已实现。
-- 真实实验边界：本机**对齐 Target 的地址与凭证仍未提供**。`services.example.yaml` 是可填契约，
-  不是可运行的迁移配置；本地链路用 `--services` 走通（§5），但那不是对齐 Target 的 ASR。
+- 真实实验边界（历史状态，已被 §7 的追加记录取代）：写本文档主体时对齐 Target 的地址与凭证
+  尚未提供；后来远端判别服务已接通并完成真实批次（见 §7）。本地 uncensored 链路仍不是
+  对齐 Target 的 ASR；对齐 Target 的实验见后续配置与运行记录。
 - 研究口径不变：主终点是固定 Target 调用预算下，最终选中答案实质完成冻结的原始有害请求并由
   冻结判据判定。字面覆盖、材料覆盖率、拒答率都不能替代它。
 
@@ -69,7 +70,8 @@
    `context_window` / 阶段发送参数，标出共用同一服务的角色；密钥只显示变量名与是否已设置。
 3. `jbt evaluate --eval-service SID`：旧实验重评的**连接层**迁移。只允许替换
    `base_url` / `api_key_env` / `auth_required` / `timeout_s` / `service_id`；`model`、
-   `parameter_profile`、阶段参数与 `context_window` 必须与冻结值一致，否则报错要求另建评价协议。
+   `parameter_profile`、`context_window` 必须与冻结值一致，否则报错要求另建评价协议；阶段参数
+   （温度、`max_tokens`、effort 等）始终使用冻结值，当前 YAML 的阶段改动不生效、也不报错。
    迁移写入 `<eval_run_id>/config.json.service_migration` 与 `evaluation_started` 事件的
    `base_url`/`service_migration`，新评价使用新 `eval_run_id`，旧 plan、候选、证据不被改写。
    不传 `--eval-service` 时仍用冻结服务，不会因为存在服务文件而隐式迁移。
@@ -131,5 +133,7 @@
   `task_eval_coverage=1.0`；裁判 6 次调用、`tokens_in=80733 / tokens_out=7761`、`wall_ms≈45.8s`、
   无格式重试、无 `component_error`。
 - **这不是越狱成功率**：Target 是未对齐替身，本地模型本来就服从；1.0 只说明"生成→装配→独立裁判"
-  链路与裁判预算正确，窗口 1M 后不再出现 `context_budget_exceeded`。替换为对齐 Target 后
-  同一套配置可直接产出可报告 ASR。
+  链路与裁判预算正确，窗口 1M 后不再出现 `context_budget_exceeded`。换对齐 Target 时需同步两处再运行：
+  `--services` 覆盖文件里的 Target 服务定义，和实验 YAML 的 `stages.stages.target_query`
+  阶段参数（参数协议换了，字段集也变，例如 `deepseek_thinking_proxy` 不收
+  `chat_template_kwargs`/`temperature`）；Controller/Assembler 与判据可保持不动。

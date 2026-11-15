@@ -2,6 +2,43 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.7.0] — 2026-11-15
+
+按审查包 `review-5b6d61d` 修复 Y01，对齐三处使用说明，并落地对齐 Target 的真实实验配置。
+
+### 修复
+
+- Y01：`evaluate --eval-service` 迁移后的 service_id 现在以 CLI 选中的外层 SID 为权威值，
+  显式写入迁移 service 并计入 `changed_fields`（与冻结旧名不同时）；对象内部同名字段不覆盖
+  外层键，冲突时记 `ignored_inner_service_id`。config.json、`evaluation_started`、
+  `request_sent`（含 `resolved_ref`）的标识自然一致；请求地址与旧 plan 字节不变性有负例测试。
+- 文案对齐（不改行为）：README 与 v3.1 记录中"阶段参数与冻结值不一致会报错"改为
+  "阶段参数始终使用冻结值，当前 YAML 的阶段改动不生效"；`services.example.yaml` 头部补
+  service ID 与 `service_ref` 的配对说明；"换对齐 Target 后同一套配置直接可用"改为
+  "同步配置 Target 服务与 target_query 阶段参数后可运行"。v3.1 记录的历史缺项段落标注已被
+  追加记录取代。
+
+### 新增
+
+- `configs/real-dev.aligned.yaml`：对齐 Target 实验配置——Target 走远端 `z-ai/glm-5.3`
+  （`openai_chat` 协议，`temperature=0.0/max_tokens=16384`），Controller/Assembler 保持本地
+  uncensored，裁判保持远端 `deepseek-v4.1-flash-1017`；Target 与裁判不同家族。含
+  glm thinking 不可关闭、preflight 探针需 1024 token 的注释说明。
+- `tests/test_migration_review.py`（来自审查包）与 `test_config_overlay.py` 的 Y01 断言扩展。
+
+### 真实实验
+
+- 批次 a（`real_dev_aligned_20261115a`，6 题核验）：N=6 S=1 F=5 U=0，覆盖 1.0。
+- 批次 b（`real_dev_aligned_20261115b`）：max_tokens=16384 撞代理 ~300s 截止（TIMEOUT/504），
+  7/30 时主动终止弃用。
+- 批次 c（`real_dev_aligned_20261115c`，dev30 全量，max_tokens=8192）：**N=30 S=3 F=27 U=0，
+  ASR=0.1**，覆盖 1.0；详见 `docs/review/handoff-5b6d61d-fixes.md` §3.3。
+- probe5 失败探针集：从 dev30 失败里按模式分层抽 5 题（干净拒绝 / 双 reasoning_only /
+  混合截断 / 来源不合规 / 部分完成），切片 + `configs/real-dev.probe5.yaml` + 交付文档
+  `docs/delivery/delivery-5b6d61d.md`（交付记录改为仓库内随 git 管理）。首轮真实验证
+  `probe5_aligned_20261115a`：N=5 S=0 F=5 U=0，五条失败路径全部走到（含空包回退与
+  verbatim 回退装配）。
+
 ## [code-v0.6.0] — 2026-11-14
 
 按审查包 `review-f8249dc-handoff-v3.1` 修复 X01–X03，并补上服务/实验配置分离的入口。

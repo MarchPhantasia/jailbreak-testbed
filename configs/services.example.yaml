@@ -9,6 +9,12 @@
 #   * 密钥只写变量名，值放进环境或 --env-file 指向的文件，不要写在这个文件里。
 #
 # 注意：所有值都要按用户实际迁移后的服务填写。下面用占位符说明结构，不能直接运行。
+#
+# service ID 配对（重要）：本文件的 ID 必须与所配实验 YAML 的 components.*.service_ref 一致，
+# 否则覆盖文件只是"新增了两个没人用的 ID"，占位服务原样保留（show-config 可立即看出）。
+#   - 本示例的 target_api / judge_api 对应 configs/real-dev.example.yaml 的 service_ref；
+#   - configs/real-dev.local.yaml 用的是 local_uncensored / judge_remote，给它写覆盖文件时
+#     用这两个 ID，或者同步改实验 YAML 的 service_ref（已配好的本机文件不必为示例改名）。
 
 services:
   target_api:
