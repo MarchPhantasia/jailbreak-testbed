@@ -17,18 +17,19 @@
 
 ## 2 当前能力清单
 
-“两配置”指 `configs/real-dev.repr6.yaml` 与 `configs/real-dev.cka6.yaml`，不是所有本地覆盖或正在运行的配置。
+“两配置”指 `configs/real-dev.repr6.yaml` 与 `configs/real-dev.cka6.yaml`（线性基线，未改动）；
+`configs/real-dev.mainflow1.yaml`（6a9a9de）为启用新能力的第三份配置，尚未运行。三者都不是"正在运行的配置"。
 
 | ID | 核心能力 | 当前代码事实 | 两配置的启用状态 / 主要缺口 |
 |---|---|---|---|
 | C01 | Target 信息可见策略 | engine 支持 ancestor/isolated；runner 冻结 request_policy | 未设置 target_history，按默认 ancestor；不能说已启用 isolated |
-| C02 | 查询—结果记忆 | query_history 从事件派生并传入 Controller 两条渲染路径；归属按执行边（call→观察子节点，b3e9514 修复父节点祖先链误判） | 已接线；分支隔离/失败记忆/成本不回退有 8 项离线复跑证据（test_mainflow_capabilities.py）；结果语义分类仍待运行核验 |
+| C02 | 查询—结果记忆 | query_history 从事件派生并传入 Controller 两条渲染路径；归属按执行边（call→观察子节点，b3e9514 修复父节点祖先链误判） | 两配置已接线；mainflow1 配合 best_first/branch_width=2 启用（未运行）；离线复跑证据见 test_mainflow_capabilities.py |
 | C03 | 状态表示 | raw、截断式 summary、规则 F/O/X 可用 | 使用 raw；语义抽取/摘要和等长状态对照尚未由本次证据证明 |
 | C04 | 分支执行与选择 | Frontier、linear/best_first/UCT、branch_width 入口存在 | linear + width=1；分支方法未在两配置启用 |
 | C05 | 有依据的节点进展评分 | 当前 make_scorer 仅 null/rule；rule 为新事实数和 open 数启发式 | null；没有语义评分或已验证进展判断 |
-| C06 | 在线反馈驱动再规划 | b3e9514：latest_candidate_feedback（候选/gaps/verdict/包版本/stale）进入 build_input 与旧渲染；online_verdict 事件带候选与包关联 | 离线验证反馈进入输入、版本一致、stale 翻转；真实运行下 Controller 是否据此改变决策未验证 |
+| C06 | 在线反馈驱动再规划 | b3e9514：latest_candidate_feedback（候选/gaps/verdict/包版本/stale）进入 build_input 与旧渲染；online_verdict 事件带候选与包关联；plan.v4 提示词写了消费规则 | mainflow1 启用（stopping=online，未运行）；两配置未启用；离线验证反馈进入输入、版本一致、stale 翻转；真实运行下 Controller 是否据此改变决策未验证 |
 | C07 | 证据约束的模型装配 | LLMAssembler、冻结 pack、claims、回退路径已接入 | type=llm，k=1，lexical_policy=diagnostic_only；不代表逐条语义保真已验证 |
-| C08 | 真正多候选与选择 | b3e9514：逐样本独立生成（k>1 绕缓存、逐样本 attempts、预算中断保留、duplicate_of_sample 标注）；selector 冻结在线标准择优 | 离线验证 k=2 两次真实请求与事件面；两配置仍 k=1/first，未启用 |
+| C08 | 真正多候选与选择 | b3e9514：逐样本独立生成（k>1 绕缓存、逐样本 attempts、预算中断保留、duplicate_of_sample 标注）；selector 冻结在线标准择优 | mainflow1 启用（k=2/coverage，未运行）；两配置仍 k=1/first |
 | C09 | 一致的停止与收尾 | db2ff79 增加 `_finalize` 并接五类正常停止 | after_assembly；online 修复有开发者行为报告，本文未复跑 |
 | C10 | 全局/阶段预算及角色参数 | 已有 Gateway、BudgetGuard、路由与阶段配置 | 配置有 plan/assemble 分账；用户调整后的服务窗口本轮不测试 |
 | C11 | 独立语义最终评价 | 既有 SemanticJudge、冻结评价计划与 S/F/U 流程 | 本轮不运行评价；不能把规则 JudgeOnline 当成最终裁判 |
@@ -37,6 +38,18 @@
 | C14 | 反事实归因 | 历史实现报告为分析骨架；本次未深入核对分析层 | 后续研究能力，不阻塞当前方法闭环；不得宣称三层归因已可用 |
 
 开发者本轮报告已通过隔离请求、查询记忆、online STOP、阶段额度收尾等 13 项新检查。该报告可指向 C01/C02/C09，不能证明 C04/C05/C06/C08 已经完成。
+
+## 2.1 mainflow1 配置的启用矩阵（6a9a9de，未运行）
+
+| 能力 | repr6/cka6 | mainflow1 |
+|---|---|---|
+| C01 target_history | 未设置（=ancestor） | 显式 ancestor（保持 Target 输入面可比） |
+| C02/C04 搜索 | linear/null/1 | best_first/rule/branch_width=2 |
+| C06 停止与反馈 | after_assembly | online + plan.v4 反馈消费规则 |
+| C08 装配 | llm/k=1/first | llm/k=2/coverage |
+| 预算 | 20/32/28/4 | 20/34/28/6（target 上限不变） |
+
+注意：mainflow1 相对 repr6 同时改 4 个行为变量，差异不能单变量归因；阶梯配置（online-only / +branch / +k）待后续按需创建。跨分支材料合并保持关闭：收尾装配用当前选中分支材料。
 
 ## 3 先形成一条完整的方法行为链
 
