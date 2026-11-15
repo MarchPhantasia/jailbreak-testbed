@@ -2,6 +2,52 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.8.0] — 2026-11-16
+
+三项结构性修复（无真实实验、无上下文容量测试；默认行为除 STOP 收尾外不变）。
+
+### 任务一：Target 信息范围（独立请求模式）
+
+- 新增 `method.state.target_history: ancestor | isolated`（默认 `ancestor`，完全保留既有
+  实验条件）：`isolated` 下 Target 的最终 HTTP 请求体只含当前查询、数据集固定背景
+  （necessary_context）与显式配置的 system 提示，不重放任何历史查询/回复/Controller 状态。
+- `session_mode`（传输会话模式）与请求历史策略明确分离；实际采用的策略冻结进
+  `plan.json.request_policy` 并写入 `episode_started.payload.target_history_policy`。
+- 依据：CKA-Agent 的控制器提示词明写 "Questions must be SELF-CONTAINED (target has no
+  conversation history)"——对照实验里 CKA 的 Target 是隔离请求；我们此前的祖先重放让
+  Target 看到完整攻击序列（"this is the same request reformatted" 即由此而来）。
+
+### 任务二：Controller 查询-结果记忆
+
+- `Engine.query_history()` 从事件流（request_sent/response_received/target_refusal）派生
+  已执行查询及其结果：查询文本、request_id/call_id/顺序/节点、状态（OK/拒答/截断/传输失败）、
+  证据关联；拒答与传输失败的查询同样保留。
+- 分支范围明确：当前分支给完整记录，兄弟分支只进"全局失败记忆"（查询文本+状态，
+  不合并材料）；查询记录与 Target 证据来源分开标注。
+- `LLMController` 的模板输入（`state.queries` / `state.query_failures_global`）与旧渲染
+  路径（文本段）都接入；此前查询-结果关联只存在于日志，Controller 看不到。
+
+### 任务三：统一停止与最终装配
+
+- 五个停止路径（Controller STOP / max_steps / Target 额度耗尽 / Controller 阶段额度耗尽 /
+  恢复策略停止）全部汇入统一 `_finalize`：先判"是否需要装配"（无候选，或 online 模式下
+  材料已变化），再判额度（非 Target 总额度与 Assembler 阶段额度），最后写唯一终止记录。
+- 行为修正：STOP 有材料无候选时不再直接丢弃材料（与其他停止路径一致地装配）；
+  online 模式 STOP 后新材料必须重装配（旧候选保留为不可变产物）；回退原因按实际缺口
+  记录（`assembly_stage_exhausted` / `no_non_target_budget` / `no_local_budget`），
+  不在尚有额度时标 `no_local_budget`；修复了旧尾块在 fallback_assemble 路径上
+  终止原因误标为 max_steps 的潜伏缺陷。
+- `after_assembly` 首装即终语义不变；online 修复未触碰默认策略；未引入 Judge_eval
+  参与在线停止/重试/候选选择。
+
+### 验证
+
+- 新增 `tests/test_request_isolation_memory_finalize.py`（13 项，全部离线替身）：隔离请求体
+  结构/背景与 system 保留/祖先模式回归/未知值拒绝/查询-结果关联（OK、拒答、传输失败）/
+  online STOP 收尾/after_assembly STOP 装配/阶段额度耗尽正常装配/回退原因准确性/
+  材料未变不重复装配。
+- 仓库全量 273 passed（260 旧 + 13 新）；precheck 通过。
+
 ## [code-v0.7.3] — 2026-11-16
 
 depth5b20 r2：修复 Controller 输出截断并升级查询策略（无生产代码改动）。

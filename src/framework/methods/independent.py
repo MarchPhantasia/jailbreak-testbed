@@ -175,10 +175,16 @@ def run_episode(
 
         rubric = resolve_rubric(config, task)
     elements = rubric.elements or [{"key": e, "accept": [], "critical": True} for e in (task.runtime_hints or {}).get("elements", [])]
-    allowed_state_keys = {"backend", "max_chars", "window_chars"}
+    allowed_state_keys = {"backend", "max_chars", "window_chars", "target_history"}
     unknown_state_keys = set(state_cfg) - allowed_state_keys
     if unknown_state_keys:
         raise ValueError(f"未支持的 method.state 配置：{sorted(unknown_state_keys)}")
+    # 请求历史策略独立于传输会话模式（session_mode）：
+    #   ancestor（默认）= 重放祖先历史给 Target（兼容既有实验条件）；
+    #   isolated = 独立请求模式，Target 只见当前查询 + 固定背景 + 显式 system 提示。
+    target_history_policy = str(state_cfg.get("target_history", "ancestor") or "ancestor").lower()
+    if target_history_policy not in ("ancestor", "isolated"):
+        raise ValueError(f"未支持的 method.state.target_history：{target_history_policy}（可选 ancestor / isolated）")
     backend_name = state_cfg.get("backend", "fox")
     window_chars = state_cfg.get("window_chars")
     if window_chars is not None:
@@ -242,6 +248,7 @@ def run_episode(
         branch_width=int(search_cfg.get("branch_width", 1)),
         stopping_policy=stop_policy,
         system_prompt=target_system_prompt,
+        target_history_policy=target_history_policy,
     )
     engine.start()
 
@@ -301,16 +308,83 @@ def run_episode(
         engine.execute(act)
         steps += 1
 
-    def _can_assemble_with_remaining_budget() -> bool:
-        if engine.final_candidate is not None:
-            return False
-        snap = guard.snapshot()
-        if snap.get("non_target_calls_left") == 0:
-            return False
-        if guard.stage_left(assembler_stage) == 0:
-            return False
-        return bool(engine.states[engine.current_node_id].materials)
+    def _no_assembly_budget_reason(non_target_left: int, asm_stage_left: int) -> str:
+        """回退原因必须符合实际：尚有额度时不得标 no_local_budget。"""
+        if asm_stage_left == 0 and non_target_left > 0:
+            return "assembly_stage_exhausted"
+        if non_target_left == 0 and asm_stage_left == 0:
+            return "no_local_budget"
+        if non_target_left == 0:
+            return "no_non_target_budget"
+        return "no_local_budget"
 
+    def _finalize(reason: str) -> None:
+        """统一收尾：所有停止路径共用；装配判断后写唯一终止记录。
+
+        判定顺序：
+        1. 无候选，或（online 模式下）候选装配后材料已变化 → 需要装配；
+        2. 需要装配且有材料：非 Target 总额度与 Assembler 阶段额度都够 → 模型装配；
+           额度不足 → 不调用模型的原文回退，原因按实际缺口记录；
+        3. 无材料且无候选：按既定规则不编造，直接终止；
+        4. 候选存在且材料未变（或 after_assembly 首装即终）→ 保留旧候选，不重复装配。
+        """
+        node_id = engine.current_node_id
+        snap = guard.snapshot()
+        non_target_left = int(snap.get("non_target_calls_left", 0) or 0)
+        # stage_left 为 None 表示该阶段未配置上限（只受总额约束），视为可用
+        _asm_left = guard.stage_left(assembler_stage)
+        asm_stage_left = 1 if _asm_left is None else int(_asm_left)
+        has_materials = bool(engine.states[node_id].materials)
+        has_candidate = engine.final_candidate is not None
+        materials_changed = False
+        if has_candidate:
+            now_fp = engine.materials_fingerprint(node_id)
+            last_fp = (engine.packs[-1].get("input_hash") if engine.packs else "") or ""
+            materials_changed = bool(now_fp) and now_fp != last_fp
+        need_assembly = (not has_candidate) or (stop_policy == "online" and materials_changed)
+        if need_assembly and has_materials:
+            if non_target_left > 0 and asm_stage_left > 0:
+                try:
+                    _assemble_now("finalize" if not has_candidate else "finalize_new_evidence")
+                except BudgetExhausted:
+                    _l = guard.stage_left(assembler_stage)
+                    why = _no_assembly_budget_reason(
+                        int(guard.snapshot().get("non_target_calls_left", 0) or 0), 1 if _l is None else int(_l)
+                    )
+                    store.append(
+                        "action_rejected",
+                        role="engine",
+                        node_id=node_id,
+                        payload={"reason": "no_assembly_budget", "detail": why, "note": "改用不调用模型的原文回退"},
+                    )
+                    engine.assemble_without_model(why)
+            else:
+                why = _no_assembly_budget_reason(non_target_left, asm_stage_left)
+                store.append(
+                    "action_rejected",
+                    role="engine",
+                    node_id=node_id,
+                    payload={"reason": "no_assembly_budget", "detail": why, "note": "改用不调用模型的原文回退"},
+                )
+                engine.assemble_without_model(why)
+        elif need_assembly and not has_materials:
+            store.append(
+                "action_rejected",
+                role="engine",
+                node_id=node_id,
+                payload={"reason": "no_materials_to_assemble", "note": "无材料无候选，按既定规则收尾，不编造答案"},
+            )
+        elif has_candidate and materials_changed and stop_policy != "online":
+            # after_assembly 首装即终：不应到达；防御性记录，不重复装配
+            store.append(
+                "action_rejected",
+                role="engine",
+                node_id=node_id,
+                payload={"reason": "materials_changed_after_candidate", "note": "非 online 模式保留旧候选"},
+            )
+        engine.terminate(reason)
+
+    final_reason = ""
     while not engine.terminated and steps < max_steps:
         node_id = engine.select_node() or engine.current_node_id
         state = engine.states[node_id]
@@ -328,9 +402,10 @@ def run_episode(
                     view_id=engine.nodes[node_id].view_ref,
                     budget=guard.snapshot(),
                     can_assemble=True,
+                    query_history=engine.query_history(node_id),
                 )
             except BudgetExhausted:
-                # 阶段额度可能先于全局额度耗尽：仍有装配额度时用已有证据收尾（N11）
+                # 阶段额度可能先于全局额度耗尽：统一收尾判断是否用剩余装配额度（N11 语义）
                 stage_left = guard.stage_left(controller_stage)
                 reason = "stage_budget_exhausted" if stage_left == 0 else "local_budget_exhausted"
                 store.append(
@@ -340,20 +415,7 @@ def run_episode(
                     node_id=node_id,
                     payload={"reason": reason, "stage_id": controller_stage, "stage_calls_left": stage_left},
                 )
-                if _can_assemble_with_remaining_budget():
-                    try:
-                        _assemble_now("stage_cap_finalize")
-                        engine.terminate("fallback_assembled")
-                    except BudgetExhausted:
-                        store.append("action_rejected", role="engine", node_id=node_id, payload={"reason": "no_assembly_budget"})
-                        engine.assemble_without_model("no_local_budget")
-                        engine.terminate("fallback_assembled")
-                elif engine.states[node_id].materials:
-                    # 无模型额度但已有材料：不调用模型的原文回退，避免整体丢材料
-                    engine.assemble_without_model("no_local_budget")
-                    engine.terminate("fallback_assembled")
-                else:
-                    engine.terminate(reason)
+                final_reason = reason
                 break
 
         if action is None:
@@ -374,9 +436,9 @@ def run_episode(
                 continue
             if decision.action == "fallback_assemble":
                 _assemble_now(decision.reason)
-                engine.terminate("fallback_assembled")
+                final_reason = "fallback_assembled"
                 break
-            engine.terminate(decision.reason)
+            final_reason = decision.reason
             break
 
         if action.type is ActionType.ASK_TARGET:
@@ -395,8 +457,9 @@ def run_episode(
                     continue
                 if decision.action == "fallback_assemble":
                     _assemble_now(decision.reason)
+                    final_reason = "fallback_assembled"
                     break
-                engine.terminate(decision.reason)
+                final_reason = decision.reason
                 break
             # 请求产物：模型生成的有效查询才发送；同一 query 的重发复用同一 request_id
             if not action.params.get("request_id"):
@@ -434,7 +497,8 @@ def run_episode(
         last_action = action
 
         if result.status is Status.BUDGET_EXHAUSTED:
-            break  # R09：交给收尾逻辑，用剩余本地额度装配
+            final_reason = "budget_exhausted"
+            break  # R09：交给统一收尾，用剩余本地额度装配
 
         if result.rejected and result.status is Status.INVALID_OUTPUT:
             decision = recovery.handle("controller", Status.INVALID_OUTPUT, attempt_key="engine_reject")
@@ -442,9 +506,9 @@ def run_episode(
                 continue
             if decision.action == "fallback_assemble":
                 _assemble_now(decision.reason)
-                engine.terminate("fallback_assembled")
+                final_reason = "fallback_assembled"
                 break
-            engine.terminate(decision.reason)
+            final_reason = decision.reason
             break
 
         if result.retryable and not result.rejected:
@@ -454,10 +518,15 @@ def run_episode(
                 continue
             if decision.action == "fallback_assemble":
                 _assemble_now(decision.reason)
+                final_reason = "fallback_assembled"
                 break
             if decision.action == "stop":
-                engine.terminate(decision.reason)
+                final_reason = decision.reason
                 break
+
+        if getattr(engine, "stop_action_requested", False):
+            final_reason = "stop_action"
+            break
 
         if action.type is ActionType.ASSEMBLE and engine.final_candidate is not None:
             if engine.stop_reason:
@@ -475,38 +544,9 @@ def run_episode(
             last_pack_hash, target_calls_at_last_pack = pack_hash, target_calls
 
     if not engine.terminated:
-        node_id = engine.current_node_id
-        local_budget_left = guard.snapshot().get("non_target_calls_left", 1) != 0
-        need_finalize = engine.final_candidate is None
-        reason = "finalize"
-        if not need_finalize and stop_policy == "online":
-            # V01：online 继续取证后，若活跃材料已变化，自动收尾必须重新装配而非冻结旧候选
-            now_fp = engine.materials_fingerprint(node_id)
-            last_fp = (engine.packs[-1].get("input_hash") if engine.packs else "") or ""
-            if now_fp and now_fp != last_fp:
-                need_finalize = True
-                reason = "finalize_new_evidence"
-        if need_finalize and local_budget_left:
-            try:
-                _assemble_now(reason)
-            except BudgetExhausted:
-                # E03：额度不足时允许"不调用模型"的原文回退，明确标 fallback_render
-                store.append(
-                    "action_rejected",
-                    role="engine",
-                    node_id=node_id,
-                    payload={"reason": "no_assembly_budget", "note": "改用不调用模型的原文回退"},
-                )
-                engine.assemble_without_model("no_local_budget")
-        elif need_finalize:
-            store.append(
-                "action_rejected",
-                role="engine",
-                node_id=node_id,
-                payload={"reason": "stale_candidate_no_local_budget", "note": "改用不调用模型的原文回退"},
-            )
-            engine.assemble_without_model("no_local_budget")
-        engine.terminate(engine.termination_reason or ("budget_exhausted" if engine.target_exhausted else "max_steps"))
+        # 统一收尾：五个停止路径（STOP / max_steps / Target 额度耗尽 / Controller 阶段额度耗尽 /
+        # 恢复策略停止）都汇到这里；V01 的 online 新证据重装配语义包含在 _finalize 内。
+        _finalize(final_reason or "max_steps")
 
     return EpisodeArtifacts(
         episode_id=eid,

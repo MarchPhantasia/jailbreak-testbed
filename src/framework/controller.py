@@ -40,6 +40,7 @@ class Controller:
         view_id: str = "",
         budget: Optional[Dict[str, Any]] = None,
         can_assemble: bool = True,
+        query_history: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> Optional[Action]:
         raise NotImplementedError
 
@@ -66,7 +67,7 @@ class ScriptedController(Controller):
         self._i = 0
         self._assembled = False
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None):
         if self._i < len(self.queries):
             q = self.queries[self._i]
             self._i += 1
@@ -89,7 +90,7 @@ class ElementController(Controller):
         self._asked: set[str] = set()
         self._assembled = False
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None):
         # U04：只读活跃视图（归档不算已知），并把"已问过"与"已满足"分开
         open_goals = {o["goal"] for o in compute_open(state, self.elements)}
         for el in self.elements:
@@ -134,8 +135,33 @@ class LLMController(Controller):
         self.last_template_ref: Dict[str, Any] = {}
         self.last_input_evidence_ids: List[str] = []
 
+    @staticmethod
+    def _render_query_history(query_history: Optional[Dict[str, List[Dict[str, Any]]]]) -> str:
+        """旧渲染路径（无模板）也提供查询-结果记忆；模板路径走 build_input 的 JSON。"""
+        qh = query_history or {}
+        entries = qh.get("current_branch") or []
+        if not entries and not (qh.get("other_branch_failures") or []):
+            return ""
+        lines = ["已执行查询与结果（Controller 自己的记录，不是 Target 证据）："]
+        for e in entries:
+            oc = e.get("outcome") or {}
+            tag = "拒答" if oc.get("refusal") else str(oc.get("status") or "")
+            evid = ",".join((oc.get("evidence_ids") or [])[:3])
+            lines.append(f"- [{e.get('order')}] {e.get('query','')[:120]} → {tag}" + (f"（证据: {evid}）" if evid else ""))
+        for e in qh.get("other_branch_failures") or []:
+            lines.append(f"- [其他分支失败] {e.get('query','')[:120]} → {e.get('status','')}" + ("（拒答）" if e.get("refusal") else ""))
+        return "\n".join(lines) + "\n\n"
+
     # ---- 输入构造 ----
-    def build_input(self, task: Task, state: AgentState, *, budget: Optional[Dict[str, Any]], can_assemble: bool) -> Dict[str, Any]:
+    def build_input(
+        self,
+        task: Task,
+        state: AgentState,
+        *,
+        budget: Optional[Dict[str, Any]],
+        can_assemble: bool,
+        query_history: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, Any]:
         materials = [
             {
                 "key": m.get("key", ""),
@@ -145,11 +171,17 @@ class LLMController(Controller):
             }
             for m in active_materials(state)
         ]
+        qh = query_history or {}
         return {
             "task": task.public_view(),
             "state": {
                 "node_id": state.node_id,
                 "materials": materials,
+                # 已执行查询与结果（Controller 自己的记录，不是 Target 证据）：
+                # queries 为当前分支完整记录（含拒答/截断/传输失败），
+                # query_failures_global 为其他分支的失败记忆（无材料合并）。
+                "queries": qh.get("current_branch", []),
+                "query_failures_global": qh.get("other_branch_failures", []),
                 "open": list(state.open),
                 "failed": list(state.failed),
                 "hypotheses": list(state.hypotheses),
@@ -168,10 +200,10 @@ class LLMController(Controller):
             },
         }
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None):
         input_evidence_ids: List[str] = []
         if self.template is not None:
-            payload = self.build_input(task, state, budget=budget, can_assemble=can_assemble)
+            payload = self.build_input(task, state, budget=budget, can_assemble=can_assemble, query_history=query_history)
             for m in payload["state"]["materials"]:
                 input_evidence_ids.extend(m.get("evidence_ids") or [])
             prompt = self.template.render(payload)
@@ -184,6 +216,7 @@ class LLMController(Controller):
                 + f"\n当前状态：\n{self.renderer(task, state) if self.renderer else ''}\n\n"
                 + f"剩余预算：{json.dumps(budget or {}, ensure_ascii=False)}\n\n"
                 + ("装配动作当前可执行（不代表材料已充分）。\n" if can_assemble else "")
+                + self._render_query_history(query_history)
                 + ACTION_SCHEMA
             )
             params = {"temperature": self.temperature}

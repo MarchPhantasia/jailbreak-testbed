@@ -80,6 +80,7 @@ class Engine:
         branch_width: int = 1,
         stopping_policy: str = "after_assembly",
         system_prompt: str = DEFAULT_SYSTEM,
+        target_history_policy: str = "ancestor",
     ):
         self.task = task
         self.episode = episode
@@ -98,6 +99,15 @@ class Engine:
         self.branch_width = max(1, branch_width)
         self.stopping_policy = stopping_policy
         self.system_prompt = system_prompt
+        # 请求历史策略与传输会话模式（session_mode）是两件事：
+        #   ancestor = 沿用祖先视图，把历史查询/回复重放给 Target（旧行为，兼容既有实验条件）；
+        #   isolated = 独立请求模式，Target 只见当前查询 + 固定背景 + 显式 system 提示。
+        self.target_history_policy = str(target_history_policy or "ancestor").lower()
+        if self.target_history_policy not in ("ancestor", "isolated"):
+            raise ValueError(f"未支持的 target_history 策略：{self.target_history_policy}（可选 ancestor / isolated）")
+        self.stop_action_requested = False
+        # call_id → evidence_ids 的派生索引（复用事件流，不另立历史）
+        self._evidence_ids_by_call: Dict[str, List[str]] = {}
 
         self.nodes: Dict[str, SearchNode] = {}
         self.states: Dict[str, AgentState] = {}
@@ -134,6 +144,7 @@ class Engine:
                 "method_version": self.episode.method_version,
                 "budget": self.episode.budget.to_dict(),
                 "session_mode": self.episode.session_mode.value,
+                "target_history_policy": self.target_history_policy,
                 "stopping_policy": self.stopping_policy,
                 "config_hash": self.episode.config_hash,
                 "model": getattr(self.target, "model_name", ""),
@@ -162,8 +173,12 @@ class Engine:
         if action.type is ActionType.ASSEMBLE:
             return self._assemble(action)
         if action.type is ActionType.STOP:
-            self.terminate("stop_action")
-            return StepResult(action.action_id, Status.OK, "stopped")
+            err = self._validate(action)
+            if err:
+                return self._reject(action, err)
+            # STOP 不在此终止：交由编排层走统一收尾（装配判断 + 唯一 terminate）
+            self.stop_action_requested = True
+            return StepResult(action.action_id, Status.OK, "stop_requested", node_id=action.node_id or self.current_node_id)
         return self._reject(action, f"未知动作类型：{action.type}")
 
     def _reject(self, action: Action, reason: str) -> StepResult:
@@ -346,6 +361,71 @@ class Engine:
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    def _ancestor_chain(self, node_id: str) -> set:
+        """node_id 的祖先链（含自身），用于区分当前分支与兄弟分支。"""
+        chain: set = set()
+        cur = node_id
+        while cur and cur not in chain:
+            chain.add(cur)
+            node = self.nodes.get(cur)
+            cur = node.parent_node_id if node else ""
+        return chain
+
+    def query_history(self, node_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+        """从事件流派生"已执行查询及其结果"记忆，供 Controller 下一轮规划使用。
+
+        复用 request_sent / response_received / target_refusal 事件与 call→evidence 索引，
+        不另立一套需要维护的历史。区分：
+          - current_branch：当前节点祖先链上的查询，带完整结果（含拒答、截断、传输失败）；
+          - other_branch_failures：兄弟分支上"没有取得有效材料"的查询（全局失败记忆），
+            只给查询文本与状态，不给材料，避免无说明地合并兄弟分支材料。
+        查询文本与规划理由是 Controller 自己的记录，不是 Target 证据；证据只看
+        materials.evidence_ids（此处 outcome.evidence_ids 仅作结果关联）。
+        """
+        node_id = node_id or self.current_node_id
+        chain = self._ancestor_chain(node_id)
+        responses = {}
+        refusals = set()
+        for ev in self.store.events:
+            if ev.type == "response_received" and ev.call_id:
+                responses[ev.call_id] = ev
+            elif ev.type == "target_refusal" and ev.call_id:
+                refusals.add(ev.call_id)
+        current: List[Dict[str, Any]] = []
+        global_failures: List[Dict[str, Any]] = []
+        order = 0
+        for ev in self.store.events:
+            if ev.type != "request_sent" or (getattr(ev, "role", "") or "") != "target":
+                continue
+            order += 1
+            messages = ev.payload.get("messages") or []
+            query = messages[-1].get("content", "") if messages else ""
+            resp = responses.get(ev.call_id)
+            status = str(resp.payload.get("status") or "") if resp else "no_response_event"
+            # REFUSED 状态本身即拒答；文本标签（target_refusal 事件）作为补充信号
+            refusal = ev.call_id in refusals or status == "REFUSED"
+            on_branch = (ev.node_id or "") in chain
+            entry = {
+                "order": order,
+                "request_id": str(getattr(ev, "request_id", "") or ""),
+                "call_id": ev.call_id,
+                "node_id": ev.node_id or "",
+                "query": query,
+                "outcome": {
+                    "status": status,
+                    "refusal": refusal,
+                    "evidence_ids": list(self._evidence_ids_by_call.get(ev.call_id, [])),
+                },
+            }
+            if on_branch:
+                current.append(entry)
+            elif status not in ("OK", "") or refusal:
+                global_failures.append(
+                    {"order": order, "query": query, "node_id": ev.node_id or "", "status": status, "refusal": refusal}
+                )
+        return {"current_branch": current, "other_branch_failures": global_failures}
+
     def materials_fingerprint(self, node_id: str) -> str:
         """当前活跃材料指纹：与 pack 的 input_hash 使用同一序列化方式（V01）。"""
         state = self.states.get(node_id)
@@ -499,15 +579,18 @@ class Engine:
         msgs: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}] if self.system_prompt else []
         if self.task.necessary_context:
             msgs.append({"role": "user", "content": f"背景资料：{self.task.necessary_context}"})
-        by_id = {e.event_id: e for e in self.store.events}
-        for ref in view.visible_message_refs:
-            ev = by_id.get(ref)
-            if ev is None:
-                continue
-            if ev.type == "request_sent":
-                msgs.append({"role": "user", "content": ev.payload.get("messages", [])[-1].get("content", "")})
-            elif ev.type == "response_received":
-                msgs.append({"role": "assistant", "content": ev.payload.get("text", "")})
+        if self.target_history_policy != "isolated":
+            # ancestor（默认）：沿祖先视图重放历史查询与回复，Target 看到完整对话
+            by_id = {e.event_id: e for e in self.store.events}
+            for ref in view.visible_message_refs:
+                ev = by_id.get(ref)
+                if ev is None:
+                    continue
+                if ev.type == "request_sent":
+                    msgs.append({"role": "user", "content": ev.payload.get("messages", [])[-1].get("content", "")})
+                elif ev.type == "response_received":
+                    msgs.append({"role": "assistant", "content": ev.payload.get("text", "")})
+        # isolated：不重放任何历史；Target 只见 system（若配置）+ 固定背景 + 当前查询
         if not msgs or msgs[-1].get("content") != query:
             msgs.append({"role": "user", "content": query})
         return msgs
@@ -537,6 +620,8 @@ class Engine:
             with open(os.path.join(self._evidence_dir, "evidence.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
             out.append(ev)
+            if call_id:
+                self._evidence_ids_by_call.setdefault(call_id, []).append(ev.evidence_id)
         return out
 
     # ------------------------------------------------------------------

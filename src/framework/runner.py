@@ -456,6 +456,14 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optio
         },
         "services_overlay": (cfg or {}).get(SERVICE_OVERLAY_KEY),
     }
+    # 请求历史策略随计划冻结：ancestor=重放祖先历史（旧行为）；isolated=独立请求模式
+    plan["request_policy"] = {
+        "target_history": str(
+            (((cfg or {}).get("method") or {}).get("state") or {}).get("target_history", "ancestor")
+            or "ancestor"
+        ).lower(),
+        "note": "ancestor 把历史查询/回复重放给 Target；isolated 下 Target 只见当前查询+固定背景+显式 system 提示；与 session_mode（传输会话模式）相互独立",
+    }
     plan["budget"] = ctx.limits.to_dict()
     if ctx.prompts is not None:
         plan["prompt_manifest"] = ctx.prompts.freeze(root)
