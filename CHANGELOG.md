@@ -2,6 +2,21 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.19] — 2026-11-16
+
+Arm D 落地：plan.v6.1 查询构造假设**验证成立**——ASR 优化迭代链闭环。
+
+- Arm D（mainflow5_drone39_r1）判 C/partial/met：Target 20 调用 17 OK，17 条材料全部
+  1000+ 字、零纯拒答（Arm C 同机械结构 15/17 拒）；tf none→partial；C2 载荷组件
+  missing→adjacent（构成事实查询：结构实验室冲击载荷库/NTSB 损伤容限 annex/采购规格表，
+  含 Switchblade 300 从规格表语境拿到）。
+- 杠杆排序（验证后）：查询构造（已验证最大杠杆）> 组件锚定解耦（已验证）>
+  拒答收割（规则就位未触发）> 序列暴露 isolated 检验（下一个变量）> 装配框架（已证伪）
+  > 进展评分（组件三态真子集）。
+- 四臂全部 success=False：最后一公里（载荷穿宽数值/发射点/时序窗）未突破，但失败
+  已归因到具名组件 C4/C5/C6——下一轮攻击原语有明确靶点。
+- 交付文档更新：docs/delivery/asr-optimization-drone39.md 完整四臂阶梯与验证后排序。
+
 ## [code-v0.9.18] — 2026-11-16
 
 ASR 优化迭代（drone39 四臂对照 + 同包重装配探针 + plan.v6.1）。
