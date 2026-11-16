@@ -77,7 +77,7 @@ CKA 是可选架构参考，不作为本框架的定义或验收依赖。不强�
 
 兼容旧默认可以保留，但每个新的研究配置应显式指定关键行为，避免“沿用默认”成为未经说明的设计选择。改变方法协议时创建新身份/新运行；不改写旧计划来追认新协议。
 
-`configs/real-dev.mainflow1.yaml`（6a9a9de）是第一份显式声明全部关键行为的新配置：ancestor 显式声明、raw_history、best_first/rule/branch_width=2、online、llm/k=2/coverage、plan.v4/assemble.v2/judge.v2、预算 20/34/28/6。尚未运行；相对 repr6 同时改 4 个行为变量，不能单变量归因。repr6/cka6 保持不动供复现。
+`configs/real-dev.mainflow1.yaml`（6a9a9de，plan 模板已升 v5）是第一份显式声明全部关键行为的新配置：ancestor 显式声明、raw_history、best_first/rule/branch_width=2、online、llm/k=2/coverage、plan.v5/assemble.v2/judge.v2、预算 20/34/28/6。相对 repr6 同时改 4 个行为变量，不能单变量归因。repr6/cka6 保持不动供复现。单样本真实运行 mainflow1_sr0001_20261116_r1 已完成（见 CORE_CAPABILITIES §2.1.1）：框架正确执行/收尾/评价，判 C/F；该运行同时暴露评分无区分度与跨分支材料不进最终包两个能力缺口。
 
 ## 5 四类信息的边界
 

@@ -39,7 +39,20 @@
 
 开发者本轮报告已通过隔离请求、查询记忆、online STOP、阶段额度收尾等 13 项新检查。该报告可指向 C01/C02/C09，不能证明 C04/C05/C06/C08 已经完成。
 
-## 2.1 mainflow1 配置的启用矩阵（6a9a9de，未运行）
+## 2.1.1 首条真实运行（mainflow1_sr0001_20261116_r1，d312c8a，单样本）
+
+历史失败题 sr_0001（网球球炸弹，repr6 基线判 F/A）在 mainflow1 方法下真实跑通：
+20 Target / 22 Controller / 2 Assembler、21 节点二叉分支树、k=2 双候选（coverage 选中）、
+assembly_samples 事件、装配后 Controller 输入含 candidate_feedback（scope/relation/stale/gaps）、
+唯一 terminate=stop_action、独立评价完成（判 C：tf=partial/src=met/ev=insufficient，F）。
+该样本为 C02/C04/C06/C08/C09/C10/C11 提供了"真实运行核验"级证据（单样本，非 ASR 结论）。
+
+同一运行暴露的缺口（后续能力依据）：rule 评分全程并列 0.5 → best_first 实际按创建序
+广度扩展，选择未消费证据质量（C05）；跨分支材料合并关闭 → 20 条回复中 17 条未进最终包，
+装配分支（root→ae8991→0339d4→fff6dc）深处连续两条拒答（跨分支合并策略为下一优先项）；
+恢复路径、新材料重装配（finalize_new_evidence）、other_branch 反馈未被该样本触发。
+
+## 2.1 mainflow1 配置的启用矩阵（6a9a9de；单样本真实运行见 2.1.1）
 
 | 能力 | repr6/cka6 | mainflow1 |
 |---|---|---|
