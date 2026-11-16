@@ -95,6 +95,9 @@ def test_components_declared_persisted_and_frozen(tmp_path, fake):
     packs = rows(ep / "packs.jsonl")
     assert packs, "packs.jsonl 应有冻结包"
     assert {c["id"] for c in packs[-1]["components"]} == {"C1", "C2"}
+    # F4：input_hash_v2 覆盖完整装配输入（materials+components），与材料哈希区分
+    assert packs[-1].get("input_hash_v2"), "冻结包应记录 input_hash_v2"
+    assert packs[-1]["input_hash_v2"] != packs[-1]["input_hash"], "components 非空时 v2 应区别于材料哈希"
     # 装配请求体里包含组件清单（fake 捕获了所有请求）
     asm_bodies = [b for b in fake.bodies if "JBT_STAGE=ASSEMBLE" in json.dumps(b.get("messages", []), ensure_ascii=False)]
     assert asm_bodies, "应有装配请求"
@@ -178,3 +181,16 @@ def test_pack_without_components_stays_empty(tmp_path):
         pack,
     )
     assert out["pack"]["components"] == [], "未声明组件时装配输入为空列表，不崩溃"
+
+
+def test_components_snapshot_roundtrip():
+    """F3：快照保存的 components 必须能在 _state_from_snapshot 重建（恢复场景）。"""
+    from framework.contracts import AgentState
+    from framework.state import _state_from_snapshot, snapshot_state
+
+    st = AgentState(node_id="n1", source_event_seq=3)
+    st.components = [{"id": "C1", "text": "组件", "status": "direct"}]
+    snap = snapshot_state(st)
+    assert snap.get("components") == [{"id": "C1", "text": "组件", "status": "direct"}]
+    rt = _state_from_snapshot(snap)
+    assert rt.components == [{"id": "C1", "text": "组件", "status": "direct"}], "恢复后组件清单不得丢失"

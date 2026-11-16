@@ -401,6 +401,7 @@ def _state_from_snapshot(snap: Dict[str, Any]) -> AgentState:
         node_id=snap.get("node_id", ""),
         parent_state_seq=int(snap.get("parent_state_seq", 0)),
         extractor_version=snap.get("extractor_version", ""),
+        components=list(snap.get("components", [])),
     )
 
 

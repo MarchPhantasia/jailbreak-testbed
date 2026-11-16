@@ -2,6 +2,26 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.20] — 2026-11-17
+
+外部审查（ChatGPT review of a40043c）修复 + 最后一公里桥探针（Arm E）。
+
+- F3：`_state_from_snapshot` 恢复 components（快照往返不再丢失）+ 往返测试。
+- F1：`probe_reassemble.py` 补 `integrity_complete` 门——冻结包/引用原文不可核验时
+  判 U 不进裁判，与正式评价协议一致。
+- F6：探针发送前将装配器服务与冻结 plan.json 的 routing/assembly_policy 核对，
+  漂移即中止（--allow-config-drift 显式放行并记录）；冒烟验证 drift=[]。
+- F4：冻结包新增 `input_hash_v2`（覆盖 materials+components）；旧 `input_hash`
+  算法不动保历史包校验兼容；components 非空时两者可区分（测试断言）。
+- F2/F5：交付文档收窄 8 处（单变量阶梯边界/抖动措辞/获取率分解口径/状态机自报声明/
+  v3.1 未接线如实陈述/eval 笔误修正）+ §6 审查修订节。
+- 新文档：`docs/delivery/progress-todo.md`（持续状态追踪）；
+  `docs/delivery/last-mile-attack-catalog.md`（C4/C5/C6 桥查询纸面设计：
+  每条含组件/框架/锚点/预期/风险与 fallback，含 C6 形状测试设计）。
+- Arm E（mainflow6_drone39_bridge_r1）：scripted 12 桥查询，target 预算 16（操作者
+  授权增加），装配 v3.1 首次接入运行配置；探针指标 = 按查询结果，非 episode 终判。
+- 测试 302 passed；precheck 通过。
+
 ## [code-v0.9.19] — 2026-11-16
 
 Arm D 落地：plan.v6.1 查询构造假设**验证成立**——ASR 优化迭代链闭环。

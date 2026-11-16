@@ -586,8 +586,18 @@ class Engine:
                 "merge_policy": self.cross_branch_merge,
                 **({"merged_from_nodes": list(merged_from)} if merged_from and self.cross_branch_merge == "all" else {}),
             },
+            # input_hash 只覆盖 materials（历史兼容字段，勿改算法）；
+            # input_hash_v2 覆盖完整装配输入（materials + components，plan.v6 起）
             "input_hash": hashlib.sha256(
                 json.dumps(materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+            "input_hash_v2": hashlib.sha256(
+                json.dumps(
+                    {"materials": materials, "components": list(frozen.components or [])},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
             ).hexdigest(),
         }
         self.packs.append(row)

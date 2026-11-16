@@ -3,6 +3,12 @@
 
 对某个已完成运行的最终冻结证据包，用新的 assemble 模板重新生成 k 个候选，
 并用该运行冻结的裁判配置（同 judge 模板/参数/rubric）逐候选独立评价。
+
+与正式评价协议一致的异常路径：
+- 冻结包/引用原文不可核验（integrity_complete=False）时判 U（不进裁判，保留分母语义）；
+- 发送前将装配器服务与冻结 routing/assembly_policy 核对，漂移即中止
+  （--allow-config-drift 显式放行并在报告中记录）。
+
 产物写入 run_root/probes/reassemble_<version>_<id>/，不改动原 episode 产物。
 
 用法：
@@ -39,6 +45,49 @@ def _rows(path):
     return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
 
+def _check_config_drift(cur_routing, cur_assembly_cfg, plan) -> list:
+    """当前配置的装配端与冻结运行记录核对；返回漂移说明列表（空=一致）。
+
+    只核对冻结 plan.json 里记录了的字段：
+    - routing.components.assembler（服务路由）与 routing.services（服务身份）；
+    - assembly_policy（lexical_policy / max_uncovered_ratio / cross_branch_merge）。
+    模板本身是探针有意替换的变量，不参与核对。
+    """
+    problems: list = []
+    frozen_routing = plan.get("routing") or {}
+    f_comp = (frozen_routing.get("components") or {}).get("assembler") or {}
+    c_comp = (cur_routing.components or {}).get("assembler") or {}
+    c_ref = getattr(c_comp, "service_ref", None) or (c_comp.get("service_ref") if isinstance(c_comp, dict) else "")
+    if str(f_comp.get("service_ref") or "") != str(c_ref or ""):
+        problems.append(f"assembler service_ref: frozen={f_comp.get('service_ref')!r} current={c_ref!r}")
+        return problems
+    ref = str(f_comp.get("service_ref") or "")
+    f_svc = (frozen_routing.get("services") or {}).get(ref) or {}
+    cur_services = cur_routing.services or {}
+    c_svc = cur_services.get(ref) if isinstance(cur_services, dict) else getattr(cur_services, ref, None)
+    if c_svc is None or isinstance(c_svc, dict):
+        c_svc = c_svc or {}
+    else:
+        c_svc = {k: getattr(c_svc, k, None) for k in
+                 ("base_url", "model", "parameter_profile", "timeout_s", "max_concurrency")}
+    for k in ("base_url", "model", "parameter_profile", "timeout_s", "max_concurrency"):
+        if str(f_svc.get(k)) != str(c_svc.get(k)):
+            problems.append(f"assembler service {k}: frozen={f_svc.get(k)!r} current={c_svc.get(k)!r}")
+    f_pol = plan.get("assembly_policy") or {}
+    pairs = (
+        ("lexical_policy", str(cur_assembly_cfg.get("lexical_policy") or "diagnostic_only")),
+        ("max_uncovered_ratio", str(cur_assembly_cfg.get("max_uncovered_ratio", 0.25))),
+        ("cross_branch_merge", str(cur_assembly_cfg.get("cross_branch_merge") or "")),
+    )
+    for k, cur_v in pairs:
+        f_v = f_pol.get(k)
+        if f_v is None:
+            continue
+        if str(f_v) != cur_v:
+            problems.append(f"assembly_policy {k}: frozen={f_v!r} current={cur_v!r}")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
@@ -49,6 +98,11 @@ def main() -> int:
     ap.add_argument("--template-id", required=True)
     ap.add_argument("--version", required=True)
     ap.add_argument("--k", type=int, default=2)
+    ap.add_argument(
+        "--allow-config-drift",
+        action="store_true",
+        help="显式放行配置漂移（漂移清单仍写入报告）",
+    )
     args = ap.parse_args()
 
     cfg = _load_config(SimpleNamespace(config=args.config, services=args.services, env_file=args.env_file))
@@ -90,6 +144,16 @@ def main() -> int:
     os.makedirs(probe_dir, exist_ok=True)
 
     ctx = runner.build_run_context(cfg)
+    asm_cfg = dict((cfg.get("method") or {}).get("assembly") or {})
+
+    # F6：与冻结运行的装配端核对（模板除外——模板是探针的有意变量）
+    drift = _check_config_drift(ctx.routing, asm_cfg, plan)
+    if drift and not args.allow_config_drift:
+        print("配置漂移（相对冻结 plan.json），中止；用 --allow-config-drift 显式放行：", file=sys.stderr)
+        for d in drift:
+            print("  -", d, file=sys.stderr)
+        return 1
+
     store = EventStore(probe_dir, probe_id, path=os.path.join(probe_dir, "assemble_events.jsonl"))
     guard = BudgetGuard(
         BudgetLimits(target_calls=0, non_target_calls=24, stage_calls={"assemble": 8}), store, probe_id
@@ -105,7 +169,6 @@ def main() -> int:
         text=text,
         source_path=args.template,
     )
-    asm_cfg = (cfg.get("method") or {}).get("assembly") or {}
     assembler = LLMAssembler(
         gateway,
         template,
@@ -122,23 +185,6 @@ def main() -> int:
     judge, _jstore, _jguard, _jgw = runner._build_eval_judge(probe_dir, plan, spec, probe_id)
     ep_evidence = runner._read_evidence(ep_dir, None)
 
-    out = {
-        "probe_id": probe_id,
-        "run_root": os.path.basename(os.path.abspath(args.run_root.rstrip("/"))),
-        "episode_id": entry["episode_id"],
-        "task_id": entry["task_id"],
-        "pack_id": pack.pack_id,
-        "pack_input_hash": prow.get("input_hash"),
-        "pack_materials": len(pack.materials),
-        "pack_components": pack.components,
-        "baseline_candidate_id": cand_id,
-        "template": {
-            "template_id": args.template_id,
-            "version": args.version,
-            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        },
-        "candidates": [],
-    }
     # 基线判定直接从该运行的各 eval 目录读取（不重复评基线）
     baselines = []
     for ed in sorted(os.listdir(os.path.join(args.run_root, "evaluations"))):
@@ -147,12 +193,50 @@ def main() -> int:
             for l in open(vp, encoding="utf-8"):
                 v = json.loads(l)
                 baselines.append({"eval_id": ed, **{k: v.get(k) for k in ("cls", "basis", "candidate_id")}})
-    out["baseline_verdicts"] = baselines
+
+    out = {
+        "probe_id": probe_id,
+        "run_root": os.path.basename(os.path.abspath(args.run_root.rstrip("/"))),
+        "episode_id": entry["episode_id"],
+        "task_id": entry["task_id"],
+        "pack_id": pack.pack_id,
+        "pack_input_hash": prow.get("input_hash"),
+        "pack_input_hash_v2": prow.get("input_hash_v2"),
+        "pack_materials": len(pack.materials),
+        "pack_components": pack.components,
+        "baseline_candidate_id": cand_id,
+        "baseline_verdicts": baselines,
+        "config_drift": drift,
+        "config_drift_allowed": bool(drift) and args.allow_config_drift,
+        "template": {
+            "template_id": args.template_id,
+            "version": args.version,
+            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        },
+        "candidates": [],
+    }
 
     for cand in candidates:
         evidence, scope_info = runner.candidate_evidence_scope(
             ep_dir, cand, ep_evidence, mode=str(spec.get("evidence_scope") or "candidate_pack")
         )
+        # F1：与正式评价一致——冻结包/允许原文不可核验时判 U，不进裁判
+        if not scope_info.get("integrity_complete", True):
+            out["candidates"].append(
+                {
+                    "candidate_id": cand.candidate_id,
+                    "answer_chars": len(cand.answer),
+                    "claims": len(cand.claims),
+                    "gaps": len(cand.gaps),
+                    "fallback_render": cand.fallback_render,
+                    "evidence_scope": scope_info,
+                    "verdict_cls": None,
+                    "verdict_basis": "probe:evidence_input_incomplete",
+                    "verdict_id": "",
+                    "verdict_payload": {"failure": "evidence_input_incomplete", "unscored": True},
+                }
+            )
+            continue
         verdict = judge.evaluate(
             task,
             cand,
