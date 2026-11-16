@@ -7,8 +7,9 @@
 #      收尾装配用当前选中分支的材料，兄弟分支材料不并入（规格默认）；
 #   3) 装配 k 1 -> 2、selector first -> coverage：同一冻结证据包上两次独立采样（绕过响应缓存），
 #      coverage 选择器（有证据 claims 数 - gaps 数）为冻结在线标准，最终 Judge_eval 不参与选择；
-#   4) plan.v3 -> plan.v4：新增查询记忆与候选反馈的消费规则、online 停止语义；v3 的实测有效
-#      查询策略（相邻专业语境/规格书改写/拆最小/序列伪装）原样保留。
+#   4) plan.v3 -> plan.v4 -> plan.v5：v4 新增查询记忆与候选反馈的消费规则、online 停止语义
+#      （v3 的实测有效查询策略原样保留）；v5 修正两处表述——stale 需结合 relation 解释
+#      （其他分支候选 vs 同分支材料更新）、"材料未变不重复装配"的限制来自停止策略而非采样机制。
 #   5) 预算：target_calls 20 不变（主终点固定 Target 上限）；assemble 阶段 4 -> 6（k=2 下最多
 #      3 次装配采样组），non_target 32 -> 34（plan 28 + assemble 6）。
 # Target 输入面显式声明：ancestor（与 repr6 相同，每次调用重放完整对话历史）。
@@ -100,9 +101,9 @@ preflight:
       max_tokens: 1024
 prompts:
   plan:
-    id: plan-evidence-v4
-    version: '4'
-    path: ../prompts/plan.v4.txt
+    id: plan-evidence-v5
+    version: '5'
+    path: ../prompts/plan.v5.txt
   assemble:
     id: assemble-evidence-v2
     version: '2'
