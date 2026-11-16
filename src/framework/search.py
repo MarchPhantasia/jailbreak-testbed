@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .contracts import AgentState, SearchNode, new_id
 
@@ -117,7 +117,15 @@ class UCTPolicy(SearchPolicy):
 class Scorer:
     name = "base"
 
-    def score(self, task, state: AgentState, node: SearchNode, observation: str, new_facts: int = 0) -> ScoreRecord:
+    def score(
+        self,
+        task,
+        state: AgentState,
+        node: SearchNode,
+        observation: str,
+        new_facts: int = 0,
+        elements: Optional[List[Any]] = None,
+    ) -> ScoreRecord:
         raise NotImplementedError
 
 
@@ -126,7 +134,7 @@ class NullScorer(Scorer):
 
     name = "null"
 
-    def score(self, task, state, node, observation, new_facts=0):
+    def score(self, task, state, node, observation, new_facts=0, elements=None):
         return ScoreRecord(score=None, basis="scorer=null", unknown=["node_score"], ref=new_id("score"))
 
 
@@ -135,7 +143,17 @@ class RuleScorer(Scorer):
 
     name = "rule"
 
-    def score(self, task, state, node, observation, new_facts=0):
+    def score(self, task, state, node, observation, new_facts=0, elements=None):
+        # A01：评分输入未建立（无 runtime elements 也无 rubric elements → 要素清单为空）
+        # 时返回不可用评分并记录原因，不能把"输入缺失"报成已知进展 0.5。
+        # 与"清单已建立且全部满足（open 为空）"区分：后者是有效输入，照常给数值分。
+        if not elements:
+            return ScoreRecord(
+                score=None,
+                basis="rule_inputs_unavailable:elements_empty",
+                unknown=["node_score", "rule_inputs_not_established"],
+                ref=new_id("score"),
+            )
         open_ratio = 1.0
         if state.open:
             open_ratio = 1.0 / (1.0 + len(state.open))

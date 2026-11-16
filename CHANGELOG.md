@@ -2,6 +2,46 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.13] — 2026-11-16
+
+9c002e9 测量契约审查轮（A01/A02 落实 + A03 保护 + 文档证据分级 + 真实运行结构化核验；
+无真实实验、无窗口测试、不动主终点与历史结果）。
+
+### A01/D01：评分输入未建立 ≠ 已知进展
+
+- `RuleScorer.score` 接受 `elements`（engine 调用点传入）：要素清单为空（无 runtime
+  elements 也无 rubric elements）→ `score=None` + `unknown=["node_score",
+  "rule_inputs_not_established"]`，basis=`rule_inputs_unavailable:elements_empty`。
+- A03 保护：清单已建立且全部满足（open 为空）仍是有效输入，照常数值分；
+  `elements_missing` 判据语义不变。
+- 结构化核验直接证实：真实运行 mainflow1_sr0001 冻结 rubric elements=0，
+  20 条 score_recorded 全部 0.5/unknown=[] —— 即本缺陷在真实运行中的形态。
+
+### A02/D02：无可检查判据 ≠ 检查发现缺项
+
+- `JudgeOnline.check`：total=0 时返回 `continue, 0.0, "online_check_unavailable:no_rubric"`
+  （控制行为保留，原因显式不可用）；有效判据中确有未满足要素仍报 `elements_missing`。
+- 该语义经 online_verdict 事件与候选反馈自动传导；最终 Judge_eval/S/F/U 协议不变。
+
+### D03：coverage 计数启发式局限（仅记录）
+
+- 同答案重复 claims 可改变排序；已在设计文档记录为本轮不扩成的已知局限，
+  未接入 Judge_eval 修正选择器。
+
+### 结构化核验（直接读取运行产物，非历史转述）
+
+rubric elements=0；20×(0.5, unknown=[])；首次装配 seq 341 前 Target 20 次/后 0 次；
+最终包关联唯一回复 3/20（17 条未入包为材料使用范围计数，非有效性结论）；
+候选引用 0 未解析 0 悬空；候选 2/claims 10/gaps 5；terminate=stop_action 唯一。
+C06 证据分级拆为送达（✓真实）/ 反馈后再取证（本运行无）/ 改变动作（未验证）。
+
+### 验证
+
+- 审查包：contracts 3 passed / 3 deselected（修复预期状态）；observe 2 failed /
+  1 passed / 3 deselected（D01/D02 旧行为按包说明预期失效，非回归）；existing 49 passed。
+- 仓库：新增 tests/test_measurement_contracts.py（A01/A02/A03 + verdict 传导 5 项），
+  全量 289 passed；precheck 通过。
+
 ## [code-v0.9.12] — 2026-11-16
 
 mainflow1 首条真实端到端验证（历史失败题 sr_0001 网球球炸弹；通过条件为框架正确执行/

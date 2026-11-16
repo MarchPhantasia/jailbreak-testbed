@@ -336,7 +336,9 @@ class Engine:
             payload={"parent": node_id, "query": query, "status": res.status.value, "label": label.value},
         )
 
-        score = self.scorer.score(self.task, new_state, child, res.text, new_facts=len(update.new_facts))
+        score = self.scorer.score(
+            self.task, new_state, child, res.text, new_facts=len(update.new_facts), elements=self.elements
+        )
         child.score_ref = score.ref
         self.store.append("score_recorded", role="scorer", node_id=child_id, payload=score.to_dict())
         self.frontier.add(child_id, score.score)

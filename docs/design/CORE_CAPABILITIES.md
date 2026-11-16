@@ -26,13 +26,13 @@
 | C02 | 查询—结果记忆 | query_history 从事件派生并传入 Controller 两条渲染路径；归属按执行边（call→观察子节点，b3e9514 修复父节点祖先链误判） | 两配置已接线；mainflow1 配合 best_first/branch_width=2 启用（未运行）；离线复跑证据见 test_mainflow_capabilities.py |
 | C03 | 状态表示 | raw、截断式 summary、规则 F/O/X 可用 | 使用 raw；语义抽取/摘要和等长状态对照尚未由本次证据证明 |
 | C04 | 分支执行与选择 | Frontier、linear/best_first/UCT、branch_width 入口存在 | linear + width=1；分支方法未在两配置启用 |
-| C05 | 有依据的节点进展评分 | 当前 make_scorer 仅 null/rule；rule 为新事实数和 open 数启发式 | null；没有语义评分或已验证进展判断 |
+| C05 | 有依据的节点进展评分 | make_scorer 仅 null/rule；rule 为新事实数和 open 数启发式；A01 契约（9c002e9 轮）：要素清单为空 = 输入未建立 → score=None + rule_inputs_not_established，不再报已知 0.5；清单已建立且全部满足的空 open 保持数值分（A03 保护） | 两配置 null；mainflow1 rule 但判据无要素清单 → 真实运行中全部不可用分；无语义评分或已验证进展判断 |
 | C06 | 在线反馈驱动再规划 | b3e9514：latest_candidate_feedback（候选/gaps/verdict/包版本/stale）进入 build_input 与旧渲染；online_verdict 事件带候选与包关联；plan.v4 提示词写了消费规则 | mainflow1 启用（stopping=online，未运行）；两配置未启用；离线验证反馈进入输入、版本一致、stale 翻转；真实运行下 Controller 是否据此改变决策未验证 |
 | C07 | 证据约束的模型装配 | LLMAssembler、冻结 pack、claims、回退路径已接入 | type=llm，k=1，lexical_policy=diagnostic_only；不代表逐条语义保真已验证 |
 | C08 | 真正多候选与选择 | b3e9514：逐样本独立生成（k>1 绕缓存、逐样本 attempts、预算中断保留、duplicate_of_sample 标注）；selector 冻结在线标准择优 | mainflow1 启用（k=2/coverage，未运行）；两配置仍 k=1/first |
 | C09 | 一致的停止与收尾 | db2ff79 增加 `_finalize` 并接五类正常停止 | after_assembly；online 修复有开发者行为报告，本文未复跑 |
 | C10 | 全局/阶段预算及角色参数 | 已有 Gateway、BudgetGuard、路由与阶段配置 | 配置有 plan/assemble 分账；用户调整后的服务窗口本轮不测试 |
-| C11 | 独立语义最终评价 | 既有 SemanticJudge、冻结评价计划与 S/F/U 流程 | 本轮不运行评价；不能把规则 JudgeOnline 当成最终裁判 |
+| C11 | 独立语义最终评价 | 既有 SemanticJudge、冻结评价计划与 S/F/U 流程；JudgeOnline 无可检查判据时显式报 online_check_unavailable:no_rubric（A02），不与"确有未满足要素"混用 | 本轮不运行评价；不能把规则 JudgeOnline 当成最终裁判；在线不可用不改变最终 S/F/U 协议 |
 | C12 | 数据隔离与测量口径 | 已有冻结清单、分组、任务等权和评价覆盖协议 | 数据/他方法标签进入哪些角色仍以实际输入为准；他方法标签不得在线泄漏 |
 | C13 | 来源、保真与真实性 | 保存证据引用及独立状态字段，支持结构诊断 | 引用存在/哈希正确只证明结构；人工或语义支持审计不是自动完成 |
 | C14 | 反事实归因 | 历史实现报告为分析骨架；本次未深入核对分析层 | 后续研究能力，不阻塞当前方法闭环；不得宣称三层归因已可用 |
@@ -47,10 +47,25 @@ assembly_samples 事件、装配后 Controller 输入含 candidate_feedback（sc
 唯一 terminate=stop_action、独立评价完成（判 C：tf=partial/src=met/ev=insufficient，F）。
 该样本为 C02/C04/C06/C08/C09/C10/C11 提供了"真实运行核验"级证据（单样本，非 ASR 结论）。
 
-同一运行暴露的缺口（后续能力依据）：rule 评分全程并列 0.5 → best_first 实际按创建序
-广度扩展，选择未消费证据质量（C05）；跨分支材料合并关闭 → 20 条回复中 17 条未进最终包，
-装配分支（root→ae8991→0339d4→fff6dc）深处连续两条拒答（跨分支合并策略为下一优先项）；
-恢复路径、新材料重装配（finalize_new_evidence）、other_branch 反馈未被该样本触发。
+C06 证据分级（9c002e9 审查轮后修正）：反馈闭环拆三层——(a) 反馈字段送达 Controller 输入
+（真实运行证据 ✓，装配后那次 plan 请求体含 candidate_feedback）；(b) 反馈后发起新的
+Target 查询（本运行**无**：首次装配在 seq 341，其后 Target 调用 0 次——预算已耗尽，
+结构化核验直接证实）；(c) 反馈实际改变动作（未验证，本运行无 (b) 即无从谈 (c)）。
+离线用例只证明路径可达，不替代 (b)(c) 的真实行为证据。
+
+结构化核验（直接读取运行产物，非历史转述）：冻结 rubric elements=0（online_only 判据
+无要素清单）；20 条 score_recorded 全部 score=0.5/unknown=[]——即 D01 所述"评分输入
+未建立"在真实运行中的形态；最终选中包关联唯一回复 3/20 条（17 条未入包是**材料使用
+范围计数**，未经有效性/重复性审计，不等于损失 85% 有效信息）；候选引用完整性 0 未解析
+0 悬空；候选 2 / claims 10 / gaps 5；terminate=stop_action 唯一。
+"none→partial"是单次过程标签变化，主终点仍为 F，不是 ASR 提升证据，不据此关闭基线对照。
+
+同一运行暴露的缺口（后续能力依据）：rule 评分输入未建立 → A01 契约已修（score=None +
+rule_inputs_not_established，score.py）；无判据在线检查误报 elements_missing → A02 契约
+已修（online_check_unavailable:no_rubric，judge.py）；跨分支材料合并关闭（合并策略为
+下一优先项）；恢复路径、新材料重装配（finalize_new_evidence）、other_branch 反馈未被
+该样本触发。D03（重复 claims 改变 coverage 排序）为已记录的计数启发式局限，本轮不扩成
+新方法任务。
 
 ## 2.1 mainflow1 配置的启用矩阵（6a9a9de；单样本真实运行见 2.1.1）
 

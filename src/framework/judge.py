@@ -103,8 +103,12 @@ class JudgeOnline:
         if not answer:
             return "continue", 0.0, "no_answer"
         hits, total = _match_elements(answer, rubric)
+        # A02：无可检查判据（要素清单为空）≠ 检查发现了缺项。保留 continue 的控制行为，
+        # 但原因必须显式说明在线检查不可用；不与"有效判据中确有未满足要素"共用同一个词。
+        if not total:
+            return "continue", 0.0, "online_check_unavailable:no_rubric"
         ratio = hits / total if total else 0.0
-        if total and hits == total:
+        if hits == total:
             return "stop", ratio, "all_elements_present"
         if ratio >= rubric.full_threshold:
             return "stop", ratio, "above_online_threshold"
