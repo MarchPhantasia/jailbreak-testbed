@@ -44,6 +44,8 @@ EVENT_TYPES = (
     "cache_hit",
     "request_generated",
     "preflight_probe",
+    # plan.v6：控制器随动作声明的答案组件清单（覆盖矩阵的持久层）
+    "components_declared",
     "assembly_rejected",
     "evaluation_started",
     "evaluation_verdict",

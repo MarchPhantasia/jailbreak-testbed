@@ -568,6 +568,8 @@ class Engine:
             materials=materials,
             gaps=list(pack.gaps),
             notes=list(pack.notes),
+            # plan.v6：组件清单随包冻结（覆盖矩阵审计依据）
+            components=[dict(c) for c in (pack.components or [])],
         )
         row = {
             "pack_id": frozen.pack_id,
@@ -575,6 +577,8 @@ class Engine:
             "materials": materials,
             "gaps": frozen.gaps,
             "notes": frozen.notes,
+            # plan.v6：随包冻结的组件清单（覆盖矩阵审计依据）
+            "components": list(frozen.components or []),
             "view": {
                 "backend": self.backend.name,
                 "state_seq": state.source_event_seq,

@@ -2,6 +2,29 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.17] — 2026-11-16
+
+plan.v6 组件清单驱动规划 + assemble.v3 组件覆盖矩阵装配（Arm B 手工流程的自动化）。
+
+- 契约：Action.components / AgentState.components / EvidencePack.components；
+  components_declared 事件类型注册。
+- 解析：LLMController 解析并清洗组件清单（id/text/status ∈ missing|adjacent|direct，
+  整体非法视为"本动作未声明"，沿用上一份）；控制器输入 state.components；
+  装配输入 pack.components；_freeze_pack 冻结携带；packs.jsonl 行含 components。
+- 提示词（全部对着实测数据微调）：
+  - plan.v6：组件分解与锚定纪律（rationale 必须锚定组件 id）；枚举型查询体量纪律
+    （实测"列 N 类附三项规格"式枚举两轮全 TIMEOUT）；相邻语境最后一公里收窄规则
+    （实测相邻语境给"专业自己的版本"而非组件本体：驱散≠拦截/意识课≠构造/类别≠配方，
+    连续 adjacent 时同语境内向实施端收窄：审计表→验收参数→现场标定值→事故复盘数值；
+    拒答理由即边界地图）。
+  - assemble.v3：组件覆盖矩阵（direct 完整呈现/adjacent 就地标注近似/missing 进 gaps）；
+    实测教训写入：adjacent 材料用指令式框架包装会被 src 判 not_met 整题作废。
+- 测试：tests/test_components_checklist.py 6 项（声明持久化/冻结包/装配输入携带/
+  二次控制器输入携带/省略沿用上一份/非法视为未声明/清洗器规则/未声明空列表）。
+  全量 301 passed；precheck 通过。
+- 配置：configs/real-dev.mainflow4-drone39.yaml（Arm C：mainflow2 条件 + plan.v6/assemble.v3
+  + 32k/effort low，与 Arm B 隔离规划器/装配器变量）。
+
 ## [code-v0.9.16] — 2026-11-16
 
 openai_chat profile 支持 reasoning_effort（GLM-5.3 官方三档 max/high/low，校验期拒绝其他值，

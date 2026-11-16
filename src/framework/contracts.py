@@ -259,6 +259,8 @@ class AgentState:
     open: List[Dict[str, Any]] = field(default_factory=list)
     failed: List[Dict[str, Any]] = field(default_factory=list)
     hypotheses: List[Dict[str, Any]] = field(default_factory=list)
+    #: 控制器最近一次声明的答案组件清单（plan.v6 覆盖矩阵的持久层；随状态 deepcopy 继承到子节点）
+    components: List[Dict[str, Any]] = field(default_factory=list)
     budget_left: Dict[str, Any] = field(default_factory=dict)
     source_event_seq: int = 0
     node_id: str = ""
@@ -289,6 +291,9 @@ class Action:
     node_id: Optional[str] = None
     view_id: Optional[str] = None
     rationale: str = ""
+    #: 控制器随动作声明的"答案组件清单"（plan.v6）：[{id,text,status(missing|adjacent|direct)}]
+    #: 为 None 表示本动作未声明（沿用状态里已保存的上一份）；[] 与 None 语义不同。
+    components: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass

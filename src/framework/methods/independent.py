@@ -401,6 +401,7 @@ def run_episode(
             action = last_action  # R08：重试原动作，不推进控制器序列
             pending_retry = False
         else:
+            _declared_this_step = None
             try:
                 action = controller.propose(
                     task,
@@ -413,6 +414,8 @@ def run_episode(
                     query_history=engine.query_history(node_id),
                     candidate_feedback=engine.latest_candidate_feedback(),
                 )
+                # plan.v6：控制器随动作声明的组件清单 → 状态持久（缺失时沿用上一份）
+                _declared_this_step = getattr(action, "components", None) if action is not None else None
             except BudgetExhausted:
                 # 阶段额度可能先于全局额度耗尽：统一收尾判断是否用剩余装配额度（N11 语义）
                 stage_left = guard.stage_left(controller_stage)
@@ -426,6 +429,15 @@ def run_episode(
                 )
                 final_reason = reason
                 break
+
+        if _declared_this_step is not None:
+            state.components = [dict(c) for c in _declared_this_step]
+            store.append(
+                "components_declared",
+                role="controller",
+                node_id=node_id,
+                payload={"components": [dict(c) for c in _declared_this_step], "action_id": action.action_id},
+            )
 
         if action is None:
             # S07：保留组件真实状态（拒答 ≠ 格式错误）

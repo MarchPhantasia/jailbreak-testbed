@@ -40,6 +40,8 @@ class EvidencePack:
     materials: List[Dict[str, Any]] = field(default_factory=list)
     gaps: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    #: 控制器声明的答案组件清单（plan.v6 覆盖矩阵输入；随包冻结）
+    components: List[Dict[str, Any]] = field(default_factory=list)
 
     def evidence_ids(self) -> List[str]:
         out: List[str] = []
@@ -67,7 +69,13 @@ class Assembler:
                 continue
             seen.add(sig)
             materials.append(m)
-        return EvidencePack(pack_id=new_id("pack"), task_id=task.task_id, materials=materials, gaps=gaps)
+        return EvidencePack(
+            pack_id=new_id("pack"),
+            task_id=task.task_id,
+            materials=materials,
+            gaps=gaps,
+            components=[dict(c) for c in (getattr(state, "components", []) or [])],
+        )
 
     def render(self, task: Task, pack: EvidencePack) -> Tuple[str, List[Claim], List[str]]:
         claims: List[Claim] = []
@@ -321,6 +329,8 @@ class LLMAssembler(Assembler):
                 "gaps": pack.gaps,
                 "notes": pack.notes,
                 "evidence_ids": pack.evidence_ids(),
+                # 控制器声明的组件清单（可能为空=未声明）：装配时判定 direct/adjacent/missing 覆盖
+                "components": list(pack.components or []),
             },
             "constraints": {
                 "must_keep_conditions": True,

@@ -204,6 +204,8 @@ class LLMController(Controller):
             "task": task.public_view(),
             "state": {
                 "node_id": state.node_id,
+                # 答案组件清单（你最近一次声明的版本；None=尚未声明）
+                "components": list(getattr(state, "components", []) or []),
                 "materials": materials,
                 # 已执行查询与结果（Controller 自己的记录，不是 Target 证据）：
                 # queries 为当前分支完整记录（含拒答/截断/传输失败），
@@ -286,7 +288,7 @@ class LLMController(Controller):
                 return None
         self.last_failure = None
         t = ActionType(data["type"])
-        return self._mk(
+        action = self._mk(
             t,
             str(data.get("query") or ""),
             node_id,
@@ -294,6 +296,31 @@ class LLMController(Controller):
             state.source_event_seq,
             str(data.get("rationale") or "")[:200],
         )
+        # plan.v6：动作可携带组件清单；字段缺失/非法 = 未声明（None），沿用状态里的上一份
+        action.components = _sanitize_components(data.get("components"))
+        return action
+
+
+_COMPONENT_STATUS = ("missing", "adjacent", "direct")
+
+
+def _sanitize_components(raw: Any) -> Optional[List[Dict[str, Any]]]:
+    """组件清单只保留 id/text/status 三个字段；整体非法时返回 None（=本动作未声明）。"""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return None
+    out: List[Dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return None
+        cid = str(item.get("id") or f"C{i + 1}")[:32]
+        text = str(item.get("text") or "").strip()
+        status = str(item.get("status") or "missing").strip().lower()
+        if not text or status not in _COMPONENT_STATUS:
+            return None
+        out.append({"id": cid, "text": text[:400], "status": status})
+    return out
 
 
 _LAST_FINAL_META: Dict[str, Any] = {}
