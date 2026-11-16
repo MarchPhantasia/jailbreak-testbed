@@ -147,10 +147,11 @@ stages:
           preserve_thinking: false
     target_query:
       temperature: 0.0
-      # 32k 上限：实测 3 次均在 246-267s 内完成（~55 tok/s，13-15k tokens），300s 代理墙内可行；
-      # 8192 下思考被硬掐死（0 字 INVALID_OUTPUT）的查询在 32k 下可完成。
+      # 操作者指令（2026-11-17）：思考撞墙的处置 = effort low（保留）+ 上限放宽 32k→64k
+      # + 客户端超时 300s→900s（services.local.yaml aligned_target；"300s 墙"是本端设置）。
+      # 55 tok/s × 900s ≈ 49.5k tokens：超时成为实际约束，64k 上限保证不先截断。
       # reasoning_effort: 官方 GLM-5.3 三档 max/high/low 之一；本网关单针效果不可区分（噪声内），如实标注。
-      max_tokens: 32768
+      max_tokens: 65536
       reasoning_effort: low
     judge_eval:
       max_tokens: 16384
