@@ -50,11 +50,18 @@ def build_dev_slice(
     out_dir: str,
     revision: str,
     seed: int,
-    n: int,
+    n: int = 0,
     source_url: str = "",
     context_field: str = "",
     split: str = "dev",
+    per_category: int = 0,
 ) -> Dict[str, Any]:
+    """冻结开发切片（E05）。
+
+    - n>0 且 per_category=0：全域按重复组原子抽样到 n 条（原行为）；
+    - per_category>0：按 category 分层，每类取 per_category 条（类内组原子，
+      组哈希序确定于 seed:category:group），n 被忽略。两类模式互斥。
+    """
     rows, fields = load_rows(source_path)
     if not rows:
         raise ValueError(f"源数据为空：{source_path}")
@@ -62,26 +69,58 @@ def build_dev_slice(
         raise ValueError(f"未识别的数据列：{fields}（需要 forbidden_prompt 或 Behavior）")
     prompt_field = "forbidden_prompt" if "forbidden_prompt" in fields else "Behavior"
 
-    groups: Dict[str, List[int]] = {}
-    for i, row in enumerate(rows):
-        prompt = row.get(prompt_field, "") or ""
-        group = _group_key(prompt, row.get(context_field, "") if context_field else "")
-        groups.setdefault(group, []).append(i)
+    def _group_of(i: int) -> str:
+        return _group_key(rows[i].get(prompt_field, ""), rows[i].get(context_field, "") if context_field else "")
 
-    ordered = sorted(
-        groups.items(),
-        key=lambda kv: hashlib.sha256(f"{seed}:{kv[0]}".encode("utf-8")).hexdigest(),
-    )
     selected: List[int] = []
     chosen_groups: List[str] = []
-    for group, indexes in ordered:
-        if len(selected) >= n:
-            break
-        if len(selected) + len(indexes) > n:
-            continue  # 组原子性：装不下就跳过，保证同组不跨切片
-        selected.extend(indexes)
-        chosen_groups.append(group)
-    selected.sort()
+    strata: Dict[str, Dict[str, int]] = {}
+    if per_category > 0:
+        by_cat: Dict[str, List[int]] = {}
+        for i, row in enumerate(rows):
+            by_cat.setdefault(row.get("category", "") or "(uncategorized)", []).append(i)
+        for cat in sorted(by_cat):
+            cat_groups: Dict[str, List[int]] = {}
+            for i in by_cat[cat]:
+                cat_groups.setdefault(_group_of(i), []).append(i)
+            ordered = sorted(
+                cat_groups.items(),
+                key=lambda kv: hashlib.sha256(f"{seed}:{cat}:{kv[0]}".encode("utf-8")).hexdigest(),
+            )
+            cat_sel: List[int] = []
+            for group, indexes in ordered:
+                if len(cat_sel) >= per_category:
+                    break
+                if len(cat_sel) + len(indexes) > per_category:
+                    continue  # 类内组原子：装不下就跳过
+                cat_sel.extend(indexes)
+                chosen_groups.append(group)
+            selected.extend(cat_sel)
+            strata[cat] = {
+                "requested": per_category,
+                "selected": len(cat_sel),
+                "source_rows": len(by_cat[cat]),
+                "groups": len(cat_groups),
+            }
+        selected.sort()
+    else:
+        if n <= 0:
+            raise ValueError("需要 n>0（全域抽样）或 per_category>0（分层抽样）")
+        groups: Dict[str, List[int]] = {}
+        for i in range(len(rows)):
+            groups.setdefault(_group_of(i), []).append(i)
+        ordered = sorted(
+            groups.items(),
+            key=lambda kv: hashlib.sha256(f"{seed}:{kv[0]}".encode("utf-8")).hexdigest(),
+        )
+        for group, indexes in ordered:
+            if len(selected) >= n:
+                break
+            if len(selected) + len(indexes) > n:
+                continue  # 组原子性：装不下就跳过，保证同组不跨切片
+            selected.extend(indexes)
+            chosen_groups.append(group)
+        selected.sort()
 
     os.makedirs(out_dir, exist_ok=True)
     name = os.path.basename(source_path)
@@ -111,10 +150,13 @@ def build_dev_slice(
         "slice_path": os.path.abspath(slice_path),
         "slice_sha256": sha256_file(slice_path),
         "seed": seed,
-        "requested": n,
+        "requested": n if per_category <= 0 else per_category,
+        "sampling": "per_category" if per_category > 0 else "global_group_atomic",
+        "per_category": per_category,
+        "strata": strata,
         "selected": len(selected),
         "source_rows": len(rows),
-        "groups_total": len(groups),
+        "groups_total": (sum(st["groups"] for st in strata.values()) if per_category > 0 else len(groups)),
         "groups_selected": len(chosen_groups),
         "prompt_field": prompt_field,
         "tasks": ids,

@@ -2,6 +2,20 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.22] — 2026-11-17
+
+批次调优基础设施 + 第 1 轮批次就绪（等 Arm E r2 让出 Target 并发）。
+
+- `build_dev_slice` 新增 `per_category` 分层抽样（类内组原子，组哈希序确定于
+  seed:category:group；与全域模式互斥，manifest 记录 sampling/strata/per_category）；
+  `select_dev_slice.py` 加 `--per-category`。测试：分层正确性/确定性/组原子/互斥校验。
+- 批次切片：strongreject_dataset.dev.seed20261117（6 类 × 2 = 12 任务，
+  源 313 行，分层抽样冻结）。
+- mainflow7-sr-batch1 配置：plan.v6.1 + assemble.v3.1 + target 64k/effort low/900s
+  （操作者指令的思考撞墙处置）+ 恢复 r2 实测参数 + 固定预算 20-34-28-6。
+  目的：批次基线 + v6.1 查询构造收益的跨任务验证。
+- 304 tests；precheck 通过。
+
 ## [code-v0.9.21] — 2026-11-17
 
 Arm E r1 事故根因修复 + r2 重跑。

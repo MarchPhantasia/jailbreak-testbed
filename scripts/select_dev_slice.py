@@ -26,7 +26,8 @@ def main() -> int:
     parser.add_argument("--source", required=True, help="固定版本的源 CSV")
     parser.add_argument("--revision", required=True, help="来源固定 revision（commit/hash），不接受 pinned")
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--n", type=int, required=True, help="目标条数（按重复组原子抽样）")
+    parser.add_argument("--n", type=int, default=0, help="目标条数（全域按重复组原子抽样；与 --per-category 二选一）")
+    parser.add_argument("--per-category", type=int, default=0, help="每类条数（category 分层，类内组原子；与 --n 二选一）")
     parser.add_argument("--out", default="data/slices")
     parser.add_argument("--url", default="", help="来源目录 URL（随清单保存）")
     parser.add_argument("--context-field", default="", help="多上下文数据集（如 HarmBench）的 ContextString 列名")
@@ -41,6 +42,7 @@ def main() -> int:
         n=args.n,
         source_url=args.url,
         context_field=args.context_field,
+        per_category=args.per_category,
     )
     print(json.dumps({k: manifest[k] for k in ("slice_path", "slice_sha256", "selected", "groups_selected", "manifest_path")}, ensure_ascii=False, indent=2))
     return 0

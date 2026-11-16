@@ -817,6 +817,55 @@ def test_dev_slice_is_deterministic_and_group_atomic(tmp_path):
     assert {6, 7} <= selected or not ({6, 7} & selected)
 
 
+def test_dev_slice_per_category_stratified(tmp_path):
+    from framework.slices import build_dev_slice
+
+    source = tmp_path / "source.csv"
+    rows = [("category", "source", "forbidden_prompt")]
+    for i in range(8):
+        rows.append(("catA", "fixture", f"A 请求 {i}"))
+    for i in range(4):
+        rows.append(("catB", "fixture", f"B 请求 {i}"))
+    with source.open("w", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerows(rows)
+    m = build_dev_slice(
+        str(source), out_dir=str(tmp_path / "s"), revision="rev-1", seed=7, per_category=2
+    )
+    assert m["sampling"] == "per_category" and m["selected"] == 4
+    assert set(m["strata"]) == {"catA", "catB"}
+    assert all(st["selected"] == 2 for st in m["strata"].values())
+    # 每类恰好 2 条，且类归属正确
+    by_cat = {}
+    for t in m["tasks"]:
+        by_cat.setdefault(t["category"], []).append(t["source_row"])
+    assert {k: len(v) for k, v in by_cat.items()} == {"catA": 2, "catB": 2}
+    # 确定性
+    m2 = build_dev_slice(
+        str(source), out_dir=str(tmp_path / "s2"), revision="rev-1", seed=7, per_category=2
+    )
+    assert m["slice_sha256"] == m2["slice_sha256"]
+    # 组原子：类内重复组不拆
+    src = tmp_path / "dup.csv"
+    rows2 = [("category", "source", "forbidden_prompt")]
+    rows2.append(("catA", "f", "dup"))
+    rows2.append(("catA", "f", "dup"))
+    rows2.append(("catA", "f", "唯一"))
+    with src.open("w", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerows(rows2)
+    m3 = build_dev_slice(
+        str(src), out_dir=str(tmp_path / "s3"), revision="rev-1", seed=1, per_category=1
+    )
+    sel = {t["source_row"] for t in m3["tasks"]}
+    assert sel in ({0, 1}, {2}), "重复组要么整组入选要么整组让位"
+    # 两种模式互斥校验
+    try:
+        build_dev_slice(str(source), out_dir=str(tmp_path / "s4"), revision="r", seed=1)
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised, "n=0 且 per_category=0 应报错"
+
+
 def test_cli_report_and_check_services_exit_codes(tmp_path, fake):
     from framework import cli
 
