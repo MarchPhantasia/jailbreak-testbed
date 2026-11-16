@@ -553,6 +553,33 @@ def test_merge_all_pack_contains_other_branch_materials_with_provenance(tmp_path
     assert len(mats) == 2, f"两条独立回复去重后应为 2 条材料，实际 {len(mats)}"
 
 
+def test_merge_all_current_node_without_materials_still_assembles(tmp_path):
+    """回归（Arm E r1 事故）：终止节点无材料但兄弟节点有材料 + merge=all 时，
+    收尾装配判定必须用合并视图——只看当前节点会丢弃已采集证据。"""
+    scripts = {
+        "查询A": [{"text": "- 库位: A17\n"}],
+    }
+    engine, store = _merge_engine(tmp_path, "all", scripts)
+    from framework.contracts import Action, ActionType
+
+    act = lambda kind, node, q="": Action(action_id="m", type=kind, node_id=node, params={"query": q})
+    engine.execute(act(ActionType.ASK_TARGET, "root", "查询A"))
+    a = engine.current_node_id
+    assert engine.states[a].materials, "前置：节点 a 应有材料"
+    # 从 root 再开一个无材料节点并选中（模拟最后一个查询 TIMEOUT 的分支形状）
+    engine.execute(act(ActionType.ASK_TARGET, "root", "查询B"))
+    b = engine.current_node_id
+    assert b != a and not engine.states[b].materials, "前置：当前节点 b 无材料"
+    # 修复后的闸门原语：合并视图应看到 a 的材料
+    pack, _sources = engine._build_pack_for(b)
+    assert pack.materials, "merge=all 下当前节点无材料时，合并视图必须包含兄弟节点材料"
+    # 与装配路径同视图：直接在 b 上装配也应拿到材料
+    engine.execute(act(ActionType.ASSEMBLE, b))
+    row = engine.packs[-1]
+    values = " ".join(str(m.get("value", m.get("text", ""))) for m in row["materials"])
+    assert "A17" in values, "在无材料的当前节点装配，包内仍应有兄弟分支材料"
+
+
 def test_merge_none_keeps_current_branch_only(tmp_path):
     scripts = {
         "查询A": [{"text": "- 库位: A17\n"}],

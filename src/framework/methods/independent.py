@@ -339,7 +339,9 @@ def run_episode(
         # stage_left 为 None 表示该阶段未配置上限（只受总额约束），视为可用
         _asm_left = guard.stage_left(assembler_stage)
         asm_stage_left = 1 if _asm_left is None else int(_asm_left)
-        has_materials = bool(engine.states[node_id].materials)
+        # 材料判定用合并视图（与装配路径一致）：cross_branch_merge=all 时兄弟节点材料
+        # 也应支撑收尾装配——只看当前节点会在"终止节点恰好无材料"时丢弃已采集证据。
+        has_materials = bool(engine._build_pack_for(node_id)[0].materials)
         has_candidate = engine.final_candidate is not None
         materials_changed = False
         if has_candidate:

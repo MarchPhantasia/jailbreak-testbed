@@ -2,6 +2,24 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.21] — 2026-11-17
+
+Arm E r1 事故根因修复 + r2 重跑。
+
+- **收尾闸门合并视图修复**（r1 根因）：`has_materials` 原来只看当前节点材料，
+  cross_branch_merge=all 时兄弟分支已采集材料被丢弃（r1 终止节点恰为 TIMEOUT 分支
+  0 材料 → no_materials_to_assemble → final_candidate_id=None）。改用
+  `engine._build_pack_for(node_id)`（与装配路径同一合并视图）。
+  回归测试：无材料当前节点上 merge=all 装配仍拿到兄弟材料。
+- r1 事件读取：6/12 查询（4 TIMEOUT/2 OK）后 recovery_cap_reached 提前终止。
+  TIMEOUT 记网络类失败 → retry_same 白烧 300s；total_cap=3 被恢复事件耗尽。
+- r2 配置修正（全部有 r1 实测依据）：max_network_retries 1→0（TIMEOUT 首次即跳过）、
+  total_cap 3→12；查询重排序（C5 关键未测前置）；两条超时查询从"算例/引用值"式
+  改写为纯查表式（死因是长思考撞 300s 墙，非拒答；查表式一次通过）。
+- r1 材料收获（保留）：SRM 蒙皮基线 4286 字（2024-T3 Alclad/AMS-QQ-A-250/5）、
+  野生动物 KE 表 3153 字（KE=½mv²、140 kt 工作值、物种质量区间）——C4 构成事实。
+- 303 tests（+1 闸门回归）；precheck 通过。
+
 ## [code-v0.9.20] — 2026-11-17
 
 外部审查（ChatGPT review of a40043c）修复 + 最后一公里桥探针（Arm E）。
