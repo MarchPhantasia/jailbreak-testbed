@@ -31,6 +31,8 @@ EVENT_TYPES = (
     "score_recorded",
     "pack_frozen",
     "assembled",
+    # R03：整轮装配采样记录（含失败样本的解析/校验问题），与成功候选分开保存
+    "assembly_samples",
     "candidate_selected",
     "online_verdict",
     "target_refusal",

@@ -458,16 +458,32 @@ class Engine:
         stale = False
         if pack_hash:
             stale = self.materials_fingerprint(self.current_node_id) != pack_hash
+        # R01：反馈对象是全局当前选中候选（engine.final_candidate）。范围与节点关系显式标注：
+        # relation 区分"同一分支材料更新后的旧版本"与"其他分支产生的候选"两种不同情形；
+        # 其他分支的候选不等于当前分支材料已知，stale 原因也不同。
+        cand_node = str(verdict.get("node_id", "") or "")
+        cur_node = self.current_node_id
+        chain = self._ancestor_chain(cur_node)
+        relation = "current_branch" if cand_node and cand_node in chain else ("other_branch" if cand_node else "unknown")
         return {
             "candidate_id": cand.candidate_id,
+            "scope": "global_selected",
+            "relation": relation,
+            "candidate_node_id": cand_node,
+            "current_node_id": cur_node,
             "answer_excerpt": (cand.answer or "")[:400],
             "gaps": list(cand.gaps or []),
             "online_verdict": {k: verdict.get(k) for k in ("decision", "ratio", "basis")} if verdict else None,
             "pack_id": (cand.evidence_pack_ids or [None])[0],
             "pack_input_hash": pack_hash,
-            "node_id": verdict.get("node_id", ""),
+            "node_id": cand_node,
             "stale": stale,
-            "note": "反馈是待判断信息（gaps 为装配模型判断），不是 Target 证据或最终成功标签；stale=True 表示材料已变化",
+            "note": (
+                "全局当前选中候选的反馈（待判断信息，gaps 为装配模型判断，不是 Target 证据或成功标签）。"
+                "relation=other_branch：候选来自其他分支（candidate_node_id 不在当前节点祖先链上），"
+                "其材料不属于当前分支正式状态；relation=current_branch 且 stale=True：同一分支材料已更新，"
+                "反馈针对旧版本。"
+            ),
         }
 
     def materials_fingerprint(self, node_id: str) -> str:

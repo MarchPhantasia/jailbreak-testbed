@@ -80,6 +80,8 @@ global failure 的含义也要明确：PARTIAL、TRUNCATED 或带拒绝措辞的
 
 b3e9514 已做最小接线：`LLMController.build_input` 的 `state.candidate_feedback` 来自 `Engine.latest_candidate_feedback()`——候选 id、answer 摘录、gaps、online_verdict（decision/ratio/basis）、pack_id、`pack_input_hash`、node、`stale` 过期标记；旧渲染路径同步。未新增模型调用；反馈仍标注为待判断信息，不是成功标签。真实运行中 Controller 是否有效消费该反馈（据此继续/切换/停止）尚未验证。
 
+反馈范围协议（code-v0.9.11 固定）：反馈对象是**全局当前选中候选**（`engine.final_candidate`），非每分支候选池；输入显式标注 `scope=global_selected`、`relation=current_branch|other_branch` 与双方节点，区分"其他分支产生的候选（其材料不属于当前分支正式状态）"和"同分支材料更新（反馈针对旧版本）"两种 stale 情形。跨分支择优不在当前范围。
+
 建议反馈记录表达：来自哪个 candidate、哪个 pack/材料版本、哪个节点、何种检查、哪些缺项/矛盾/未知、检查版本及是否过期。字段命名可适配现有契约。
 
 Assembler 的 gaps 是模型判断，不能自动升级为正式事实。回传后仍需 Controller/策略决定是否继续获取信息。当前子查询完成不代表原始任务完成；最终 Judge_eval 的结果不可作为这份反馈。
@@ -102,7 +104,9 @@ Frontier 管可选路径，SearchPolicy 管选择/扩展，Scorer 管对象与�
 
 ### 4.5 多候选不是 k 字段
 
-b3e9514：`LLMAssembler.assemble_from_pack` 逐样本生成——k 个独立真实请求（k>1 时 `cache_bypass` 绕过响应缓存的查找与写入）、逐样本 attempts 与 call_id、预算中途耗尽保留已生成样本并标 `sampling_interrupted`、相同答案标 `duplicate_of_sample` 不冒充。同一冻结证据包上生成；选择由冻结在线 selector 负责。两配置仍为 k=1/first，k>1 属于待启用的实验变量。
+b3e9514：`LLMAssembler.assemble_from_pack` 逐样本生成——k 个独立真实请求（k>1 时 `cache_bypass` 绕过响应缓存的查找与写入）、逐样本 attempts 与 call_id、相同答案标 `duplicate_of_sample` 不冒充。同一冻结证据包上生成；选择由冻结在线 selector 负责。两配置仍为 k=1/first；mainflow1 为 k=2/coverage（未运行）。
+
+审查修复（code-v0.9.11）：首次预算耗尽立即结束本轮采样（保留已生成样本并标 `sampling_interrupted` + `samples_completed`）；整轮采样记录（含失败样本的解析/校验问题）落 `assembly_samples` 事件，成功候选只引用自己的生成调用。
 
 在同一冻结证据包上生成并保存全部候选；改变证据包属于新的材料条件。不要只改 candidate_id 或排版制造“多个候选”。在线选择器不得访问最终评价，离线候选池上限另算且不反馈在线。
 

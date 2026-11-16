@@ -545,8 +545,12 @@ class LLMAssembler(Assembler):
                 view_id=view_id,
             )
             all_attempts.extend(attempts)
+            # R02：首次预算耗尽立即结束本轮采样；不得再尝试后续样本
+            if budget_out:
+                break
             if parsed is None:
                 continue
+            self.last_failure = ""
             claims = parsed["claims"]
             pack_text = "\n".join(
                 str(m.get("value", m.get("text", ""))) for m in pack.materials if m.get("value") or m.get("text")
@@ -595,10 +599,32 @@ class LLMAssembler(Assembler):
             # 预算中途耗尽：保留已生成样本，如实记录未完成的采样数
             candidates[-1].assembly_config["samples_completed"] = len(candidates)
             candidates[-1].assembly_config["sampling_interrupted"] = True
+        # R03：整轮采样记录与成功候选分开保存——关联 pack/样本索引/attempt/call_id/
+        # 网关状态与解析校验问题；成功候选只引用自己的生成调用，不吸收失败样本的调用
+        self._record_samples_event(pack, node_id, view_id, k, all_attempts, candidates)
         if not candidates:
             self.last_failure = self.last_failure or "invalid_output"
             return self._fallback(task, pack, stage_policy_ref, all_attempts, k=k)
         return candidates
+
+    def _record_samples_event(self, pack, node_id, view_id, k, all_attempts, candidates) -> None:
+        store = getattr(self.gateway, "store", None)
+        if store is None:
+            return
+        store.append(
+            "assembly_samples",
+            role="assembler",
+            stage_id=self.stage_id,
+            node_id=node_id,
+            view_id=view_id,
+            payload={
+                "pack_id": pack.pack_id,
+                "k": k,
+                "samples": list(all_attempts),
+                "candidates": [c.candidate_id for c in candidates],
+                "fallback": not candidates,
+            },
+        )
 
     def _fallback(self, task: Task, pack: EvidencePack, stage_policy_ref: str, attempts: List[Dict[str, Any]], *, k: int = 1) -> List[AnswerCandidate]:
         """声明的原文回退：保留 Target 原文与缺项，明确标记 fallback_render。"""

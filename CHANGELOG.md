@@ -2,6 +2,42 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.11] — 2026-11-16
+
+b3e9514 最小审查包修复轮（R02/R03 缺陷修复 + R01 协议固定；保持 mainflow 方法语义不变，
+未回退线性/单候选，未改搜索算法、未加模型、未动旧实验配置、未跑真实批次、未做窗口测试）。
+
+### R02：预算耗尽后仍继续遍历样本（assembly.py 采样循环）
+
+- `if parsed is None: continue` 排在 `if budget_out: break` 之前，导致首次预算耗尽后仍尝试
+  剩余样本（k=4/额度=1 时网关入口 4 次）。修复：budget_out 立即 break；成功样本清空
+  last_failure。验收：入口 2 次、dispatch 1 次、候选保留且 `sampling_interrupted` +
+  `samples_completed` 如实记录。
+
+### R03：部分成功时丢失失败样本的校验原因
+
+- 新增 `assembly_samples` 事件（注册进 EVENT_TYPES）：整轮采样记录（pack/k/逐样本
+  attempt/call_id/网关状态/解析校验问题/候选列表/fallback 标记）在装配后统一落事件，
+  成功候选只引用自己的生成调用。验收：k=2 中样本 1 `not_json_object` 在事件里可定位
+  （pack/样本/call_id），且不进入成功候选的 processing_refs。
+
+### R01：全局候选反馈范围固定为显式协议
+
+- 保留全局当前选中候选语义（`engine.final_candidate`），不引入每分支候选池或跨分支择优；
+  反馈增加 `scope=global_selected`、`relation=current_branch|other_branch`、
+  `candidate_node_id`/`current_node_id`：区分"其他分支产生的候选"与"同分支材料更新"两种
+  stale 情形；模板路径与旧渲染路径都传达该关系。
+- 补协议检查：分支切换回 A 后 relation=other_branch 且双方节点可见；切回候选装配分支则
+  relation=current_branch 且 fresh。R01 历史观察断言（全局候选）在保留语义下继续成立。
+
+### 审查包验收
+
+- reproduce：4 passed（修复前 2 failed / 2 passed）。
+- acceptance：3 passed / 1 deselected（R01 按包设计不进修复验收）。
+- existing：49 passed（包内 45 + 本仓库该集合新增的 4）。
+- 仓库全量 285 passed（282 + 3 项新协议检查）；precheck 通过。
+- 包内检查文件逐字节未动；新增检查全部进仓库测试文件。
+
 ## [code-v0.9.10] — 2026-11-16
 
 mainflow1 配置：把主流程新能力接入可运行的实验配置（未运行，等授权）。

@@ -160,13 +160,23 @@ class LLMController(Controller):
             return ""
         v = fb.get("online_verdict") or {}
         lines = ["当前候选与在线反馈（待判断信息，不是 Target 证据）："]
-        lines.append(f"- 候选 {fb.get('candidate_id','')}（包 {str(fb.get('pack_id',''))[:16]}）")
+        rel = fb.get("relation")
+        if rel == "other_branch":
+            lines.append(
+                f"- 候选 {fb.get('candidate_id','')} 来自其他分支（装配节点 {fb.get('candidate_node_id','')}，"
+                f"当前节点 {fb.get('current_node_id','')}）：其材料不属于当前分支正式状态"
+            )
+        else:
+            lines.append(f"- 候选 {fb.get('candidate_id','')}（包 {str(fb.get('pack_id',''))[:16]}）")
         if fb.get("gaps"):
             lines.append("- 缺项：" + "；".join(str(g) for g in fb["gaps"][:5]))
         if v:
             lines.append(f"- 在线检查：{v.get('decision')}（{v.get('basis')}）")
         if fb.get("stale"):
-            lines.append("- 注意：材料已变化，该反馈针对旧版本")
+            if rel == "other_branch":
+                lines.append("- 注意：当前分支材料与该候选的包不同（跨分支差异）")
+            else:
+                lines.append("- 注意：材料已变化，该反馈针对旧版本")
         return "\n".join(lines) + "\n\n"
 
     # ---- 输入构造 ----

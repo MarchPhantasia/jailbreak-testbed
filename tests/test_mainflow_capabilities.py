@@ -379,3 +379,128 @@ def test_method_policy_is_frozen_in_plan(tmp_path, monkeypatch):
     assert mp["stopping"] == "online"
     assert mp["assembly"]["k"] == 2 and mp["assembly"]["selector"]
     assert plan["request_policy"]["target_history"] == "isolated"
+
+
+# --------------------------------------------------------------------------
+# R01 协议检查：全局选中候选反馈的范围/节点关系显式标注（b3e9514 审查轮）
+# --------------------------------------------------------------------------
+def test_R01_protocol_feedback_scope_and_relation_annotation(tmp_path):
+    """分支切换回 A 后：反馈是全局选中候选（来自 B），relation 必须标 other_branch
+    并给出双方节点；同分支材料更新则 relation=current_branch。旧渲染路径同样传达。"""
+    from framework.contracts import Action, ActionType
+    from framework.controller import LLMController
+    from helpers import make_engine
+
+    engine, store, _, gateway = make_engine(tmp_path, scripts={
+        "query-A": [{"text": "- 库位: A17\n"}],
+        "query-B": [{"text": "- 登记: 首次需要登记\n"}],
+    })
+    act = lambda kind, node, q="": Action(action_id="r01", type=kind, node_id=node, params={"query": q})
+    engine.execute(act(ActionType.ASK_TARGET, "root", "query-A"))
+    a = engine.current_node_id
+    engine.execute(act(ActionType.ASSEMBLE, a))
+    ca = engine.final_candidate
+    engine.execute(act(ActionType.ASK_TARGET, "root", "query-B"))
+    b = engine.current_node_id
+    engine.execute(act(ActionType.ASSEMBLE, b))
+    cb = engine.final_candidate
+    # 真实选择入口切回 A
+    from framework.search import BestFirstPolicy
+
+    engine.frontier.update(a, 1.0)
+    engine.frontier.update(b, 0.0)
+    engine.policy = BestFirstPolicy()
+    assert engine.select_node() == a
+
+    fb = engine.latest_candidate_feedback()
+    # 所选协议：全局当前选中候选（未引入跨分支择优/每分支候选池）
+    assert fb["candidate_id"] == cb.candidate_id
+    assert fb["scope"] == "global_selected"
+    assert fb["relation"] == "other_branch"
+    assert fb["candidate_node_id"] == b and fb["current_node_id"] == a
+    assert fb["stale"] is True
+    # 模板路径：状态输入里带范围与节点关系
+    payload = LLMController(gateway).build_input(
+        engine.task, engine.states[a], budget={}, can_assemble=True,
+        query_history=engine.query_history(a), candidate_feedback=fb,
+    )
+    assert payload["state"]["candidate_feedback"]["relation"] == "other_branch"
+    # 旧渲染路径同样传达
+    text = LLMController._render_candidate_feedback(fb)
+    assert "其他分支" in text and b[:8] in text and a[:8] in text
+
+    # 同分支情形：在 A 上继续取证后，反馈 relation=current_branch 且 stale=True
+    engine.execute(act(ActionType.ASK_TARGET, a, "query-A2"))
+    fb2 = engine.latest_candidate_feedback()
+    assert fb2["candidate_id"] == cb.candidate_id
+    assert fb2["relation"] == "other_branch"  # 候选仍来自 B（全局选中）
+    # 候选来自当前分支的情形：切到 B（候选装配节点）再看
+    engine.frontier.update(b, 2.0)
+    assert engine.select_node() == b
+    fb3 = engine.latest_candidate_feedback()
+    assert fb3["relation"] == "current_branch"
+    # 候选 B 装配自 b 的材料且 b 分支无新取证 → 对当前分支不 stale（新取证发生在 A 上）
+    assert fb3["stale"] is False
+
+
+def test_R03_protocol_sampling_records_event(tmp_path):
+    """整轮采样记录落 assembly_samples 事件：失败样本的诊断保留且可定位到 pack/样本/call。"""
+    from framework.assembly import LLMAssembler
+    from framework.budget import BudgetGuard
+    from framework.clients import CallResult, MockGateway
+    from framework.contracts import BudgetLimits, Status
+    from framework.events import EventStore
+    from framework.prompts import PromptTemplate
+
+    invalid = CallResult(call_id="", status=Status.OK, text="invalid-json")
+    valid = CallResult(call_id="", status=Status.OK, text=json.dumps({
+        "answer": "库位: C04",
+        "claims": [{"claim_id": "c1", "text": "库位: C04", "evidence_ids": ["ev_x"]}],
+        "gaps": [],
+    }, ensure_ascii=False))
+    store = EventStore(str(tmp_path / "ev"), "ep_r03")
+    guard = BudgetGuard(BudgetLimits(target_calls=2, non_target_calls=4), store, "ep_r03")
+    gw = MockGateway(guard, store, scripts={"*": [invalid, valid]})
+    template = PromptTemplate(stage_id="assemble", template_id="t", version="1", role="assembler",
+                              text="INPUT_JSON\n{{input_json}}\n", source_path="unit")
+    asm = LLMAssembler(gw, template, stage_id="assemble", max_format_retries=0)
+    cands = asm.assemble_from_pack(make_task(), _make_pack(), k=2, node_id="root", view_id="v")
+    assert len(cands) == 1 and cands[0].assembly_config["sample_index"] == 2
+    evs = [e for e in store.events if e.type == "assembly_samples"]
+    assert evs, "应有 assembly_samples 事件"
+    p = evs[0].payload
+    assert p["pack_id"] == _make_pack().pack_id or p["pack_id"]
+    assert p["k"] == 2 and p["fallback"] is False
+    assert p["candidates"] == [cands[0].candidate_id]
+    s1 = next(s for s in p["samples"] if s["sample"] == 1)
+    assert "not_json_object" in s1["problems"]
+    assert s1["call_id"]  # 失败样本的调用可定位
+    # 成功候选只引用自己的调用，不吸收失败样本的调用
+    assert s1["call_id"] not in cands[0].processing_refs
+
+
+def test_R02_protocol_budget_exhaustion_stops_sampling(tmp_path):
+    """k>1 采样中首次预算耗尽：立即结束、保留已生成候选并标记中断。"""
+    from framework.assembly import LLMAssembler
+    from framework.budget import BudgetGuard
+    from framework.clients import CallResult, MockGateway
+    from framework.contracts import BudgetLimits, Status
+    from framework.events import EventStore
+    from framework.prompts import PromptTemplate
+
+    valid = CallResult(call_id="", status=Status.OK, text=json.dumps({
+        "answer": "库位: C04",
+        "claims": [{"claim_id": "c1", "text": "库位: C04", "evidence_ids": ["ev_x"]}],
+        "gaps": [],
+    }, ensure_ascii=False))
+    store = EventStore(str(tmp_path / "ev"), "ep_r02")
+    guard = BudgetGuard(BudgetLimits(target_calls=2, non_target_calls=1), store, "ep_r02")
+    gw = MockGateway(guard, store, scripts={"*": [valid]})
+    template = PromptTemplate(stage_id="assemble", template_id="t", version="1", role="assembler",
+                              text="INPUT_JSON\n{{input_json}}\n", source_path="unit")
+    asm = LLMAssembler(gw, template, stage_id="assemble", max_format_retries=0)
+    cands = asm.assemble_from_pack(make_task(), _make_pack(), k=4, node_id="root", view_id="v")
+    dispatched = [e for e in store.events if e.type == "request_sent"]
+    assert len(cands) == 1 and len(dispatched) == 1
+    assert cands[0].assembly_config["sampling_interrupted"] is True
+    assert cands[0].assembly_config["samples_completed"] == 1
