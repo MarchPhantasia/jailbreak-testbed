@@ -185,6 +185,10 @@ def run_episode(
     target_history_policy = str(state_cfg.get("target_history", "ancestor") or "ancestor").lower()
     if target_history_policy not in ("ancestor", "isolated"):
         raise ValueError(f"未支持的 method.state.target_history：{target_history_policy}（可选 ancestor / isolated）")
+    # 跨分支材料合并策略：none=仅当前分支链（默认，既有条件）；all=装配包全观察节点去重合并
+    cross_branch_merge = str(assembly_cfg.get("cross_branch_merge", "none") or "none").lower()
+    if cross_branch_merge not in ("none", "all"):
+        raise ValueError(f"未支持的 method.assembly.cross_branch_merge：{cross_branch_merge}（可选 none / all）")
     backend_name = state_cfg.get("backend", "fox")
     window_chars = state_cfg.get("window_chars")
     if window_chars is not None:
@@ -249,6 +253,7 @@ def run_episode(
         stopping_policy=stop_policy,
         system_prompt=target_system_prompt,
         target_history_policy=target_history_policy,
+        cross_branch_merge=cross_branch_merge,
     )
     engine.start()
 

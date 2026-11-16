@@ -504,3 +504,147 @@ def test_R02_protocol_budget_exhaustion_stops_sampling(tmp_path):
     assert len(cands) == 1 and len(dispatched) == 1
     assert cands[0].assembly_config["sampling_interrupted"] is True
     assert cands[0].assembly_config["samples_completed"] == 1
+
+
+# --------------------------------------------------------------------------
+# 跨分支材料合并（cross_branch_merge: none|all）
+# --------------------------------------------------------------------------
+def _merge_engine(tmp_path, merge, scripts):
+    from helpers import make_engine
+
+    task = make_task(elements=["库位", "登记"], scripts=scripts)
+    engine, store, _, _ = make_engine(
+        tmp_path, task=task, backend="raw_history", scorer="rule", scripts=scripts
+    )
+    engine.cross_branch_merge = merge
+    return engine, store
+
+
+def test_merge_all_pack_contains_other_branch_materials_with_provenance(tmp_path):
+    scripts = {
+        "查询A": [{"text": "- 库位: A17\n"}],
+        "查询B": [{"text": "- 登记: 首次需要登记\n"}],
+    }
+    engine, store = _merge_engine(tmp_path, "all", scripts)
+    from framework.contracts import Action, ActionType
+
+    act = lambda kind, node, q="": Action(action_id="m", type=kind, node_id=node, params={"query": q})
+    engine.execute(act(ActionType.ASK_TARGET, "root", "查询A"))
+    a = engine.current_node_id
+    engine.execute(act(ActionType.ASK_TARGET, "root", "查询B"))
+    b = engine.current_node_id
+    assert a != b and engine.nodes[b].parent_node_id == "root"
+    engine.execute(act(ActionType.ASSEMBLE, a))
+    packs = [json.loads(l) for l in open(tmp_path / "episode" / "packs.jsonl", encoding="utf-8")] if (tmp_path / "episode" / "packs.jsonl").exists() else []
+    # 从 store 的 pack_frozen 事件拿材料（packs.jsonl 路径可能不同）
+    pf = [e for e in store.events if e.type == "pack_frozen"]
+    if not pf and packs:
+        import framework.engine as _e  # noqa: F401
+    # 直接读引擎冻结行
+    row = engine.packs[-1]
+    mats = row["materials"]
+    values = " ".join(str(m.get("value", m.get("text", ""))) for m in mats)
+    assert "A17" in values and "首次需要登记" in values, "merge=all 时兄弟分支材料必须进包"
+    src_nodes = {m.get("source_node") for m in mats}
+    assert a in src_nodes and b in src_nodes, "每条材料带来源节点"
+    assert row["view"].get("merge_policy") == "all"
+    assert set(row["view"].get("merged_from_nodes", [])) >= {a, b}
+    # 去重：root 无材料，两条观察各贡献一次；祖先共享材料只算一次
+    assert len(mats) == 2, f"两条独立回复去重后应为 2 条材料，实际 {len(mats)}"
+
+
+def test_merge_none_keeps_current_branch_only(tmp_path):
+    scripts = {
+        "查询A": [{"text": "- 库位: A17\n"}],
+        "查询B": [{"text": "- 登记: 首次需要登记\n"}],
+    }
+    engine, store = _merge_engine(tmp_path, "none", scripts)
+    from framework.contracts import Action, ActionType
+
+    act = lambda kind, node, q="": Action(action_id="m", type=kind, node_id=node, params={"query": q})
+    engine.execute(act(ActionType.ASK_TARGET, "root", "查询A"))
+    a = engine.current_node_id
+    engine.execute(act(ActionType.ASK_TARGET, "root", "查询B"))
+    engine.execute(act(ActionType.ASSEMBLE, a))
+    row = engine.packs[-1]
+    values = " ".join(str(m.get("value", m.get("text", ""))) for m in row["materials"])
+    assert "A17" in values and "首次需要登记" not in values, "默认 none 只用当前分支链"
+    assert row["view"].get("merge_policy") == "none"
+
+
+def test_merge_all_fingerprint_and_finalize_reassemble(tmp_path):
+    """合并视图的 stale 语义：兄弟分支新材料到达 → 指纹变化 → STOP 收尾重装配并入包。"""
+    from framework.controller import Controller
+
+    class AskBranchThenStop(Controller):
+        name = "abts"
+
+        def __init__(self):
+            self.i = 0
+
+        def propose(self, task, state, *, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None, **kw):
+            seq = [
+                (ActionType.ASK_TARGET, "查询A"),
+                (ActionType.ASSEMBLE, ""),
+                (ActionType.ASK_TARGET, "查询B"),
+                (ActionType.STOP, ""),
+            ]
+            action, query = seq[min(self.i, len(seq) - 1)]
+            self.i += 1
+            return self._mk(action, query, node_id, view_id, state.source_event_seq)
+
+    scripts = {
+        "查询A": [{"text": "- 库位: A17\n"}, {"text": "- 库位: A17 补充\n"}],
+        "查询B": [{"text": "- 登记: 首次需要登记\n"}, {"text": "- 开放时间: 周二\n"}],
+    }
+    import framework.methods.independent as ind
+
+    orig = ind.build_controller
+    ctl = AskBranchThenStop()
+    ind.build_controller = lambda *a, **k: ctl
+    try:
+        cfg = make_cfg(tmp_path)
+        cfg["method"]["stopping"] = {"policy": "online"}
+        cfg["method"]["assembly"] = dict(cfg["method"].get("assembly") or {}, cross_branch_merge="all")
+        cfg["method"]["search"] = {"policy": "best_first", "scorer": "rule", "branch_width": 2}
+        task = make_task(elements=["库位", "登记"], scripts=scripts)
+        art = run_episode(task, config=cfg, results_root=str(tmp_path / "r"))
+    finally:
+        ind.build_controller = orig
+    # 第一次装配在 A 分支（含 A 材料）；STOP 前兄弟分支新材料 → 收尾按合并视图重装配
+    final = art.final_candidate
+    assert final is not None
+    answer = final.answer
+    assert "A17" in answer, "最终候选必须含 A 分支材料"
+    assert "首次需要登记" in answer, "merge=all 下兄弟分支新材料必须并入收尾装配"
+    assert art.store.count("terminate") == 1
+    # 两次装配：首次 + 收尾重装配；合并不产生额外装配
+    assert art.store.count("assembled") == 2
+    # 最终包是合并包且带来源
+    last_pack = art.engine.packs[-1]
+    assert last_pack["view"]["merge_policy"] == "all"
+    src = {m.get("source_node") for m in last_pack["materials"]}
+    assert len(src) >= 2, "材料来源覆盖多个观察节点"
+    # 反馈带合并策略
+    fb = art.engine.latest_candidate_feedback()
+    assert fb["merge_policy"] == "all"
+
+
+def test_merge_unknown_value_rejected(tmp_path):
+    cfg = make_cfg(tmp_path)
+    cfg["method"]["assembly"] = dict(cfg["method"].get("assembly") or {}, cross_branch_merge="both")
+    with pytest.raises(ValueError, match="cross_branch_merge"):
+        run_episode(make_task(), config=cfg, results_root=str(tmp_path / "x"))
+
+
+def test_merge_policy_frozen_in_plan(tmp_path, monkeypatch):
+    from test_execution1_r2 import FakeService, routed_cfg, run_once
+
+    svc = FakeService()
+    monkeypatch.setattr("urllib.request.urlopen", svc)
+    monkeypatch.setenv("JBT_UNIT_KEY", "unit-placeholder")
+    cfg = routed_cfg(tmp_path)
+    cfg["method"]["assembly"]["cross_branch_merge"] = "all"
+    root, ep, plan, _ = run_once(cfg)
+    assert plan["method_policy"]["assembly"]["cross_branch_merge"] == "all"
+    assert plan["assembly_policy"]["cross_branch_merge"] == "all"

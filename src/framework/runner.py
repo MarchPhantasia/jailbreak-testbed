@@ -438,6 +438,7 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optio
     assembly_cfg = ((cfg or {}).get("method") or {}).get("assembly") or {}
     plan["assembly_policy"] = {
         "type": str(assembly_cfg.get("type") or "material_template").lower(),
+        "cross_branch_merge": str(assembly_cfg.get("cross_branch_merge", "none") or "none").lower(),
         "lexical_policy": resolve_lexical_policy(assembly_cfg.get("lexical_policy")),
         "lexical_policy_version": LEXICAL_POLICY_VERSION,
         "answer_claim_check": ANSWER_CLAIM_CHECK,
@@ -482,6 +483,7 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optio
             "type": str(_as.get("type") or "material_template"),
             "k": int(_as.get("k", 1) or 1),
             "selector": str(_as.get("selector", "first")),
+            "cross_branch_merge": str(_as.get("cross_branch_merge", "none") or "none").lower(),
         },
         "controller": {"type": str((_m.get("controller") or {}).get("type", "element"))},
     }

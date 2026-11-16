@@ -2,6 +2,27 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.14] — 2026-11-16
+
+C15 跨分支证据合并（主线能力，真实运行暴露的最大缺口的直接回应；离线实现，未运行真实批次）。
+
+- `method.assembly.cross_branch_merge: none|all`（默认 none，逐字节保持既有条件）。
+  all：装配包从全部观察节点按 evidence_ids（缺失退回 key+value 摘要）去重合并，
+  每条材料带 `source_node` 来源标注——装配输入、input_hash、包记录（merged_from_nodes）
+  都携带，可回查；open/failed 仍取装配节点；合并不调用任何模型。
+- 三个装配路径（_assemble / assemble_without_model / materials_fingerprint）统一走
+  `_build_pack_for`：指纹、收尾重装配判定（V01/4.6）、反馈 stale 在合并模式下自动使用
+  合并视图；候选反馈新增 merge_policy 字段。
+- 装配输入合并 ≠ 分支状态合并：各分支 state 仍隔离，Controller 输入不变（当前分支材料
+  + 全局失败记忆）——只有装配包跨分支。
+- mainflow2 配置启用 all（与 mainflow1 单变量差，可归因）；mainflow2-sr0001 同题复验
+  配置就绪未运行（对照 mainflow1_sr0001 真实运行：20 回复仅 3 条入包）。
+- 策略冻结进 plan.assembly_policy / method_policy.assembly.cross_branch_merge 与包 view。
+- 新增 5 项离线测试：合并进包+来源+去重、none 保持当前分支、合并视图收尾重装配
+  （最终候选含兄弟分支新材料、assembled 恰 2 次、包来源多节点）、未知值拒绝、计划冻结。
+  全量 294 passed；9c002e9 contracts 3P/3d、existing 54P；b3e9514 acceptance 3P/1d；
+  precheck 通过。
+
 ## [code-v0.9.13] — 2026-11-16
 
 9c002e9 测量契约审查轮（A01/A02 落实 + A03 保护 + 文档证据分级 + 真实运行结构化核验；

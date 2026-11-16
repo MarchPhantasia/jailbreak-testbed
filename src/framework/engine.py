@@ -81,6 +81,7 @@ class Engine:
         stopping_policy: str = "after_assembly",
         system_prompt: str = DEFAULT_SYSTEM,
         target_history_policy: str = "ancestor",
+        cross_branch_merge: str = "none",
     ):
         self.task = task
         self.episode = episode
@@ -105,6 +106,12 @@ class Engine:
         self.target_history_policy = str(target_history_policy or "ancestor").lower()
         if self.target_history_policy not in ("ancestor", "isolated"):
             raise ValueError(f"未支持的 target_history 策略：{self.target_history_policy}（可选 ancestor / isolated）")
+        # 跨分支材料合并策略（独立实验变量，默认关闭保持既有条件）：
+        #   none = 只用当前选中分支链上的材料（旧行为）；
+        #   all  = 装配包从全部观察节点去重合并，每条材料带 source_node 分支来源。
+        self.cross_branch_merge = str(cross_branch_merge or "none").lower()
+        if self.cross_branch_merge not in ("none", "all"):
+            raise ValueError(f"未支持的 cross_branch_merge：{self.cross_branch_merge}（可选 none / all）")
         self.stop_action_requested = False
         # call_id → evidence_ids 的派生索引（复用事件流，不另立历史）
         self._evidence_ids_by_call: Dict[str, List[str]] = {}
@@ -471,6 +478,7 @@ class Engine:
             "candidate_id": cand.candidate_id,
             "scope": "global_selected",
             "relation": relation,
+            "merge_policy": self.cross_branch_merge,
             "candidate_node_id": cand_node,
             "current_node_id": cur_node,
             "answer_excerpt": (cand.answer or "")[:400],
@@ -484,22 +492,73 @@ class Engine:
                 "全局当前选中候选的反馈（待判断信息，gaps 为装配模型判断，不是 Target 证据或成功标签）。"
                 "relation=other_branch：候选来自其他分支（candidate_node_id 不在当前节点祖先链上），"
                 "其材料不属于当前分支正式状态；relation=current_branch 且 stale=True：同一分支材料已更新，"
-                "反馈针对旧版本。"
+                "反馈针对旧版本。merge_policy=all 时装配包本身已跨分支合并（材料带 source_node），"
+                "stale 表示合并视图已变化。"
             ),
         }
 
+    # ------------------------------------------------------------------
+    def _pack_source_states(self, node_id: str) -> List[Any]:
+        """按合并策略给出装配材料的来源状态序列（稳定顺序：创建序）。
+
+        none = 只有当前节点自己的状态（其材料即祖先链传递下来的当前分支材料）；
+        all  = 全部观察节点的状态——跨分支材料合并，去重由 _build_pack_for 处理。
+        """
+        if self.cross_branch_merge != "all":
+            return [self.states[node_id]]
+        # states 按创建序插入（root 先、子节点按观察顺序），dict 保序即稳定来源
+        return list(self.states.values())
+
+    def _build_pack_for(self, node_id: str):
+        """装配包构建入口：按 cross_branch_merge 策略取材。
+
+        - 合并去重：以 evidence_ids（缺失时退回 key+value 摘要）为签名，同一回复只进包一次；
+        - 来源标注：合并模式下每条材料附 source_node（哪个观察节点贡献），
+          装配输入、input_hash 与包记录都携带，可回查；
+        - open/failed 等其余状态仍取当前节点（缺项判断属于装配节点）；
+        - 合并不调用任何模型，不占预算。
+        """
+        state = self.states[node_id]
+        if self.cross_branch_merge != "all":
+            return self.assembler.build_pack(self.task, state, self.elements), [node_id]
+        merged: List[Dict[str, Any]] = []
+        seen: set = set()
+        source_nodes: List[str] = []
+        for nid, st in self.states.items():
+            mats = st.materials or []
+            added = False
+            for m in mats:
+                evid = tuple(sorted(m.get("evidence_ids") or []))
+                sig = evid if evid else (str(m.get("key", "")), str(m.get("value", m.get("text", "")))[:200])
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                mm = dict(m)
+                mm["source_node"] = nid
+                merged.append(mm)
+                added = True
+            if added and mats:
+                source_nodes.append(nid)
+        if not merged:
+            return self.assembler.build_pack(self.task, state, self.elements), [node_id]
+        mstate = copy.copy(state)
+        mstate.materials = merged
+        return self.assembler.build_pack(self.task, mstate, self.elements), source_nodes
+
     def materials_fingerprint(self, node_id: str) -> str:
-        """当前活跃材料指纹：与 pack 的 input_hash 使用同一序列化方式（V01）。"""
-        state = self.states.get(node_id)
-        if state is None:
+        """当前活跃材料指纹（按合并策略的视图）：与 pack 的 input_hash 同一序列化。"""
+        if self.states.get(node_id) is None:
             return ""
-        pack = self.assembler.build_pack(self.task, state, self.elements)
+        pack, _sources = self._build_pack_for(node_id)
         return hashlib.sha256(
             json.dumps(pack.materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
 
-    def _freeze_pack(self, pack, node_id: str, state):
-        """深拷贝材料并落盘；返回冻结后的包（输入不可被后续状态改写）。"""
+    def _freeze_pack(self, pack, node_id: str, state, merged_from: Optional[List[str]] = None):
+        """深拷贝材料并落盘；返回冻结后的包（输入不可被后续状态改写）。
+
+        merged_from：跨分支合并模式下记录材料来源观察节点（来源标注也在每条材料里）。
+        """
         from .assembly import EvidencePack
 
         materials = json.loads(json.dumps(pack.materials, ensure_ascii=False, default=str))
@@ -516,7 +575,13 @@ class Engine:
             "materials": materials,
             "gaps": frozen.gaps,
             "notes": frozen.notes,
-            "view": {"backend": self.backend.name, "state_seq": state.source_event_seq, "node_id": node_id},
+            "view": {
+                "backend": self.backend.name,
+                "state_seq": state.source_event_seq,
+                "node_id": node_id,
+                "merge_policy": self.cross_branch_merge,
+                **({"merged_from_nodes": list(merged_from)} if merged_from and self.cross_branch_merge == "all" else {}),
+            },
             "input_hash": hashlib.sha256(
                 json.dumps(materials, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest(),
@@ -543,9 +608,9 @@ class Engine:
             return self._reject(action, err)
         node_id = action.node_id or self.current_node_id
         state = self.states[node_id]
-        built = self.assembler.build_pack(self.task, state, self.elements)
+        built, merge_sources = self._build_pack_for(node_id)
         # T06：先冻结并落盘装配输入，再调用装配器；候选关联另记，不改写已冻结的包定义
-        frozen = self._freeze_pack(built, node_id, state)
+        frozen = self._freeze_pack(built, node_id, state, merged_from=merge_sources)
         candidates = self.assembler.assemble_from_pack(
             self.task,
             frozen,
@@ -617,8 +682,8 @@ class Engine:
         """
         node_id = self.current_node_id
         state = self.states[node_id]
-        built = self.assembler.build_pack(self.task, state, self.elements)
-        frozen = self._freeze_pack(built, node_id, state)
+        built, merge_sources = self._build_pack_for(node_id)
+        frozen = self._freeze_pack(built, node_id, state, merged_from=merge_sources)
         answer, claims, gaps = Assembler().render(self.task, frozen)
         candidate = AnswerCandidate(
             candidate_id=new_id("cand"),

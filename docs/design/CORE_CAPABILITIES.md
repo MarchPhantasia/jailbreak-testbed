@@ -36,6 +36,7 @@
 | C12 | 数据隔离与测量口径 | 已有冻结清单、分组、任务等权和评价覆盖协议 | 数据/他方法标签进入哪些角色仍以实际输入为准；他方法标签不得在线泄漏 |
 | C13 | 来源、保真与真实性 | 保存证据引用及独立状态字段，支持结构诊断 | 引用存在/哈希正确只证明结构；人工或语义支持审计不是自动完成 |
 | C14 | 反事实归因 | 历史实现报告为分析骨架；本次未深入核对分析层 | 后续研究能力，不阻塞当前方法闭环；不得宣称三层归因已可用 |
+| C15 | 跨分支证据合并 | `method.assembly.cross_branch_merge: none\|all`（默认 none 保持既有条件）：all 时装配包从全部观察节点按 evidence_ids 去重合并，每条材料带 source_node 来源；指纹/收尾重装配/反馈 stale 均用合并视图；合并不新增模型调用；策略冻结进 plan.assembly_policy/method_policy 与包 view | 两配置与 mainflow1 均为 none；**mainflow2 已启用（未运行）**——与 mainflow1 单变量差可归因；离线复跑证据 test_mainflow_capabilities（合并进包/来源标注/去重/收尾重装配/指纹语义/冻结记录） |
 
 开发者本轮报告已通过隔离请求、查询记忆、online STOP、阶段额度收尾等 13 项新检查。该报告可指向 C01/C02/C09，不能证明 C04/C05/C06/C08 已经完成。
 
@@ -78,6 +79,18 @@ rule_inputs_not_established，score.py）；无判据在线检查误报 elements
 | 预算 | 20/32/28/4 | 20/34/28/6（target 上限不变） |
 
 注意：mainflow1 相对 repr6 同时改 4 个行为变量，差异不能单变量归因；阶梯配置（online-only / +branch / +k）待后续按需创建。跨分支材料合并保持关闭：收尾装配用当前选中分支材料。
+
+## 2.2 配置启用矩阵（合并轮）
+
+| 能力 | mainflow1 | mainflow2 |
+|---|---|---|
+| C15 cross_branch_merge | none | **all** |
+| 其余全部（ancestor/best_first/rule/2/online/k=2/coverage/plan.v5/预算） | 相同 | 相同 |
+
+mainflow2 相对 mainflow1 为单变量差（合并策略），批次结果可直接归因；
+mainflow2-sr0001 为同题复验配置（对照 results/mainflow1_sr0001_20261116_r1，就绪未运行）。
+合并的语义边界：装配输入跨分支合并 ≠ 分支正式状态合并——各分支 state 仍隔离，
+Controller 输入仍只见当前分支材料 + 全局失败记忆；只有装配包做跨分支去重合并。
 
 ## 3 先形成一条完整的方法行为链
 
