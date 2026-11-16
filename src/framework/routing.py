@@ -22,12 +22,14 @@ from .contracts import BudgetLimits
 PROFILE_OPENAI = "openai_chat"
 PROFILE_QWEN = "qwen38_vllm"
 PROFILE_DEEPSEEK = "deepseek_thinking_proxy"
+PROFILE_OPENAI_CHAT = "openai_chat"
 PROFILES = (PROFILE_OPENAI, PROFILE_QWEN, PROFILE_DEEPSEEK)
 
 #: 模型原生思考档位：不能互相换算，也不能塞入非原生值
 NATIVE_EFFORTS = {
     PROFILE_QWEN: ("low", "medium", "xhigh"),
     PROFILE_DEEPSEEK: ("low", "high", "max"),
+    PROFILE_OPENAI_CHAT: ("low", "high", "max"),
 }
 
 #: 保留键：任何情况下都不得由扩展字段覆盖
@@ -68,12 +70,23 @@ def _positive_int(name: str, value: Any) -> int:
 # profile 序列化 / 校验
 # --------------------------------------------------------------------------
 def serialize_openai_chat(params: Dict[str, Any]) -> Dict[str, Any]:
-    """标准 chat completions 字段；本轮未声明的扩展一律拒绝。"""
-    allowed = {"temperature", "top_p", "max_tokens", "stop", "seed"}
+    """标准 chat completions 字段；本轮未声明的扩展一律拒绝。
+
+    reasoning_effort：GLM-5.3 官方三档（max/high/low），按声明透传；
+    其他值在配置校验期直接报错，不静默丢弃。
+    """
+    allowed = {"temperature", "top_p", "max_tokens", "stop", "seed", "reasoning_effort"}
     unknown = sorted(set(params) - allowed)
     if unknown:
         raise RoutingError(f"profile=openai_chat 不支持参数：{unknown}")
     out: Dict[str, Any] = {}
+    if "reasoning_effort" in params:
+        effort = params["reasoning_effort"]
+        if effort not in NATIVE_EFFORTS[PROFILE_OPENAI_CHAT]:
+            raise RoutingError(
+                f"profile=openai_chat 的 reasoning_effort 只接受 {NATIVE_EFFORTS[PROFILE_OPENAI_CHAT]}：{effort!r}"
+            )
+        out["reasoning_effort"] = effort
     if "temperature" in params:
         out["temperature"] = _number("temperature", params["temperature"], lo=0.0, hi=2.0)
     if "top_p" in params:

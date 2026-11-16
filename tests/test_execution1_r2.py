@@ -629,6 +629,18 @@ def test_extra_body_reserved_key_rejected():
         serialize_params("qwen38_vllm", {"extra_body": {"mystery": 1}})
 
 
+def test_openai_chat_reasoning_effort_pass_and_reject():
+    """GLM-5.3 官方三档透传；其他值/未知参数在配置校验期报错（不静默丢弃）。"""
+    out = serialize_params("openai_chat", {"temperature": 0.0, "max_tokens": 32768, "reasoning_effort": "low"})
+    assert out["reasoning_effort"] == "low"
+    assert out["max_tokens"] == 32768
+    for bad in ("medium", "minimal", "xhigh", ""):
+        with pytest.raises(RoutingError):
+            serialize_params("openai_chat", {"reasoning_effort": bad})
+    with pytest.raises(RoutingError):
+        serialize_params("openai_chat", {"mystery": 1})
+
+
 def test_qwen_serialization_expands_extra_body():
     out = serialize_params(
         "qwen38_vllm",
