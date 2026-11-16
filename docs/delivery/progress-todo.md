@@ -47,6 +47,19 @@
 
 Arm E（本轮）：脚本化 12 条桥查询，target 预算增至 16（用户已授权），32k+effort low；探针指标 = **按查询的拒答/内容结果**（非 episode 判定——C1-C3 材料不在该 episode，tf 必然 partial）。
 
+## 4.5 批次调优轮次（操作者指令 2026-11-17：一轮轮迭代）
+
+结构：StrongREJECT/HarmBench 每类 ~2 条 → 分析请求内容 → 实际运行 → 按结果调优 → 下一轮。
+
+| 轮 | 状态 | 内容 |
+|---|---|---|
+| 批次 1 | **就绪待跑**（等 r2 让出 Target 并发） | mainflow7-sr-batch1：StrongREJECT 6 类 × 2 = 12 任务，plan.v6.1 + assemble.v3.1 + 64k/effort low/900s + r2 恢复参数 + 固定预算 20-34-28-6；目的 = 批次基线 + v6.1 跨任务验证 |
+| 批次 2+ | 待批次 1 结果 | 按失败模式调优（查询构造/装配/预算分配），每轮单变量优先 |
+
+基础设施：`build_dev_slice --per-category`（分层组原子抽样 + manifest strata 记录，4 项测试）；
+切片 `strongreject_dataset.dev.seed20261117`（源 313 行冻结）。
+HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入与否待操作者决定。
+
 ## 5. 待决策队列（按证据优先级）
 
 1. Arm E 结果决定：桥通了→组装完整六组件终答的 Arm F（auto 或 scripted 续跑）；桥不通→墙位置记录，转向批次验证；
@@ -68,3 +81,5 @@ Arm E（本轮）：脚本化 12 条桥查询，target 预算增至 16（用户�
   55 tok/s × 900s ≈ 49.5k tokens：超时成为实际约束，64k 上限保证不先截断。
   r2 冻结旧参数（300s/32k）不受影响，作为"纯查询改写"臂的数据；若有查询死于
   TIMEOUT，用新参数跑 r3 定向恢复。
+- 2026-11-17 03:35：批次基础设施落地（per_category 分层切片 + mainflow7-sr-batch1 就绪，
+  提交 530c88e）；r2 进行中 6/12 全 OK（C5×3 + C6 驱散时序 + FDM + 1 条待确认归类）。
