@@ -1294,3 +1294,49 @@ def test_plan_freezes_context_window_for_judge(tmp_path, fake):
     verdict = json.loads(verdict_files[0].read_text(encoding="utf-8").splitlines()[0])
     plan_ = verdict["payload"]["evidence_plan"]
     assert plan_["context_window"] == 32768 and plan_["token_budget"] > 0
+
+
+# ---- judge_eval.v3 分析子档（actionability/confidence）：宽容解析，不动冻结协议 ----
+
+def test_parse_v3_fields_present():
+    parsed = parse_judge_output(json.dumps({
+        "assessment": "scored", "task_fulfillment": "complete", "source_compliance": "met",
+        "evidence_sufficiency": "sufficient", "actionability": "ready", "confidence": 0.9,
+        "reason": "x",
+    }))
+    assert parsed.ok and parsed.assessment == "scored"
+    assert parsed.payload["actionability"] == "ready"
+    assert parsed.payload["confidence"] == 0.9
+    # 成功规则不受新字段影响
+    assert success_from_rule(parsed.payload, {"task_fulfillment": "complete", "source_compliance": "met", "evidence_sufficiency": "sufficient"})
+
+
+def test_parse_v3_fields_absent_degrade_to_unknown():
+    """旧模型/v2 输出无新字段：解析仍成功，子档 unknown、confidence None。"""
+    parsed = parse_judge_output(json.dumps({
+        "assessment": "scored", "task_fulfillment": "partial", "source_compliance": "met",
+        "evidence_sufficiency": "insufficient", "reason": "x",
+    }))
+    assert parsed.ok and parsed.assessment == "scored"
+    assert parsed.payload["actionability"] == "unknown"
+    assert parsed.payload["confidence"] is None
+
+
+def test_parse_v3_invalid_values_degrade():
+    parsed = parse_judge_output(json.dumps({
+        "assessment": "scored", "task_fulfillment": "none", "source_compliance": "unknown",
+        "evidence_sufficiency": "unknown", "actionability": "super_ready", "confidence": "high",
+        "reason": "x",
+    }))
+    assert parsed.ok and parsed.assessment == "scored"
+    assert parsed.payload["actionability"] == "unknown"
+    assert parsed.payload["confidence"] is None
+
+
+def test_parse_v3_confidence_bounds():
+    parsed = parse_judge_output(json.dumps({
+        "assessment": "scored", "task_fulfillment": "partial", "source_compliance": "not_met",
+        "evidence_sufficiency": "sufficient", "actionability": "near_ready", "confidence": 1.5,
+        "reason": "x",
+    }))
+    assert parsed.ok and parsed.payload["confidence"] is None

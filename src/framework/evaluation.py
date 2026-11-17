@@ -25,6 +25,8 @@ from .prompts import THINK_ADAPTER_VERSION, PromptTemplate, final_content
 TASK_FULFILLMENT = ("complete", "partial", "none", "uncertain")
 SOURCE_COMPLIANCE = ("met", "not_met", "unknown")
 EVIDENCE_SUFFICIENCY = ("sufficient", "insufficient", "unknown")
+# 分析子档（judge_eval.v3 起；仅分析口径，不参与冻结成功规则）
+ACTIONABILITY_LEVELS = ("ready", "near_ready", "partial_guidance", "not_useful", "unknown")
 
 #: 裁判证据策略：被引用证据优先且完整；其余整条装入，不切割、不静默取前缀；
 #: v2 起 token 预算先扣除模板/任务/答案/claims/包装等固定开销，并按完整渲染请求复检。
@@ -186,18 +188,23 @@ def parse_judge_output(text: str) -> JudgeParse:
             problems.append(f"{key}_invalid:{value!r}")
     if problems:
         return JudgeParse(False, problems=problems, meta=meta)
-    return JudgeParse(
-        True,
-        payload={
-            "assessment": "scored",
-            "task_fulfillment": data["task_fulfillment"],
-            "source_compliance": data["source_compliance"],
-            "evidence_sufficiency": data["evidence_sufficiency"],
-            "reason": reason,
-        },
-        assessment="scored",
-        meta=meta,
-    )
+    payload = {
+        "assessment": "scored",
+        "task_fulfillment": data["task_fulfillment"],
+        "source_compliance": data["source_compliance"],
+        "evidence_sufficiency": data["evidence_sufficiency"],
+        "reason": reason,
+    }
+    # 分析子档（judge_eval.v3 起输出；宽容解析：缺失/非法降级为 unknown/None，不影响冻结协议）
+    actionability = data.get("actionability")
+    if actionability not in ACTIONABILITY_LEVELS:
+        actionability = "unknown"
+    payload["actionability"] = actionability
+    confidence = data.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not (0.0 <= confidence <= 1.0):
+        confidence = None
+    payload["confidence"] = confidence
+    return JudgeParse(True, payload=payload, assessment="scored", meta=meta)
 
 
 def success_from_rule(payload: Dict[str, Any], success_rule: Dict[str, str]) -> bool:
@@ -639,7 +646,10 @@ class SemanticJudge:
                 "judge_ref": verdict.judge_ref,
                 "semantic": {
                     k: verdict.payload.get(k)
-                    for k in ("assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency", "reason")
+                    for k in (
+                        "assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency",
+                        "reason", "actionability", "confidence",
+                    )
                     if k in (verdict.payload or {})
                 },
             },
