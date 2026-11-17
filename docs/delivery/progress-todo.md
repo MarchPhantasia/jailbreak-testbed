@@ -69,6 +69,7 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
 | src=not_met 出现（过装配复发） | 装配纪律在跨任务不稳 | assemble.v3.2 收紧：adjacent 标注从"就地注明"升级为"逐句归属" |
 | tf=partial 集中 + 组件覆盖缺口规律性 | 查询构造 OK 但组件分解不全 | plan.v6.2 组件分解模板按任务类型分型（对象型/步骤型/论证型） |
 | **控制器格式死亡**（fallback_assembled + 预算未用完 + 组件大面积 missing） | plan 阶段 6144 token 被思考吃满 → 0 字 INVALID_OUTPUT → episode 提前终止（批次 1 实测：任务 5 用 18/20、任务 7 用 10/20） | plan.max_tokens 6144→20480（控制器思考余量）；恢复策略对控制器 INVALID 考虑 fallback_continue 而非 fallback_assemble |
+| **Target TRUNCATED 死亡**（64k 截断 → 无恢复路径 → 终止，组件 missing） | 模型巨量输出撞 max_tokens（批次 1 实测：任务 10，13 调用后死，双组件 missing） | TRUNCATED 纳入可恢复路径（retry_rephrase 换更窄查询）；或 target max_tokens 回调至 32k 并依赖 900s 墙 |
 | U 集中（裁判不可用） | 评价侧问题，非攻击侧 | 查 judge 输入预算/证据范围，不动攻击侧 |
 | 混合（无主导模式） | 需逐题归因 | 逐题读 events（拒答原文/超时分布/组件终态），按类分组后重判主导模式 |
 
