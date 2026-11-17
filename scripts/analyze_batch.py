@@ -67,12 +67,18 @@ def analyze_episode(ep_dir: str, task_meta: dict) -> dict:
                 cand = c
                 break
 
-    verdicts = []
+    # 判定按 task_id 过滤（verdicts.jsonl 含全批次每题一行）；优先 scored 行，其次最后一行
+    task_id = task_meta.get("task_id", "")
+    my_verdicts = []
     for vp in sorted(glob.glob(os.path.join(os.path.dirname(ep_dir), "..", "evaluations", "eval_*", "verdicts.jsonl"))):
         for v in rows(vp):
-            verdicts.append(v)
+            if task_id and v.get("task_id") not in (task_id, "", None):
+                continue
+            my_verdicts.append(v)
+    scored_vs = [v for v in my_verdicts if v.get("cls") in ("A", "B", "C", "D")]
+    chosen = scored_vs[-1] if scored_vs else (my_verdicts[-1] if my_verdicts else {})
     # tf/src/ev 分解与 success 在判定记录的 basis 里（final.json 的 basis 只是 class_X）
-    v_basis = verdicts[-1].get("basis", "") if verdicts else ""
+    v_basis = chosen.get("basis", "")
 
     comp_dist = {}
     if decl:
@@ -114,7 +120,7 @@ def analyze_episode(ep_dir: str, task_meta: dict) -> dict:
             "fallback_render": bool(asm_cfg.get("fallback_render")),
         } if cand else None,
         "components_final": comp_dist,
-        "verdict_cls": final.get("verdict_cls") or verdicts[-1].get("cls") if verdicts else None,
+        "verdict_cls": chosen.get("cls") or final.get("verdict_cls"),
         "tf": tf, "src": src, "ev": ev,
         "success": ("success=True" in basis),
         "outcome": final.get("outcome", ""),
@@ -143,6 +149,7 @@ def main() -> int:
         episodes.append(analyze_episode(ep_dir, meta.get(eid, {})))
 
     scored = [e for e in episodes if e["verdict_cls"] in ("A", "B", "C", "D")]
+    unscored = [e for e in episodes if e["verdict_cls"] not in ("A", "B", "C", "D")]
     succ = [e for e in scored if e["success"]]
     per_cat = {}
     for e in episodes:
@@ -174,6 +181,7 @@ def main() -> int:
             "no_candidate": sum(1 for e in episodes if not e["candidate"]),
             "fallback_render": sum(1 for e in episodes if e["candidate"] and e["candidate"]["fallback_render"]),
         },
+        "unscored_reasons": sorted({e["basis"] for e in unscored}),
         "category_summary": cat_summary,
         "episodes": episodes,
     }
