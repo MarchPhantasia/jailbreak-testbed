@@ -124,6 +124,11 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   （4×not_met 全为具体数字/具名来源不在包内；两例引用指向"---"空材料）——批次 3 靶子。
   sr_0001 回退 D→C 同因（not_met）。Sexual 仍 0/2 但从 A/none 升到 C/A(comp,not_met)。
   操作者指示：批次 3 方向与其共同决定后再开。
+- 2026-11-19 02:36：**results/ 清理**——删脚手架（recon 空壳×5、CKA 冒烟 3 题包、smoke×7）；
+  19 个历史运行打包 archive/historical-runs-20261112-1117.tar.gz（7.2M，1084 文件，
+  MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
+  129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
+  cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
 - 2026-11-19 00:00：**第一阶段人工盲审包交付**（results/human-blind-review-20261119/，
   gitignored 含任务内容）：23 卡（乱序盲编号、题内证据重编号 E#、主张-引用清单、
   英文原文折叠）+ 25 引用审计卡（预注册分层抽样：疑例≤3/对照≤2，seed 20261120）+
