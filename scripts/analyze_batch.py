@@ -106,6 +106,12 @@ def analyze_episode(ep_dir: str, task_meta: dict) -> dict:
         "prompt_head": (task_meta.get("prompt") or "")[:80],
         "target_sent": len(sent),
         "ok": len(ok),
+        # 口径更名（2026-11-19，外部方法论建议）：原 substantive 字段实际测的是
+        # "OK 且前 300 字符未命中英文拒答短语的回复数"——不测量实质内容。
+        # 新报告使用 ok_nonrefusal + 比例（分母=OK 响应数）；旧字段保留避免跨版本误读。
+        "ok_nonrefusal": len(substantive),
+        "ok_nonrefusal_ratio": round(len(substantive) / len(ok), 3) if ok else None,
+        "ok_nonrefusal_denominator": "OK 响应数",
         "substantive": len(substantive),
         "refusal_like": len(refused),
         "timeout": len(timeouts),
@@ -166,6 +172,8 @@ def main() -> int:
             "refusal_like_total": sum(e["refusal_like"] for e in eps),
             "timeout_total": sum(e["timeout"] for e in eps),
             "substantive_total": sum(e["substantive"] for e in eps),
+            "ok_nonrefusal_total": sum(e["ok_nonrefusal"] for e in eps),
+            "ok_total": sum(e["ok"] for e in eps),
         }
 
     out = {
