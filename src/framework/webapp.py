@@ -20,10 +20,11 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from . import runner
 from .interactive import InteractiveSession
+from .standalone import recorded_evidence_ids
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "static")
 
@@ -44,6 +45,8 @@ ARCHIVE_RUNS = [
 def _discover_runs() -> List[str]:
     """发现交互/演示运行目录：results/ 下含 plan.json 且非固定档案、非评价目录。"""
     out = []
+    if not os.path.isdir("results"):
+        return out
     for name in sorted(os.listdir("results")):
         root = os.path.join("results", name)
         if not os.path.isdir(root) or not os.path.exists(os.path.join(root, "plan.json")):
@@ -54,10 +57,6 @@ def _discover_runs() -> List[str]:
             continue
         out.append(root)
     return out
-KNOWN_JUDGE_DIRS = [
-    "results/judge-standalone-v2*",
-    "results/demo-same-pack-20261120-judge",
-]
 
 _SESSIONS: Dict[str, InteractiveSession] = {}
 _LOCK = threading.Lock()
@@ -113,11 +112,14 @@ def list_runs() -> List[Dict[str, Any]]:
     return out
 
 
-def _human_for(task_id: str, root: str) -> Optional[Dict[str, Any]]:
+def _human_for(task_id: str, root: str, episode_id: str, candidate_id: str) -> Optional[Dict[str, Any]]:
     """R11：已锁定人工评语与规则 v2 推导等级（模型结果旁直接可见）。"""
     try:
         ident = json.load(open("results/human-blind-review-20261119/internal/identity_map.json", encoding="utf-8"))
-        rec = next((r for r in ident if r["task_id"] == task_id and BATCH2ROOT.get(r["batch"]) == root), None)
+        rec = next((r for r in ident if r["task_id"] == task_id
+                    and r.get("candidate_id") == candidate_id and r.get("episode_id") == episode_id
+                    and r["batch"] in BATCH2ROOT
+                    and os.path.abspath(BATCH2ROOT[r["batch"]]) == os.path.abspath(root)), None)
         if rec is None:
             return None
         human = {r["盲审编号"].strip(): r for r in csv.DictReader(
@@ -140,32 +142,45 @@ def _human_for(task_id: str, root: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _verdicts_for(root: str, task_id: str, candidate_id: Optional[str]) -> Dict[str, Any]:
+def _verdict_rows(path: str) -> Iterator[Dict[str, Any]]:
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def _verdicts_for(root: str, task_id: str, episode_id: str, candidate_id: Optional[str]) -> Dict[str, Any]:
     """历史评价（root/evaluations）+ 人工（锁定）+ 模型 v4（judge-standalone 目录）。"""
     out: Dict[str, Any] = {"historical": [], "model_v4": []}
-    human = _human_for(task_id, root)
+    if not candidate_id:
+        return out
+    human = _human_for(task_id, root, episode_id, candidate_id)
     if human is not None:
         out["human"] = human
     for vp in sorted(glob.glob(os.path.join(root, "evaluations", "eval_*", "verdicts.jsonl"))):
-        for line in open(vp, encoding="utf-8"):
-            v = json.loads(line)
-            if v.get("task_id") == task_id and (candidate_id is None or v.get("answer_id") == candidate_id):
+        for v in _verdict_rows(vp):
+            if v.get("task_id") == task_id and v.get("answer_id") == candidate_id:
                 out["historical"].append({
                     "eval_run_id": vp.split(os.sep)[-2], "cls": v.get("cls"),
                     "basis": (v.get("basis") or "")[:200],
+                    "judge_evidence_ids": recorded_evidence_ids(v.get("payload") or {}),
                 })
-    paths: List[str] = []
-    for pat in KNOWN_JUDGE_DIRS:
-        paths.extend(glob.glob(os.path.join(pat, "verdicts.jsonl")))
+    paths = glob.glob("results/*/verdicts.jsonl") + glob.glob("results/*/runs/eval_*/verdicts.jsonl")
     for path in sorted(set(paths)):
         if "interrupted" in path:
             continue
-        for line in open(path, encoding="utf-8"):
-            v = json.loads(line)
-            if v.get("root", "").endswith(os.path.basename(root)) and v.get("task_id") == task_id \
-                    and (candidate_id is None or v.get("candidate_id") == candidate_id):
+        for v in _verdict_rows(path):
+            if (v.get("root") and os.path.abspath(v["root"]) == os.path.abspath(root)
+                    and v.get("task_id") == task_id and v.get("candidate_id") == candidate_id
+                    and v.get("episode_id", episode_id) == episode_id):
                 out["model_v4"].append({
                     "run": os.path.basename(os.path.dirname(path)),
+                    "eval_run_id": v.get("eval_run_id"), "judge_ref": v.get("judge_ref"),
+                    "judge_evidence_ids": v.get("judge_evidence_ids"),
                     "cls": v.get("cls"), "usable": v.get("usable"),
                     "full_success": v.get("full_success"), "partial_success": v.get("partial_success"),
                     "sub_result": v.get("sub_result"),
@@ -267,7 +282,7 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
         "task": entry["task"],
         "steps": steps,
         "final_candidate": cand_id,
-        "verdicts": _verdicts_for(root, entry["task"]["task_id"], cand_id),
+        "verdicts": _verdicts_for(root, entry["task"]["task_id"], episode_id, cand_id),
     }
 
 
@@ -294,21 +309,24 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
                               "materials": len(row.get("materials") or [])})
                 for m in row.get("materials") or []:
                     pack_allowed.update(m.get("evidence_ids") or [])
-    # R5：Judge 实际看到的证据（与在线选择同规则：cited-first-whole@v2，cap 40000）
-    cited_ids = [i for c in cand.claims for i in c.evidence_ids]
-    from .evaluation import plan_evidence
-    judge_rows, judge_plan = plan_evidence(ev_all, cited_ids, cap_chars=40000)
-    judge_seen = {r["evidence_id"] for r in judge_rows}
+    verdicts = _verdicts_for(root, task.get("task_id", ""), episode_id, candidate_id)
+    views = [(v.get("eval_run_id") or v["run"],
+              set(v["judge_evidence_ids"]) if isinstance(v["judge_evidence_ids"], list) else None)
+             for v in verdicts["historical"] + verdicts["model_v4"]]
     claims = []
     for c in cand.claims:
         evs = []
         for eid in c.evidence_ids:
             row = ev_rows.get(eid)
+            receipts = [{"evaluation": ref, "included": eid in ids if ids is not None else None}
+                        for ref, ids in views]
+            seen = [r["included"] for r in receipts]
             evs.append({"evidence_id": eid,
                         "text": (row.get("text") if row else None),
                         "in_episode": eid in episode_ids,
                         "in_pack": eid in pack_allowed,
-                        "judge_seen": eid in judge_seen,
+                        "judge_seen": True if True in seen else (False if seen and None not in seen else None),
+                        "judge_inputs": receipts,
                         "call_id": (row or {}).get("call_id")})
         claims.append({"claim_id": c.claim_id, "text": c.text, "evidence": evs})
     return {
@@ -316,7 +334,7 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
         "task_id": task.get("task_id"), "task_prompt": task.get("prompt"),
         "answer": cand.answer, "claims": claims, "packs": packs,
         "assembly_config": cand.assembly_config, "gaps": list(cand.gaps),
-        "verdicts": _verdicts_for(root, task.get("task_id", ""), candidate_id),
+        "verdicts": verdicts,
     }
 
 

@@ -153,7 +153,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
     except (SystemExit, ValueError, FileNotFoundError, RuntimeError) as exc:
         _print({"command": "judge", "ok": False, "error": str(exc), "phase": "preflight"})
         return 1
-    _print({"command": "judge", "ok": True, "calls_model": True, "phase": "analysis",
+    _print({"command": "judge", "ok": True, "calls_model": out["calls_model"], "phase": "analysis",
             "out_dir": out["out_dir"], "eval_run_id": out["eval_run_id"], "summary": out["summary"]})
     return 0
 
@@ -278,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-evidence-chars", type=int, default=None)
     sp.add_argument(
         "--resume-from", action="append", default=None,
-        help="既有 verdicts.jsonl（可重复）：跳过其中已可用的候选，用于中断后续跑",
+        help="既有 verdicts.jsonl 或评价输出目录（可重复），复用同输入、同协议的可用判定",
     )
     sp.add_argument(
         "--deadline", type=float, default=900.0,

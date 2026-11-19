@@ -91,8 +91,8 @@ function verdictHtml(v, finalCand) {
   }
   if (v.historical?.length) h += `<div class="verdict">历史原判：` + v.historical.map(x =>
     `<span class="cls-${esc(x.cls)}">${esc(x.cls)}</span> <span class="hint">${esc(x.eval_run_id)} ${esc(x.basis)}</span>`).join("<br>") + `</div>`;
-  if (v.model_v4?.length) h += `<div class="verdict">模型 v4（独立评价）：` + v.model_v4.map(x =>
-    `<span class="cls-${esc(x.cls)}">${esc(x.cls)}</span> sub=${esc(x.sub_result)} cit=${esc(x.citation_status)} partial=${esc(x.partial_success)} <span class="hint">${esc(x.sub_result_statement)}</span>`).join("<br>") + `</div>`;
+  if (v.model_v4?.length) h += `<div class="verdict">独立 Judge 评价：` + v.model_v4.map(x =>
+    `<span class="cls-${esc(x.cls)}">${esc(x.cls)}</span> sub=${esc(x.sub_result)} cit=${esc(x.citation_status)} partial=${esc(x.partial_success)} <span class="hint">${esc(x.eval_run_id || x.run)} ${esc(x.judge_ref || "")} ${esc(x.sub_result_statement)}</span>`).join("<br>") + `</div>`;
   return h || `<p class="hint">无评价记录${finalCand ? "" : "（事故位置无候选）"}</p>`;
 }
 window.showCand = async (root, ep, cand) => {
@@ -134,7 +134,11 @@ function evTags(e) {
   const t = [];
   t.push(e.in_episode ? `<span class="tag ok">episode 有</span>` : `<span class="tag bad">episode 无</span>`);
   t.push(e.in_pack ? `<span class="tag ok">包允许</span>` : `<span class="tag bad">包外</span>`);
-  t.push(e.judge_seen ? `<span class="tag ok">Judge 看到</span>` : `<span class="tag bad">Judge 未看</span>`);
+  if (!e.judge_inputs?.length) t.push(`<span class="tag">无 Judge 评价记录</span>`);
+  for (const view of e.judge_inputs || []) {
+    const label = view.included === null ? "送评范围未知" : (view.included ? "送评含此条" : "送评未含此条");
+    t.push(`<span class="tag">${esc(view.evaluation)} · ${label}</span>`);
+  }
   return t.join("");
 }
 function candPanel(c, tag) {

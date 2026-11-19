@@ -22,20 +22,21 @@
 
 from __future__ import annotations
 
-import glob
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from copy import copy
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from . import runner
-from .contracts import AnswerCandidate, BudgetLimits, Task, Verdict, new_id
+from .contracts import AnswerCandidate, BudgetLimits, Task, Verdict, new_id, stable_hash
 from .budget import BudgetGuard
-from .evaluation import SemanticJudge, partial_success_from_rule, success_from_rule
+from .evaluation import EVIDENCE_POLICY, SemanticJudge, partial_success_from_rule, success_from_rule
 from .events import EventStore
 from .prompts import PromptTemplate
-from .routing import build_gateway
+from .routing import build_gateway, resolve_routing
 
 DEFAULT_RUBRIC = {
     "id": "original-task-grounded-completion",
@@ -82,6 +83,13 @@ class Artifact:
     candidates_path: str = ""
     packs_path: str = ""
 
+    def resume_key(self) -> str:
+        return stable_hash({
+            "root": os.path.normcase(os.path.realpath(self.root)), "episode": self.episode_id,
+            "task": self.task.public_view(), "candidate": asdict(self.candidate),
+            "evidence": self.evidence, "scope": self.scope_info, "pack_hashes": self.pack_input_hash,
+        })
+
     def provenance(self) -> Dict[str, Any]:
         return {
             "root": self.root,
@@ -96,19 +104,21 @@ class Artifact:
                 "packs": self.packs_path,
             },
             "evidence_count": len(self.evidence),
+            "evidence_scope": self.scope_info.get("mode"),
             "claims": len(self.candidate.claims),
         }
 
 
 def load_artifact(root: str, task_id: str, *, evidence_scope: str = "",
-                   candidate_id: Optional[str] = None) -> Optional[Artifact]:
+                   candidate_id: Optional[str] = None, episode_id: Optional[str] = None) -> Optional[Artifact]:
     """从运行目录读取一份候选的全部评价输入；缺失即返回 None（不补位、不猜测）。
 
     candidate_id 为空 → 读 final.json 的最终候选；否则从 candidates.jsonl 读指定候选
     （同包对照：同一冻结包下的多份候选都需要能独立送评）。
     """
     plan = runner.load_plan_from_root(root)
-    entry = next((e for e in plan["episodes"] if e["task"]["task_id"] == task_id), None)
+    entry = next((e for e in plan["episodes"] if e["task"]["task_id"] == task_id
+                  and (episode_id is None or e["episode_id"] == episode_id)), None)
     if entry is None:
         return None
     ep_dir = os.path.join(root, "episodes", entry["episode_id"])
@@ -131,13 +141,11 @@ def load_artifact(root: str, task_id: str, *, evidence_scope: str = "",
 
     packs_path = os.path.join(ep_dir, "packs.jsonl")
     pack_ids, pack_hash = [], []
-    if os.path.exists(packs_path):
-        wanted = set(candidate.evidence_pack_ids or [])
-        for line in open(packs_path, encoding="utf-8"):
-            row = json.loads(line)
-            if row.get("pack_id") in wanted:
-                pack_ids.append(row.get("pack_id", ""))
-                pack_hash.append(row.get("input_hash_v2") or row.get("input_hash") or "")
+    packs, _problems = runner._load_packs(ep_dir)
+    for pack_id in dict.fromkeys(candidate.evidence_pack_ids or []):
+        if pack_id in packs:
+            pack_ids.append(pack_id)
+            pack_hash.append(packs[pack_id].get("input_hash_v2") or packs[pack_id].get("input_hash") or "")
 
     return Artifact(
         root=root,
@@ -167,7 +175,8 @@ def discover_artifacts(roots: Sequence[str], *, evidence_scope: str = "",
         plan = runner.load_plan_from_root(root)
         for entry in plan["episodes"]:
             if wanted is None:
-                art = load_artifact(root, entry["task"]["task_id"], evidence_scope=evidence_scope)
+                art = load_artifact(root, entry["task"]["task_id"], evidence_scope=evidence_scope,
+                                    episode_id=entry["episode_id"])
                 if art is not None:
                     out.append(art)
                 continue
@@ -178,7 +187,8 @@ def discover_artifacts(roots: Sequence[str], *, evidence_scope: str = "",
             for row_cid in _candidate_ids(cand_fp):
                 if row_cid in wanted:
                     art = load_artifact(root, entry["task"]["task_id"],
-                                        evidence_scope=evidence_scope, candidate_id=row_cid)
+                                        evidence_scope=evidence_scope, candidate_id=row_cid,
+                                        episode_id=entry["episode_id"])
                     if art is not None:
                         out.append(art)
     return out
@@ -279,33 +289,27 @@ def _with_service_override(cfg: Dict[str, Any], role: str, patch: Dict[str, Any]
     return new_cfg
 
 
-def _load_done_keys(paths: Sequence[str], *, protocol: Optional[Dict[str, Any]] = None) -> set:
-    """读回「已可用且同协议」的 (task_id, candidate_id)，用于中断后续跑。
-
-    R9：换判据/换 prompt 属于不同评价协议——同候选的重评是**新评价记录**，
-    续跑只复用同一协议（rubric id+version 与 prompt sha256 均相同）下已可用的结果。
-    """
+def _load_done_keys(paths: Sequence[str], *, protocol: Dict[str, Any]) -> set:
+    """输入和评价协议均一致的可用结果才可续用。旧记录仍可读。"""
     keys = set()
-    for path in paths or ():
-        if not path or not os.path.exists(path):
+    files = []
+    for path in map(Path, paths):
+        if path.is_dir():
+            files.extend([path / "verdicts.jsonl", *path.glob("runs/eval_*/verdicts.jsonl")])
+        else:
+            files.append(path)
+    for path in files:
+        if not path.is_file():
             continue
-        for line in open(path, encoding="utf-8"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not (row.get("usable") and row.get("candidate_id")):
-                continue
-            if protocol is not None:
-                meta = row.get("protocol") or {}
-                if meta.get("rubric_id") != protocol.get("rubric_id") \
-                        or str(meta.get("rubric_version")) != str(protocol.get("rubric_version")) \
-                        or meta.get("prompt_sha256") != protocol.get("prompt_sha256"):
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-            keys.add((row["task_id"], row["candidate_id"]))
+                if (isinstance(row, dict) and row.get("usable") and row.get("input_sha256")
+                        and row.get("protocol") == protocol):
+                    keys.add(row["input_sha256"])
     return keys
 
 
@@ -350,7 +354,7 @@ def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> 
     不会被枚举（discover_artifacts 返回 None，不占评价位）。
     """
     status = str((art.scope_info or {}).get("status") or "pack")
-    if status != "pack":
+    if not art.scope_info.get("integrity_complete", status == "pack"):
         from .contracts import Status, Verdict as _V
         reason = f"unscored:pack_integrity:{status}"
         return _V(
@@ -359,6 +363,10 @@ def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> 
             rubric_version=str(judge.rubric.get("version", "v1")),
             judge_ref=judge.judge_ref, cls=None, usable=False, basis=reason, payload={},
         )
+    scope = art.scope_info.get("mode")
+    if scope and scope != getattr(judge, "evidence_scope", scope):
+        judge = copy(judge)
+        judge.evidence_scope = scope
     return judge.evaluate(
         art.task,
         art.candidate,
@@ -366,6 +374,16 @@ def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> 
         evidence=art.evidence,
         rubric_version=str(judge.rubric.get("version", "v1")),
     )
+
+
+def recorded_evidence_ids(payload: Dict[str, Any]) -> Optional[List[str]]:
+    """Evidence from a recorded judge response. A preflight plan alone is insufficient."""
+    for attempt in payload.get("attempts") or []:
+        plan = attempt.get("evidence_plan") or {}
+        if (attempt.get("call_id") and attempt.get("status") == "OK"
+                and not plan.get("truncated") and isinstance(plan.get("included_ids"), list)):
+            return plan["included_ids"]
+    return None
 
 
 def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any],
@@ -401,6 +419,7 @@ def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any],
         "pack_ids": list(art.pack_ids),
         "pack_input_hash": list(art.pack_input_hash),
         "evidence_in_view": len(art.evidence),
+        "judge_evidence_ids": recorded_evidence_ids(payload),
         "protocol": {
             "rubric_id": rubric.get("id"),
             "rubric_version": rubric.get("version"),
@@ -457,35 +476,66 @@ def run(
     if tasks:
         wanted = set(tasks)
         arts = [a for a in arts if a.task_id in wanted]
-    # 续跑：只跳过同协议下已可用的候选（R9：换判据=新评价，不复用）
+    if not arts:
+        raise SystemExit("没有可评价的产物（检查 --root/--tasks）")
+    evaluation = cfg.get("evaluation") or {}
+    routing = resolve_routing(cfg)
+    route = routing.route("judge_eval")
+    if route is None or not route.enabled:
+        raise ValueError("judge_eval 未启用")
+    service = routing.service(route)
     protocol = {
         "rubric_id": rubric.get("id"),
         "rubric_version": rubric.get("version"),
-        "prompt_sha256": _sha256_text(open(prompt_path, encoding="utf-8").read()),
+        "rubric_sha256": stable_hash(rubric),
+        "prompt_sha256": _sha256_file(prompt_path),
+        "judge_model": service.model, "service_id": service.service_id,
+        "backend": service.type, "endpoint_sha256": _sha256_text(service.base_url),
+        "parameter_profile": service.parameter_profile,
+        "parameters_sha256": stable_hash(routing.resolved_params("judge_eval")),
+        "context_window": service.context_window, "evidence_policy": EVIDENCE_POLICY,
+        "evidence_scope": evidence_scope or evaluation.get("evidence_scope") or "candidate_pack",
+        "max_evidence_chars": int(max_evidence_chars if max_evidence_chars is not None
+                                  else evaluation.get("max_evidence_chars", 40000)),
+        "max_format_retries": int(evaluation.get("max_format_retries", 1)),
     }
     done_keys = _load_done_keys(resume_from, protocol=protocol)
-    if done_keys:
-        before = len(arts)
-        arts = [a for a in arts if (a.task_id, a.candidate.candidate_id) not in done_keys]
-        print(f"[resume] 跳过已完成 {before - len(arts)} 份，待评 {len(arts)} 份", flush=True)
-    if not arts:
-        raise SystemExit("没有可评价的产物（检查 --root/--tasks）")
+    pending = [(art, key) for art in arts if (key := art.resume_key()) not in done_keys]
+    skipped = len(arts) - len(pending)
+    if skipped:
+        print(f"[resume] 跳过已完成 {skipped} 份，待评 {len(pending)} 份", flush=True)
+    if not pending:
+        return {"out_dir": out_dir, "summary": {**summarize([]), "skipped": skipped},
+                "rows": [], "eval_run_id": None, "calls_model": False}
     os.makedirs(out_dir, exist_ok=True)
     eval_run_id = new_id("eval")
-    judge, _store, _guard = build_judge(
+    # Reserve the flat layout on first use. Concurrent and subsequent invocations
+    # each own their events, verdicts and metadata, including interrupted runs.
+    root = Path(out_dir)
+    if not any((root / name).exists() for name in ("verdicts.jsonl", "summary.json", "provenance.json")):
+        try:
+            (root / "eval").mkdir()
+        except FileExistsError:
+            root = root / "runs" / eval_run_id
+    else:
+        root = root / "runs" / eval_run_id
+    if root != Path(out_dir):
+        root.mkdir(parents=True, exist_ok=False)
+    out_dir = str(root)
+    judge, store, _guard = build_judge(
         cfg,
         rubric=rubric,
         prompt_path=prompt_path,
         eval_dir=os.path.join(out_dir, "eval"),
         eval_run_id=eval_run_id,
-        evidence_scope=(evidence_scope or str((cfg.get("evaluation") or {}).get("evidence_scope") or "candidate_pack")),
+        evidence_scope=protocol["evidence_scope"],
         budget=budget,
         max_evidence_chars=max_evidence_chars,
         timeout_s=timeout_s,
     )
 
     rows: List[Dict[str, Any]] = []
-    for art in arts:
+    for art, input_sha256 in pending:
         verdict, failure = call_with_deadline(
             lambda a=art: judge_artifact(judge, a, eval_run_id=eval_run_id), deadline_s
         )
@@ -495,38 +545,23 @@ def run(
                 rubric_version=str(rubric.get("version", "v1")), failure=failure,
             )
         row = verdict_row(art, verdict, rubric, prompt_sha256=protocol["prompt_sha256"])
+        row.update(protocol=protocol, input_sha256=input_sha256)
         rows.append(row)
         print(
-            f"[{len(rows)}/{len(arts)}] {art.task_id} cls={row['cls']} "
+            f"[{len(rows)}/{len(pending)}] {art.task_id} cls={row['cls']} "
             f"full={row['full_success']} partial={row['partial_success']} "
             f"sub={row['sub_result']}/{row['sub_result_evidence_count']}ev cit={row['citation_status']}",
             flush=True,
         )
 
-    # R9：复用同一输出位置时保留已落盘结果（按 task+candidate 合并，本轮可用优先）
     out_fp = os.path.join(out_dir, "verdicts.jsonl")
-    if os.path.exists(out_fp):
-        existing = {}
-        for line in open(out_fp, encoding="utf-8"):
-            line = line.strip()
-            if line:
-                try:
-                    row = json.loads(line)
-                    existing[(row.get("task_id"), row.get("candidate_id"))] = row
-                except json.JSONDecodeError:
-                    continue
-        for row in rows:
-            key = (row["task_id"], row["candidate_id"])
-            prev = existing.get(key)
-            if prev is None or (not prev.get("usable") and row.get("usable")) or row.get("usable"):
-                existing[key] = row
-        rows = list(existing.values())
-    with open(out_fp, "w", encoding="utf-8") as f:
+    with open(out_fp + ".tmp", "x", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     summary = summarize(rows)
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump({"eval_run_id": eval_run_id, **summary}, f, ensure_ascii=False, indent=2)
+    scopes = sorted({a.scope_info.get("mode") or judge.evidence_scope for a, _ in pending})
     provenance = {
         "eval_run_id": eval_run_id,
         "rubric": {
@@ -545,17 +580,20 @@ def run(
         "service": {
             "note": "服务与参数来自当前配置（router 解析结果），非运行目录冻结快照",
         },
-        "artifacts": [a.provenance() for a in arts],
+        "protocol": protocol,
+        "artifacts": [a.provenance() for a, _ in pending],
         "roots": list(roots),
-        "evidence_scope": judge.evidence_scope,
+        "evidence_scope": scopes[0] if len(scopes) == 1 else "mixed",
         "max_evidence_chars": judge.max_evidence_chars,
         "judge_timeout_s": float(timeout_s or 0.0),
         "per_candidate_deadline_s": float(deadline_s or 0.0),
         "resume_from": list(resume_from),
-        "skipped_already_usable": len(done_keys),
+        "skipped_already_usable": skipped,
         "target_calls": 0,
     }
     with open(os.path.join(out_dir, "provenance.json"), "w", encoding="utf-8") as f:
         json.dump(provenance, f, ensure_ascii=False, indent=2)
+    os.replace(out_fp + ".tmp", out_fp)
     print(json.dumps({"out_dir": out_dir, **summary}, ensure_ascii=False))
-    return {"out_dir": out_dir, "summary": summary, "rows": rows, "eval_run_id": eval_run_id}
+    return {"out_dir": out_dir, "summary": summary, "rows": rows, "eval_run_id": eval_run_id,
+            "calls_model": bool(store.count("request_sent"))}

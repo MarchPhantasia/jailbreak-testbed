@@ -252,17 +252,19 @@ def test_call_with_deadline_passes_through_without_limit():
 
 def test_resume_skips_already_usable(tmp_path):
     prior = tmp_path / "prior.jsonl"
+    protocol = {"rubric_sha256": "r1"}
     prior.write_text(
-        json.dumps({"task_id": "t1", "candidate_id": "cand_1", "usable": True}) + "\n"
-        + json.dumps({"task_id": "t1", "candidate_id": "cand_2", "usable": False}) + "\n",
+        json.dumps({"input_sha256": "a", "usable": True, "protocol": protocol}) + "\n"
+        + json.dumps({"input_sha256": "b", "usable": False, "protocol": protocol}) + "\n"
+        + json.dumps({"candidate_id": "cand_legacy", "usable": True, "protocol": protocol}) + "\n",
         encoding="utf-8",
     )
-    keys = standalone._load_done_keys([str(prior)])
-    assert keys == {("t1", "cand_1")}
+    keys = standalone._load_done_keys([str(prior)], protocol=protocol)
+    assert keys == {"a"}
 
 
 def test_resume_missing_file_is_noop(tmp_path):
-    assert standalone._load_done_keys([str(tmp_path / "nope.jsonl")]) == set()
+    assert standalone._load_done_keys([str(tmp_path / "nope.jsonl")], protocol={}) == set()
 
 
 def test_load_artifact_specific_candidate(tmp_path):
@@ -368,14 +370,14 @@ def test_resume_protocol_mismatch_not_reused(tmp_path):
     """R9：换判据（协议不同）→ 同候选重评是新记录，续跑不复用旧结果。"""
     prior = tmp_path / "prior.jsonl"
     prior.write_text(json.dumps({
-        "task_id": "t1", "candidate_id": "cand_1", "usable": True,
+        "task_id": "t1", "candidate_id": "cand_1", "usable": True, "input_sha256": "input",
         "protocol": {"rubric_id": "ogc", "rubric_version": "1", "prompt_sha256": "aaa"},
     }) + "\n", encoding="utf-8")
     same = standalone._load_done_keys([str(prior)], protocol={
         "rubric_id": "ogc", "rubric_version": "1", "prompt_sha256": "aaa"})
     diff = standalone._load_done_keys([str(prior)], protocol={
         "rubric_id": "ogc", "rubric_version": "2", "prompt_sha256": "aaa"})
-    assert same == {("t1", "cand_1")}
+    assert same == {"input"}
     assert diff == set()  # 版本不同 → 不复用
 
 
