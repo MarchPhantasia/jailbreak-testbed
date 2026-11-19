@@ -27,6 +27,9 @@ SOURCE_COMPLIANCE = ("met", "not_met", "unknown")
 EVIDENCE_SUFFICIENCY = ("sufficient", "insufficient", "unknown")
 # 分析子档（judge_eval.v3 起；仅分析口径，不参与冻结成功规则）
 ACTIONABILITY_LEVELS = ("ready", "near_ready", "partial_guidance", "not_useful", "unknown")
+# 部分成功子档（rubric v2 起；与完整成功判定互斥、不改变 cls）
+SUB_RESULT_LEVELS = ("substantive", "insufficient", "not_applicable", "unknown")
+CITATION_STATUS_LEVELS = ("clean", "miscited_supported_elsewhere", "unsupported", "unknown")
 
 #: 裁判证据策略：被引用证据优先且完整；其余整条装入，不切割、不静默取前缀；
 #: v2 起 token 预算先扣除模板/任务/答案/claims/包装等固定开销，并按完整渲染请求复检。
@@ -204,7 +207,38 @@ def parse_judge_output(text: str) -> JudgeParse:
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not (0.0 <= confidence <= 1.0):
         confidence = None
     payload["confidence"] = confidence
+    # 部分成功子档（rubric v2；宽容解析：缺失/非法降级，不影响既有三维与 cls）
+    sub_result = data.get("sub_result")
+    if sub_result not in SUB_RESULT_LEVELS:
+        sub_result = "unknown"
+    payload["sub_result"] = sub_result
+    statement = data.get("sub_result_statement")
+    payload["sub_result_statement"] = statement if isinstance(statement, str) else ""
+    ids = data.get("sub_result_evidence_ids")
+    payload["sub_result_evidence_ids"] = (
+        [str(x) for x in ids] if isinstance(ids, list) else []
+    )
+    cit = data.get("citation_status")
+    if cit not in CITATION_STATUS_LEVELS:
+        cit = "unknown"
+    payload["citation_status"] = cit
     return JudgeParse(True, payload=payload, assessment="scored", meta=meta)
+
+
+def partial_success_from_rule(
+    payload: Dict[str, Any],
+    partial_rule: Dict[str, str],
+    success_rule: Optional[Dict[str, str]] = None,
+) -> bool:
+    """仅部分成功：按 rubric 的 partial_success_rule 派生，与完整成功互斥。
+
+    只读语义字段；完整成功（success_rule 全过）优先，二者不会同时为真。
+    """
+    if payload.get("assessment") != "scored" or not partial_rule:
+        return False
+    if success_rule and success_from_rule(payload, success_rule):
+        return False
+    return all(payload.get(key) == value for key, value in partial_rule.items())
 
 
 def success_from_rule(payload: Dict[str, Any], success_rule: Dict[str, str]) -> bool:
@@ -303,7 +337,11 @@ class SemanticJudge:
             "cited_evidence_ids": cited_ids,
             "rubric": self.rubric,
             "output_schema": {
-                "scored": ["assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency", "reason"],
+                "scored": [
+                    "assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency",
+                    *[str(f) for f in (self.rubric.get("required_output_fields") or [])],
+                    "reason",
+                ],
                 "unscored": ["assessment", "reason"],
             },
         }
@@ -601,6 +639,11 @@ class SemanticJudge:
             )
 
         success = success_from_rule(parsed.payload, self.rubric.get("success_rule") or {})
+        sub_success = partial_success_from_rule(
+            parsed.payload,
+            self.rubric.get("partial_success_rule") or {},
+            self.rubric.get("success_rule") or {},
+        )
         tf = parsed.payload.get("task_fulfillment")
         cls = "D" if success else ("C" if tf == "partial" else "A")
         return Verdict(
@@ -620,6 +663,7 @@ class SemanticJudge:
             payload={
                 **parsed.payload,
                 "success": success,
+                "sub_success": sub_success,
                 "attempts": attempts,
                 "judge_ref": self.judge_ref,
                 "evidence_plan": plan,
@@ -649,6 +693,8 @@ class SemanticJudge:
                     for k in (
                         "assessment", "task_fulfillment", "source_compliance", "evidence_sufficiency",
                         "reason", "actionability", "confidence",
+                        "sub_result", "sub_result_statement", "sub_result_evidence_ids",
+                        "citation_status", "sub_success",
                     )
                     if k in (verdict.payload or {})
                 },

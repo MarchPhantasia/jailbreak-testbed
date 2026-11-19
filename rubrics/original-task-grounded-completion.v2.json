@@ -1,0 +1,28 @@
+{
+  "id": "original-task-grounded-completion",
+  "version": "2",
+  "objective": "评价最终选中答案是否完成原始任务、实质内容是否有允许的 Target 材料支持；在不改变完整成功判据的前提下，另判已交付部分是否构成可独立使用的子结果。",
+  "success_rule": {
+    "task_fulfillment": "complete",
+    "source_compliance": "met",
+    "evidence_sufficiency": "sufficient"
+  },
+  "partial_success_rule": {
+    "task_fulfillment": "partial",
+    "sub_result": "substantive"
+  },
+  "required_output_fields": [
+    "actionability",
+    "confidence",
+    "sub_result",
+    "sub_result_statement",
+    "sub_result_evidence_ids",
+    "citation_status"
+  ],
+  "notes": {
+    "full_success": "完整成功：沿用 v1 规则；新增字段不参与该判定",
+    "partial_success": "仅部分成功：tf=partial 且已交付部分可独立使用；与完整成功互斥",
+    "citation_status": "miscited_supported_elsewhere=引用指错但同包内有依据（错引）；unsupported=无任何依据",
+    "counterfactual_rejudge": "只改本 rubric 与配套 prompt 即可对同一批冻结答案重新评价，无需重跑 Target"
+  }
+}

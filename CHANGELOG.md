@@ -2,6 +2,25 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号对应**规格版本**，不对应代码版本。
 
+## [code-v0.9.24] — 2026-11-19
+
+Judge 与生成流程解耦 + 部分成功档（rubric v2）。
+
+- **独立评价入口**：`framework.cli judge`（新 `src/framework/standalone.py`）只读落盘产物
+  （plan.json/final.json/candidates.jsonl/packs.jsonl/evidence.jsonl），按 `--rubric`/`--prompt`
+  评价；复用既有 `SemanticJudge.evaluate`；Target 调用 0；产物 verdicts/summary/provenance/events，
+  provenance 记录 rubric 与 prompt sha256、judge_ref、包 input_hash_v2。
+- **硬性总时限**：`--deadline`（默认 900s/候选）。`urllib` timeout 只是 socket 级，实测在
+  169k 字符输入上挂死 30+ 分钟不返回；到点记 U（`hard_deadline_exceeded`）并继续，
+  daemon 线程不阻塞退出。
+- **rubric v2 + judge_eval.v4**：新增分析子档 `sub_result`/`sub_result_statement`/
+  `sub_result_evidence_ids`/`citation_status`（错引 vs 无据分列）；`partial_success_rule`
+  派生「仅部分成功」，与完整成功互斥；完整成功规则与 cls 语义不变；旧模板输出仍可解析
+  （新字段缺失降级 unknown，不判 U）。
+- **output_schema 由 rubric 驱动**：`required_output_fields` 决定送裁判的字段清单，
+  换判据只换 rubric+prompt 两个文件。
+- 测试：`tests/test_standalone_judge.py` 19 项（rubric 容错/规则互斥/产物装配/汇总/硬时限）。
+
 ## [code-v0.9.23] — 2026-11-18
 
 外部审查采纳 + 方差结构发现 + CKA 交叉判定。

@@ -24,6 +24,8 @@ CKA 是可选架构参考，不作为本框架的定义或验收依赖。不强�
 | repr6/cka6 配置 | raw_history、linear、null scorer、branch_width=1、LLM k=1、first、after_assembly | 分支搜索方法已经启用 |
 | repr6/cka6 历史配置 | 没有显式 target_history，因此按当前代码为 ancestor | 文件名 cka6 或 plan.v3 代表 isolated |
 | 模板 | 上述两份配置为 plan.v3 / assemble.v2 / judge_eval.v2 | 只改变了 Target 历史一个变量 |
+| 独立评价入口 | `python -m framework.cli judge`（`src/framework/standalone.py`，2026-11-19）：只读 plan/final/candidates/packs/evidence，按 `--rubric` + `--prompt` 评价，Target 调用 0，写 verdicts/summary/provenance/events；改判据即可重评同一批答案 | 已接入生成流程（生成仍走 `evaluate` 子命令）或已替代原 evaluate |
+| 部分成功档 | rubric v2（`rubrics/original-task-grounded-completion.v2.json`）+ `judge_eval.v4`：新增 `sub_result`/`sub_result_statement`/`sub_result_evidence_ids`/`citation_status`；`partial_success_rule`（tf=partial ∧ sub_result=substantive）派生「仅部分成功」，与完整成功互斥；**完整成功规则未变** | 该档已替换主终点，或已对外声明为 ASR |
 | 判据模板演进 | mainflow7/8 批次用 judge_eval.v2；**judge_eval.v3 已加入（2026-11-18，commit 2fb118a）**：新增 actionability 子档（ready/near_ready/partial_guidance/not_useful）与 confidence 两个分析字段，宽容解析、冻结成功规则（tf/src/ev 合取）不变。历史候选的同协议复评必须仍用 v2；未来批次配置引用 v3 | v3 的两个分析字段参与成功判定或改变了历史判定的可比性 |
 | 候选反馈 | b3e9514：Controller 输入含 candidate_feedback（候选/gaps/verdict/包版本/stale） | 真实运行中 Controller 据此改变决策；两配置未启用 online |
 | 装配候选 | LLMAssembler 当前成功路径返回一个 candidate，k 被记录但没有循环采样 k 次 | 调大 k 即实现语义多候选 |

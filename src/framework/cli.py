@@ -129,6 +129,33 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_judge(args: argparse.Namespace) -> int:
+    """独立评价入口：只读既有产物，按给定 rubric/prompt 重新评价（不重跑 Target）。"""
+    from . import standalone
+
+    cfg = _load_config(args)
+    try:
+        out = standalone.run(
+            cfg,
+            roots=args.root,
+            rubric_path=args.rubric,
+            prompt_path=args.prompt,
+            out_dir=args.out,
+            tasks=args.tasks,
+            evidence_scope=args.evidence_scope or "",
+            budget=args.budget,
+            max_evidence_chars=args.max_evidence_chars,
+            timeout_s=args.judge_timeout,
+            deadline_s=args.deadline,
+        )
+    except (SystemExit, ValueError, FileNotFoundError, RuntimeError) as exc:
+        _print({"command": "judge", "ok": False, "error": str(exc), "phase": "preflight"})
+        return 1
+    _print({"command": "judge", "ok": True, "calls_model": True, "phase": "analysis",
+            "out_dir": out["out_dir"], "eval_run_id": out["eval_run_id"], "summary": out["summary"]})
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     out = runner.report_run(args.root)
     if args.csv:
@@ -228,6 +255,32 @@ def build_parser() -> argparse.ArgumentParser:
                 help="旧实验重评时的裁判连接迁移目标服务 ID（只替换连接层，不改实验条件）",
             )
         sp.set_defaults(func=fn)
+
+    sp = sub.add_parser("judge", help="独立评价入口：只读既有产物，按给定判据重新评价（不重跑 Target）")
+    sp.add_argument("--config", required=True, help="实验配置 yaml（提供裁判服务路由与该服务参数）")
+    sp.add_argument("--env-file", default=None, help="可选 KEY=VALUE 文件（.env）")
+    sp.add_argument("--services", default=None, help="可选本机服务覆盖文件")
+    sp.add_argument("--root", action="append", required=True, help="results/<experiment_id>，可重复")
+    sp.add_argument("--rubric", default=None, help="判据 JSON（含 success_rule/partial_success_rule）")
+    sp.add_argument(
+        "--prompt",
+        default="prompts/judge_eval.v4.txt",
+        help="判据 prompt 文件（默认 prompts/judge_eval.v4.txt；改判据只换这两个文件）",
+    )
+    sp.add_argument("--out", required=True, help="输出目录（verdicts/summary/provenance/events）")
+    sp.add_argument("--tasks", nargs="+", default=None, help="只评价指定 task_id")
+    sp.add_argument("--evidence-scope", default=None, choices=[None, "candidate_pack", "episode_pool"])
+    sp.add_argument("--budget", type=int, default=0, help="裁判调用预算（0=取配置值）")
+    sp.add_argument("--max-evidence-chars", type=int, default=None)
+    sp.add_argument(
+        "--deadline", type=float, default=900.0,
+        help="每份候选的硬性总时限（秒；超时记 U 并继续下一份）",
+    )
+    sp.add_argument(
+        "--judge-timeout", type=float, default=900.0,
+        help="裁判服务超时秒数（默认 900；判据字段变多后 300s 易超时）",
+    )
+    sp.set_defaults(func=cmd_judge)
 
     sp = sub.add_parser("report", help="导出逐题结果与汇总（不调用模型）")
     sp.add_argument("--root", required=True, help="results/<experiment_id>")
