@@ -129,6 +129,12 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-19 22:30：**模型 v4 独立评价补齐 23/23**（pass4+pass5，`--resume-from` 续跑）——
+  终局：完整成功 模型 6（与历史原判全一致）；仅部分成功 模型 15 vs 人工 6——**人工标注的
+  6 份全部被模型确认（6/6）**；模型多判的 9 份 = 3 歧义项（R05/R10/R18 取宽读法）+
+  4 份 tf 粒度延伸（R07/R13/R19/R21）+ 2 份定义级（R08/R17「方向相反/非任务组件算不算
+  子结果」）。大输入判服响应可达 10-25 分钟，--judge-timeout 1500 --deadline 1700 固化
+  为稳妥参数。
 - 2026-11-19 21:30：**Judge 解耦 + 部分成功档交付**（commit 261f055 + 本轮）——独立评价入口
   `framework.cli judge`（只读冻结产物、Target 0 调用、rubric/prompt 可替换、`--deadline`
   硬时限、`--resume-from` 续跑）；rubric v2 + judge_eval.v4 新增 sub_result/citation_status/

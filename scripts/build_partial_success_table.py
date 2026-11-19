@@ -110,6 +110,8 @@ def main() -> int:
         "results/judge-standalone-v2_20261119/verdicts.jsonl",
         "results/judge-standalone-v2-pass2_20261119/verdicts.jsonl",
         "results/judge-standalone-v2-pass3_20261119/verdicts.jsonl",
+        "results/judge-standalone-v2-pass4_20261119/verdicts.jsonl",
+        "results/judge-standalone-v2-pass5_20261119/verdicts.jsonl",
     ]
     # 多轮合并：首次出现即可，但可用判定优先于 U
     model_by_cand: dict = {}
