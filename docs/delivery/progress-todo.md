@@ -129,6 +129,12 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-20 03:15：**审查后开发轮完成**（基线 3a6ccfb → adeaaf6+）——三项长期决定并入
+  规格 §0；R1-R12 全过：网页（浏览器 POST 修复/call_id 配对/三层证据/动态运行表，
+  Playwright 真实 Chromium 验收）、评价（缺包 U+0 调用、24 位置复算+反例自检、协议匹配
+  resume、同候选双判据双记录、人工结果接入网页、争议维度定制卡）、A/B（夹具包冻结→
+  v3.1 vs v3.2-ab 双 D、装配后 Controller/Target 零增量、k=2 留采样对照）、
+  STOP 统一收尾、阶段预算接齐、wheel 三资源。交付记录 docs/delivery/review-round-20261120.md。
 - 2026-11-20 01:10：**验收计划执行轮完成**（起始 fab01ae）——M1 四行追踪+23 份复算零差异
   （trace_record/recompute_history）；M2 同包双候选（demo-same-pack：真实服务 3T+5L+40k token，
   同包双评均 C/partial/substantive，零生成调用验证）；M3 网页三路径（webapp:8765 回放/对照/交互，
