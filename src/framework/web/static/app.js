@@ -141,9 +141,23 @@ function evTags(e) {
   }
   return t.join("");
 }
+function fallbackBadge(ac) {
+  if (!ac?.fallback_render) return "";
+  const reason = ac.reason || ac.assembly_config?.reason || "";
+  const why = reason || ac.relocated || "";
+  return `<span class="tag bad" title="原文回退：不调用模型的材料模板渲染">原文回退</span>` +
+    (reason ? ` <span class="tag">${esc(reason)}</span>` : "");
+}
+function citeFixBadge(ac) {
+  const r = ac?.citation_relocation;
+  if (!r || r.version === "off") return "";
+  const n = (r.relocated || []).length;
+  return n ? `<span class="tag ok" title="${esc(r.version)}">引用定位修复 ${n} 处</span>` : "";
+}
 function candPanel(c, tag) {
+  const ac = c.assembly_config || {};
   let h = `<div class="panel wide"><h2>候选 ${tag}：${esc(c.candidate_id)}</h2><div class="body">
-    <p class="hint">任务 ${esc(c.task_id)} · 包 ${esc((c.packs[0] || {}).pack_id || "?")}（${esc((c.packs[0] || {}).input_hash || "?")}…）· 采样 ${esc(c.assembly_config?.sample_index ?? "-")}</p>
+    <p class="hint">任务 ${esc(c.task_id)} · 包 ${esc((c.packs[0] || {}).pack_id || "?")}（${esc((c.packs[0] || {}).input_hash || "?")}…）· 采样 ${esc(ac.sample_index ?? "-")} ${fallbackBadge(ac)} ${citeFixBadge(ac)}</p>
     <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div>
     <h3>主张 → 证据（episode 有 / 包允许 / Judge 看到 三层）</h3>`;
   for (const cl of c.claims) {

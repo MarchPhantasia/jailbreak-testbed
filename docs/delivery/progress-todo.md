@@ -129,6 +129,15 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-20 07:50：**R22 引用定位收尾**——A 的 miscited 全部由引用粒度解释（15 主张
+  各引 1 行：8 元行 + 7 同材料"代表行"；B 按条件引材料跨度故 clean；判级差异=职业部署
+  包内真实缺失，NSF 条款 A 保留 B 弃为主张集差异）。修复 citation-relocate@v1（层 1 元行
+  →材料跨度；层 2 多行材料单行引用→材料跨度；接入 LLMAssembler/make_assembler，
+  assembly_config 可追溯）。定向复评：A(15 引用/miscited)→A'(206/miscited 收窄 3 处)→
+  A''(295/clean)，正文与主张逐字不变，判级 C 不变（正确：修复只动引用）。
+  工程尾项同轮收掉：双击结束保留评价字段、网页回退原因徽标、调用分列
+  scenario_total/finalize_added。Target 0 / Assembler 0 / Judge 2。
+  交付 docs/delivery/r22-citation-closeout.md。
 - 2026-11-20 07:00：**网页「结束」与批处理收尾一致性**（R22 回归三场景全过）——
   Engine.candidate_pack_hashes/candidate_materials_changed 共享助手（新鲜度以当前选中
   候选自己的包为起点）；InteractiveSession.finalize 与批处理 _finalize 同决策序列

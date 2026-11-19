@@ -566,6 +566,22 @@ class Engine:
         last_fp = cand_hashes[0] if cand_hashes else ""
         return bool(now_fp) and now_fp != last_fp
 
+    def read_evidence_rows(self) -> List[Dict[str, Any]]:
+        """本 episode evidence.jsonl 的行列表（供引用定位修复等消费行级文本）。"""
+        import json as _json
+        fp = os.path.join(self._evidence_dir, "evidence.jsonl")
+        out: List[Dict[str, Any]] = []
+        if os.path.exists(fp):
+            with open(fp, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            out.append(_json.loads(line))
+                        except _json.JSONDecodeError:
+                            continue
+        return out
+
     def materials_fingerprint(self, node_id: str) -> str:
         """当前活跃材料指纹（按合并策略的视图）：与 pack 的 input_hash 同一序列化。"""
         if self.states.get(node_id) is None:

@@ -222,6 +222,7 @@ def run_episode(
             assembler_gateway = build_gateway(routing, "assembler", guard, store, template_ref=(assembler_template.ref() if assembler_template else None))
         else:
             assembler_gateway = local_gateway
+        # 引用定位修复需要行级文本：装配器先建，engine 起来后再回填（见下）
         assembler = make_assembler(config, gateway=assembler_gateway, template=assembler_template)
     else:
         assembler = Assembler()
@@ -267,6 +268,12 @@ def run_episode(
         cross_branch_merge=cross_branch_merge,
     )
     engine.start()
+    # citation-relocate@v1：注入行级文本（evidence.jsonl 属于 episode 目录）
+    if assembly_kind == "llm" and getattr(assembler, "relocate_meta_rows", False):
+        assembler.row_text_by_id = {r.get("evidence_id"): (r.get("text") or "")
+                                    for r in engine.read_evidence_rows()
+                                    if isinstance(r, dict) and r.get("evidence_id")}
+
 
     controller_cfg = method_cfg.get("controller", {}) or {}
     controller_kind = str(controller_cfg.get("type", "element")).lower()

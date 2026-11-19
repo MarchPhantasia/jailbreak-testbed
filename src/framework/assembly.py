@@ -229,6 +229,97 @@ def uncovered_ratio(answer: str, claims: List[Claim], evidence_text: str = "") -
     return uncovered_chars / substantive_chars, uncovered
 
 
+CITATION_RELOCATION_VERSION = "citation-relocate@v1"
+
+_META_ROW_PATTERNS = (
+    # 分隔线 / 标题行 / 短标签行
+    "separator", "heading", "label",
+    # 拒答或告诫前言行（内容本身不含对主张的支持）
+    "refusal_preamble",
+)
+
+
+def _row_kind(text: str) -> str:
+    """判断一条证据行的形态：separator/heading/label/refusal_preamble 或 substantive。
+
+    只做形态判断，不做语义判断——落在这四种形态上的引用都可能是"引用定位错误"：
+    主张的实质支持通常在同材料的相邻行（Frequency evidence/Operation 等正文行）。
+    """
+    t = (text or "").strip()
+    if not t:
+        return "separator"
+    if t.strip("-*_ #") == "" or set(t) <= set("-_*# "):
+        return "separator"
+    if t.lstrip().startswith("#"):
+        return "heading"
+    import re
+    # 编号/加粗短标签（≤64 字符、无句号结尾的标题式行）
+    if len(t) <= 64 and not t.endswith((".", "!", "?", "。", "！", "？")) and (
+            re.match(r"^\*?\*?\d+\.\s*\*\*", t) or t.startswith("**")):
+        return "label"
+    # 拒答/告诫前言行：开头即元评论而非事实内容
+    if re.match(
+        r"^(\d+\.\s*)?(\*\*)?(I can('|no)t|I won('|no)t|Two caveats|Caveats? first|"
+        r"This one, unlike|Same answer shape|I have no access|I don('|no)t have|"
+        r"To be clear|The data problem|The deeper problem|The substantive problem)",
+        t, re.IGNORECASE):
+        return "refusal_preamble"
+    return "substantive"
+
+
+def relocate_meta_citations(claims, materials, evidence_text_by_id, *, dry_run: bool = False):
+    """引用定位修复：把落在元行（分隔线/标题/标签/拒答前言）上的引用扩宽为
+    所在材料的完整证据跨度。
+
+    动机（R22 回归发现）：模型常把引用落在材料开头的告诫/拒答前言行或标题行上，
+    而主张的实质支持在同材料后续正文行。扩宽到材料级跨度后引用必然覆盖支持行
+    （代价是精度下降——这是有意的：宁全勿错引）。答案正文与主张文本不变。
+
+    - materials：包材料（取 evidence_ids 跨度）；
+    - evidence_text_by_id：evidence.jsonl 的 {evidence_id: 行文本}（做形态判断）。
+    返回 (claims, report)：report 记录每处 from→to，供落盘追溯。
+    """
+    span_by_id = {}
+    for m in materials:
+        ids = list(m.get("evidence_ids") or [])
+        for eid in ids:
+            span_by_id.setdefault(eid, ids)
+    report = []
+
+    def _widen(c, eid, kind):
+        span = span_by_id[eid]
+        before = list(new_ids)
+        added = [x for x in span if x not in new_ids]
+        if added:
+            report.append({"claim_id": c.claim_id, "from": [eid], "kind": kind,
+                           "to": list(span)})
+            new_ids.extend(added)
+        else:
+            new_ids.append(eid)
+
+    for c in claims:
+        new_ids = []
+        # 层1：元行（分隔线/标题/标签/拒答前言）引用 → 材料完整跨度
+        for eid in c.evidence_ids:
+            kind = _row_kind(evidence_text_by_id.get(eid, ""))
+            if kind != "substantive" and eid in span_by_id:
+                _widen(c, eid, kind)
+            elif eid not in new_ids:
+                new_ids.append(eid)
+        # 层2：多行材料上的**单行**引用 → 材料完整跨度。依据 R22 复评：模型常在
+        # 正确材料里挑一行"代表行"（引言句/机制概述行），而主张实据在同材料其他行；
+        # 单行引用扩宽后必含实据（B 模板按条件引材料跨度即被判 clean）。
+        # 引用 2+ 行的主张视为已做主题选择，保持不动。
+        if len(c.evidence_ids) == 1:
+            (eid,) = c.evidence_ids
+            span = span_by_id.get(eid)
+            if span and len(span) > 1 and eid in span:
+                _widen(c, eid, "single_row_in_multirow_material")
+        if not dry_run:
+            c.evidence_ids = new_ids
+    return claims, report
+
+
 def coverage_diagnostics(
     answer: str,
     claims: List[Claim],
@@ -306,9 +397,15 @@ class LLMAssembler(Assembler):
         stage_id: str = "assemble",
         output_limit: int = 20000,
         lexical_policy: str = DEFAULT_LEXICAL_POLICY,
+        relocate_meta_rows: bool = True,
+        row_text_by_id=None,
     ):
         self.gateway = gateway
         self.template = template
+        # 引用定位修复（citation-relocate@v1）：元行引用扩宽为材料完整跨度。
+        # row_text_by_id 由正式入口注入 evidence.jsonl 的行级文本；缺省时跳过。
+        self.relocate_meta_rows = bool(relocate_meta_rows)
+        self.row_text_by_id = dict(row_text_by_id or {})
         self.max_format_retries = max(0, int(max_format_retries))
         self.max_uncovered_ratio = float(max_uncovered_ratio)
         self.stage_id = stage_id
@@ -667,8 +764,12 @@ class LLMAssembler(Assembler):
         ]
 
 
-def make_assembler(cfg: Dict[str, Any], *, gateway=None, template=None):
-    """按 method.assembly.type 选择装配器；llm 必须真正拿到网关与模板。"""
+def make_assembler(cfg: Dict[str, Any], *, gateway=None, template=None, evidence_rows=None):
+    """按 method.assembly.type 选择装配器；llm 必须真正拿到网关与模板。
+
+    evidence_rows：episode 的 evidence.jsonl 行列表（dict）。llm 装配器用它注入
+    行级文本，启用 citation-relocate@v1（元行引用扩宽为材料完整证据跨度）。
+    """
     method = cfg.get("method") or {}
     kind = str(((method.get("assembly") or {}).get("type")) or "material_template").lower()
     if kind == "material_template":
@@ -677,12 +778,15 @@ def make_assembler(cfg: Dict[str, Any], *, gateway=None, template=None):
         if gateway is None or template is None:
             raise ValueError("assembly.type=llm 需要 Assembler 网关与冻结模板")
         spec = method.get("assembly") or {}
+        rows = {r.get("evidence_id"): (r.get("text") or "") for r in (evidence_rows or [])
+                if isinstance(r, dict) and r.get("evidence_id")}
         return LLMAssembler(
             gateway,
             template,
             max_format_retries=int(spec.get("max_format_retries", 1)),
             max_uncovered_ratio=float(spec.get("max_uncovered_ratio", 0.25)),
             lexical_policy=resolve_lexical_policy(spec.get("lexical_policy")),
+            row_text_by_id=rows,
         )
     raise ValueError(f"未支持的 assembly.type：{kind}（不做隐式回退）")
 

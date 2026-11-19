@@ -109,6 +109,8 @@ class InteractiveSession:
             routing, "assembler", guard, store,
             template_ref=(assembler_template.ref() if assembler_template else None),
         ) if assembly_cfg.get("type") == "llm" else None
+        # citation-relocate@v1：会话启动时 episode 尚无 evidence 行；
+        # 装配前由 _refresh_row_texts() 回填（交互过程 target 回复已落盘后）
         assembler = (make_assembler(cfg, gateway=assembler_gateway, template=assembler_template)
                      if assembler_gateway is not None else make_assembler(cfg))
 
@@ -287,7 +289,16 @@ class InteractiveSession:
                                    "parent_state_seq": self.engine.states[node_id].source_event_seq})
         return {"status": "branched", "from_node": node_id, "note": note}
 
+    def _refresh_row_texts(self) -> None:
+        """把 evidence.jsonl 行级文本回填给装配器（引用定位修复消费）。"""
+        asm = getattr(self, "assembler", None)
+        if asm is not None and getattr(asm, "relocate_meta_rows", False) and self.engine is not None:
+            asm.row_text_by_id = {r.get("evidence_id"): (r.get("text") or "")
+                                  for r in self.engine.read_evidence_rows()
+                                  if isinstance(r, dict) and r.get("evidence_id")}
+
     def assemble_now(self, reason: str = "user_requested") -> Dict[str, Any]:
+        self._refresh_row_texts()
         node_id = self._forced_node or self.engine.current_node_id
         self._forced_node = None
         act = Action(
@@ -357,6 +368,8 @@ class InteractiveSession:
         4. 候选存在且材料未变（或 after_assembly）→ 保留旧候选，不重复装配。
         连续点击结束：engine.terminate 幂等，终止记录只有一条。
         """
+        import time as _time
+        self._finalize_started_at = getattr(self, "_finalize_started_at", None) or _time.time()
         if not self.engine.terminated:
             if self.pending is not None:
                 # 收尾前丢弃未批准动作：人工未确认的查询不代发
@@ -416,10 +429,37 @@ class InteractiveSession:
         )
         ep_dir = os.path.join(self.root, "episodes", self.eid)
         _write_candidates(art, os.path.join(ep_dir, "candidates.jsonl"))
-        write_final(art, os.path.join(ep_dir, "final.json"))
+        # 尾项a：二次点击结束不抹掉 final.json 已有评价字段（outcome/verdict_id/basis）
+        final_path = os.path.join(ep_dir, "final.json")
+        prev = {}
+        if os.path.exists(final_path):
+            try:
+                prev = json.load(open(final_path, encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                prev = {}
+        payload = write_final(
+            art, final_path,
+            outcome=prev.get("outcome"), verdict_id=prev.get("verdict_id"),
+            basis=str(prev.get("basis") or ""),
+        )
+        # 尾项c：调用分列——整个场景 vs 点击结束后新增（按 request_sent 角色计数）
+        def _calls(events):
+            out: Dict[str, int] = {}
+            for ev in events:
+                out[ev.role] = out.get(ev.role, 0) + 1
+            return out
+        all_req = list(self.store.of_type("request_sent"))
+        started = getattr(self, "_finalize_started_at", None)
+        payload["calls"] = {
+            "scenario_total": _calls(all_req),
+            "finalize_added": _calls([e for e in all_req
+                                      if started is not None and (getattr(e, "ts", 0) or 0) >= started]),
+        }
+        json.dump(payload, open(final_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         return {"status": "finalized", "episode_id": self.eid,
                 "final_candidate": art.final_candidate.candidate_id if art.final_candidate else None,
-                "candidates": len(art.engine.candidates)}
+                "candidates": len(art.engine.candidates),
+                "calls": payload["calls"]}
 
 
 def run_scripted(cfg: Dict[str, Any], task: Task, root: str, script: List[Dict[str, Any]],
