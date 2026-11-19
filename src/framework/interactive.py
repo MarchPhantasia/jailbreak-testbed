@@ -28,6 +28,7 @@ from .judge import JudgeOnline
 from .recovery import RecoveryPolicy
 from .routing import build_gateway
 from .search import make_policy, make_scorer
+from .methods.independent import no_assembly_budget_reason
 from .state import make_backend
 from .runner import build_run_context, resolve_rubric, write_final, _write_candidates
 from .methods.independent import EpisodeArtifacts
@@ -347,12 +348,65 @@ class InteractiveSession:
 
     # ------------------------------------------------------------------ 收尾
     def finalize(self, reason: str = "user_finished") -> Dict[str, Any]:
+        """统一收尾：与批处理 run_episode._finalize 同一决策序列。
+
+        1. 无候选，或（online 模式下）材料相对**当前选中候选自己的包**已变化 → 需要装配；
+        2. 需要装配且有材料：非 Target 总额度与 Assembler 阶段额度都够 → 模型装配；
+           额度不足 → 不调用模型的原文回退（原因按实际缺口记录）；
+        3. 无材料且无候选 → 不编造，直接终止；
+        4. 候选存在且材料未变（或 after_assembly）→ 保留旧候选，不重复装配。
+        连续点击结束：engine.terminate 幂等，终止记录只有一条。
+        """
         if not self.engine.terminated:
             if self.pending is not None:
                 # 收尾前丢弃未批准动作：人工未确认的查询不代发
                 self.skip_pending("finalize")
-            if self.engine.final_candidate is None:
-                self.assemble_now("finalize")
+            node_id = self.engine.current_node_id
+            snap = self.guard.snapshot()
+            non_target_left = int(snap.get("non_target_calls_left", 0) or 0)
+            _asm_left = self.guard.stage_left(self.assembler_stage)
+            asm_stage_left = 1 if _asm_left is None else int(_asm_left)
+            has_candidate = self.engine.final_candidate is not None
+            # 新鲜度从当前选中候选自己的包算起（Engine 共享助手，与批处理同源）
+            materials_changed = (self.engine.candidate_materials_changed(node_id)
+                                 if has_candidate else False)
+            has_materials = bool(self.engine._build_pack_for(node_id)[0].materials)
+            stop_policy = self.engine.stopping_policy
+            need_assembly = (not has_candidate) or (stop_policy == "online" and materials_changed)
+            if need_assembly and has_materials:
+                if non_target_left > 0 and asm_stage_left > 0:
+                    try:
+                        self.assemble_now("finalize" if not has_candidate else "finalize_new_evidence")
+                    except Exception as exc:  # noqa: BLE001 - 与批处理同口径：额度异常走原文回退
+                        from .budget import BudgetExhausted
+                        if not isinstance(exc, BudgetExhausted):
+                            raise
+                        _l = self.guard.stage_left(self.assembler_stage)
+                        why = no_assembly_budget_reason(
+                            int(self.guard.snapshot().get("non_target_calls_left", 0) or 0),
+                            1 if _l is None else int(_l))
+                        self.store.append(
+                            "action_rejected", role="engine", node_id=node_id,
+                            payload={"reason": "no_assembly_budget", "detail": why,
+                                     "note": "改用不调用模型的原文回退"})
+                        self.engine.assemble_without_model(why)
+                else:
+                    why = no_assembly_budget_reason(non_target_left, asm_stage_left)
+                    self.store.append(
+                        "action_rejected", role="engine", node_id=node_id,
+                        payload={"reason": "no_assembly_budget", "detail": why,
+                                 "note": "改用不调用模型的原文回退"})
+                    self.engine.assemble_without_model(why)
+            elif need_assembly and not has_materials:
+                self.store.append(
+                    "action_rejected", role="engine", node_id=node_id,
+                    payload={"reason": "no_materials_to_assemble",
+                             "note": "无材料无候选，按既定规则收尾，不编造答案"})
+            elif has_candidate and materials_changed and stop_policy != "online":
+                self.store.append(
+                    "action_rejected", role="engine", node_id=node_id,
+                    payload={"reason": "materials_changed_after_candidate",
+                             "note": "非 online 模式保留旧候选"})
             self.engine.terminate(reason)
         art = EpisodeArtifacts(
             episode_id=self.eid, task=self.task, store=self.store, engine=self.engine,

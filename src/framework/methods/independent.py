@@ -118,6 +118,17 @@ def build_controller(
     raise ValueError(f"未知控制器：{kind}")
 
 
+def no_assembly_budget_reason(non_target_left: int, asm_stage_left: int) -> str:
+    """回退原因必须符合实际：尚有额度时不得标 no_local_budget。"""
+    if asm_stage_left == 0 and non_target_left > 0:
+        return "assembly_stage_exhausted"
+    if non_target_left == 0 and asm_stage_left == 0:
+        return "no_local_budget"
+    if non_target_left == 0:
+        return "no_non_target_budget"
+    return "no_local_budget"
+
+
 def run_episode(
     task: Task,
     *,
@@ -313,16 +324,6 @@ def run_episode(
         engine.execute(act)
         steps += 1
 
-    def _no_assembly_budget_reason(non_target_left: int, asm_stage_left: int) -> str:
-        """回退原因必须符合实际：尚有额度时不得标 no_local_budget。"""
-        if asm_stage_left == 0 and non_target_left > 0:
-            return "assembly_stage_exhausted"
-        if non_target_left == 0 and asm_stage_left == 0:
-            return "no_local_budget"
-        if non_target_left == 0:
-            return "no_non_target_budget"
-        return "no_local_budget"
-
     def _finalize(reason: str) -> None:
         """统一收尾：所有停止路径共用；装配判断后写唯一终止记录。
 
@@ -343,14 +344,8 @@ def run_episode(
         # 也应支撑收尾装配——只看当前节点会在"终止节点恰好无材料"时丢弃已采集证据。
         has_materials = bool(engine._build_pack_for(node_id)[0].materials)
         has_candidate = engine.final_candidate is not None
-        materials_changed = False
-        if has_candidate:
-            now_fp = engine.materials_fingerprint(node_id)
-            # 4.6：候选新鲜度从最终选中候选自己的包追溯，不假定 packs[-1] 属于它
-            cand_pack_ids = set(engine.final_candidate.evidence_pack_ids or [])
-            cand_hashes = [str(r.get("input_hash") or "") for r in engine.packs if r.get("pack_id") in cand_pack_ids]
-            last_fp = cand_hashes[0] if cand_hashes else ""
-            materials_changed = bool(now_fp) and now_fp != last_fp
+        # 4.6：候选新鲜度从最终选中候选自己的包追溯（Engine 共享助手，网页收尾同源）
+        materials_changed = engine.candidate_materials_changed(node_id) if has_candidate else False
         need_assembly = (not has_candidate) or (stop_policy == "online" and materials_changed)
         if need_assembly and has_materials:
             if non_target_left > 0 and asm_stage_left > 0:
@@ -358,7 +353,7 @@ def run_episode(
                     _assemble_now("finalize" if not has_candidate else "finalize_new_evidence")
                 except BudgetExhausted:
                     _l = guard.stage_left(assembler_stage)
-                    why = _no_assembly_budget_reason(
+                    why = no_assembly_budget_reason(
                         int(guard.snapshot().get("non_target_calls_left", 0) or 0), 1 if _l is None else int(_l)
                     )
                     store.append(
@@ -369,7 +364,7 @@ def run_episode(
                     )
                     engine.assemble_without_model(why)
             else:
-                why = _no_assembly_budget_reason(non_target_left, asm_stage_left)
+                why = no_assembly_budget_reason(non_target_left, asm_stage_left)
                 store.append(
                     "action_rejected",
                     role="engine",

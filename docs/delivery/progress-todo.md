@@ -129,6 +129,13 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-20 07:00：**网页「结束」与批处理收尾一致性**（R22 回归三场景全过）——
+  Engine.candidate_pack_hashes/candidate_materials_changed 共享助手（新鲜度以当前选中
+  候选自己的包为起点）；InteractiveSession.finalize 与批处理 _finalize 同决策序列
+  （online 重装配/额度耗尽原文回退/材料未变保留/双击唯一终止）；no_assembly_budget_reason
+  模块级共用。S1 保留原候选 0 新增；S2 新候选新包旧候选可开；S3 原文回退
+  assembly_stage_exhausted。Assembler 3 / Target 0 / Judge 0。
+  交付 docs/delivery/r22-finalize-consistency.md。
 - 2026-11-20 05:50：**R22 固定真实回归样例交付**——data/samples/r22-regression.json
   （身份四元组+防串绑警示+历史三判定）；同包 A/B（results/r22-ab-20261120：原包 19 材料
   原样、A=v3.1 7728字/15主张/miscited、B=v3.2-ab 2097字/6主张/clean，均 C/仅部分成功）；

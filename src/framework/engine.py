@@ -545,6 +545,27 @@ class Engine:
         mstate.materials = merged
         return self.assembler.build_pack(self.task, mstate, self.elements), source_nodes
 
+    def candidate_pack_hashes(self) -> List[str]:
+        """当前选中候选**自己引用的包**的 input_hash 列表（新鲜度比较起点）。
+
+        不用 packs[-1]：最后一次冻结的包未必属于当前选中候选（多候选/多包场景）。
+        """
+        cand_pack_ids = set(self.final_candidate.evidence_pack_ids or []) if self.final_candidate else set()
+        return [str(r.get("input_hash") or "") for r in self.packs if r.get("pack_id") in cand_pack_ids]
+
+    def candidate_materials_changed(self, node_id: str) -> bool:
+        """以当前选中候选自己的包为基准，判断该节点活跃材料是否变化。
+
+        与 materials_fingerprint 同一序列化（= pack input_hash），可直接比较。
+        无候选返回 False。
+        """
+        if self.final_candidate is None:
+            return False
+        now_fp = self.materials_fingerprint(node_id)
+        cand_hashes = self.candidate_pack_hashes()
+        last_fp = cand_hashes[0] if cand_hashes else ""
+        return bool(now_fp) and now_fp != last_fp
+
     def materials_fingerprint(self, node_id: str) -> str:
         """当前活跃材料指纹（按合并策略的视图）：与 pack 的 input_hash 同一序列化。"""
         if self.states.get(node_id) is None:
