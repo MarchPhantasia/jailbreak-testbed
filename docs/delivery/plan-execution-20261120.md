@@ -158,7 +158,7 @@ $PY -m framework.cli judge --config configs/real-dev.mainflow7-sr-batch1.yaml \
 - 推送命令（代理路径 TLS 被掐时用显式空代理直连）：
   `git -c http.proxy= -c https.proxy= push origin main`
 - 结果：`45613f3..170e517  main -> main`（2026-11-20 01:2x JST）
-- 起始 SHA：`fab01ae`（本轮首提交 `534ac1e` M1 之前；完整链：534ac1e → 155f617 → d6bbd5d → 170e517）
+- 起始 SHA：`fab01ae`（本轮首提交 `d545148` M1；完整链：d545148 → 155f617 → d6bbd5d → 170e517）
 - 本轮提交清单：
   - `534ac1e` feat(M1): 记录追踪工具 + 23 份历史分档独立复算（全部与预期一致）
   - `155f617` feat(M2/M3): 交互会话模块 + 同包双候选对照 + 网页服务端
