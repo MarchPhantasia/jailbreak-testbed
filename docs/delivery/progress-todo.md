@@ -129,6 +129,12 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-20 01:10：**验收计划执行轮完成**（起始 fab01ae）——M1 四行追踪+23 份复算零差异
+  （trace_record/recompute_history）；M2 同包双候选（demo-same-pack：真实服务 3T+5L+40k token，
+  同包双评均 C/partial/substantive，零生成调用验证）；M3 网页三路径（webapp:8765 回放/对照/交互，
+  分支演示 query_edited+branch_started+双轨迹）；M4 五张中文分歧卡（4 完整度+R02 错引，模型标签
+  隐藏）。交互模块 InteractiveSession 与事件类型 3 个新增；judge --candidates；全部真实服务、
+  测试 327 绿。交付记录 docs/delivery/plan-execution-20261120.md。
 - 2026-11-19 22:40：**统一规则 v2 定稿 + 交接产物**——规则：同向可单独指出的子结果=仅部分成功；
   背景/待填结构/下一步输入=其余；方向相反=其余（R17 归其余）。11 份 tf=partial 全部按规则过一遍：
   仅部分成功 6（R02/R04/R11/R12/R22/R23，子结果与来源支持分列，引用可解析≠有据），

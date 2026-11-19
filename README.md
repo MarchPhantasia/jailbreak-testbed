@@ -97,6 +97,29 @@ class_dist = {D:1, B:1, A:1}
 target_calls = [2, 3, 3]（逐 episode）
 ```
 
+## 研究工作台（回放 / 对照 / 交互 / 独立评价）
+
+```bash
+PY=/home/pha/sci-deepseek/.venv/bin/python
+# 记录追踪（零模型调用）：任务→请求→回复→包→候选→评价
+$PY scripts/trace_record.py --position R01
+# 23 份历史分档独立复算（零模型调用）
+$PY scripts/recompute_history.py
+# 同包双候选对照（真实服务）+ 只调 Judge 的双评
+$PY scripts/demo_same_pack.py --root results/demo-same-pack-<date>
+$PY -m framework.cli judge --config configs/demo.interactive-normal-task.yaml \
+  --services configs/services.local.yaml --env-file .env \
+  --root results/demo-same-pack-<date> --candidates <cand1> <cand2> \
+  --rubric rubrics/original-task-grounded-completion.v2.json \
+  --prompt prompts/judge_eval.v4.txt --out <out> --judge-timeout 600 --deadline 700
+# 人工编辑/分支演示（真实服务）
+$PY scripts/demo_branch.py --root results/demo-branch-<date>
+# 网页：回放真实档案、并排对照候选/证据/裁判分歧、交互式普通任务
+$PY -m framework.webapp --port 8765    # → http://127.0.0.1:8765（仅本机）
+```
+
+交付细节见 `docs/delivery/plan-execution-20261120.md`。
+
 ## 上下文预算
 
 服务声明 `context_window`（token，例如 InferKnock 与本机 vLLM 都用 32768）。框架不依赖具体
