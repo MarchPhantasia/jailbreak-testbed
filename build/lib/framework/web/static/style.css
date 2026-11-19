@@ -1,0 +1,54 @@
+/* 越狱研究工作台 —— 功能优先，视觉从简 */
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 "Noto Sans CJK SC", sans-serif; background: #f6f7f9; color: #1c2733; }
+header { display: flex; align-items: center; gap: 24px; padding: 10px 18px; background: #10233b; color: #fff; }
+header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+nav button { background: #24405e; color: #dce7f2; border: 0; padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+nav button.active { background: #4d8fd1; color: #fff; }
+section { padding: 14px 18px; }
+.cols { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.panel { background: #fff; border: 1px solid #dde4ec; border-radius: 8px; min-width: 300px; }
+.panel.wide { flex: 1 1 640px; }
+.panel h2 { font-size: 14px; margin: 0; padding: 8px 12px; border-bottom: 1px solid #e8edf3; background: #f2f5f9; }
+.panel .body { padding: 10px 12px; }
+.row { display: flex; gap: 8px; margin: 6px 0; align-items: center; }
+.hint { color: #66788c; font-size: 12px; }
+button { background: #2b6cb0; color: #fff; border: 0; border-radius: 5px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+button:hover { background: #3457a1; }
+button:disabled { background: #9db3c8; cursor: not-allowed; }
+input, select { padding: 6px 8px; border: 1px solid #c6d2de; border-radius: 5px; font-size: 13px; }
+.run-item { padding: 8px 6px; border-bottom: 1px solid #edf1f6; cursor: pointer; }
+.run-item:hover { background: #eef4fb; }
+.run-item.sel { background: #dceaf8; }
+.ep-item { padding: 6px; border-bottom: 1px solid #edf1f6; cursor: pointer; }
+.ep-item:hover { background: #eef4fb; }
+.ep-item.sel { background: #dceaf8; }
+.ep-item .no-final { color: #b3410f; font-size: 12px; }
+.step { border: 1px solid #e2e8f0; border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 8px 0; background: #fbfdff; }
+.step .meta { color: #66788c; font-size: 12px; margin-bottom: 3px; }
+.step .content { white-space: pre-wrap; word-break: break-word; }
+.step.k-propose { border-left-color: #7c9ec9; }
+.step.k-request, .step.k-view { border-left-color: #3d8f5f; }
+.step.k-response { border-left-color: #2b6cb0; }
+.step.k-refusal { border-left-color: #c0392b; }
+.step.k-pack { border-left-color: #b58a2b; }
+.step.k-assembled, .step.k-selected { border-left-color: #8656c9; }
+.step.k-edited { border-left-color: #d35400; background: #fff8f2; }
+.step.k-branch { border-left-color: #16a085; background: #f0fbf7; }
+.step.k-paused { border-left-color: #95a5a6; }
+.step.k-terminate { border-left-color: #555; }
+.verdict { border: 1px solid #dcd; background: #faf8fd; padding: 8px 10px; border-radius: 6px; margin: 6px 0; }
+.verdict .cls-D { color: #b3410f; font-weight: 700; }
+.verdict .cls-A, .verdict .cls-C { color: #3d6f9e; font-weight: 700; }
+details { margin: 4px 0; }
+details summary { cursor: pointer; color: #2b6cb0; }
+details .ev-text { background: #f4f7fa; border-left: 3px solid #9db3c8; padding: 6px 8px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+.claim { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.claim .claim-text { font-weight: 600; }
+.claim .no-ev { color: #b3410f; }
+.tag { display: inline-block; background: #eef2f6; border-radius: 4px; padding: 1px 6px; font-size: 12px; margin-right: 4px; }
+.tag.ok { background: #e2f4e9; }
+.tag.bad { background: #fdeae4; }
+.node { display: inline-block; border: 1px solid #c6d2de; border-radius: 6px; padding: 4px 8px; margin: 3px; background: #fff; font-size: 12px; }
+.node.cur { border-color: #2b6cb0; background: #eaf3fc; }
+pre.code { background: #f4f7fa; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 12px; }

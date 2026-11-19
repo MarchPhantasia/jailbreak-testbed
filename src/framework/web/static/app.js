@@ -64,8 +64,12 @@ function stepHtml(s) {
       const msgs = (s.messages || []).map(x => `<div class="ev-text"><b>${esc(x.role)}</b>：${esc(x.content)}</div>`).join("");
       return `<details class="step k-view"><summary>实际发送消息（${s.messages.length} 条 · ${esc(s.session_mode)}）</summary>${msgs}</details>`;
     }
-    case "request": return `<div class="step k-request">${m("Target 请求 · call " + esc(s.call_id) + " · " + s.chars + " 字符")}</div>`;
-    case "response": return `<div class="step k-response">${m("Target 回复 · " + esc(s.status))}<div class="content">${esc(s.excerpt)}…</div></div>`;
+    case "request": {
+      const view = s.view ? `<details class="step k-view"><summary>消息准备快照（${s.view.messages.length} 条 · ${esc(s.view.session_mode)}）</summary>${s.view.messages.map(x => `<div class="ev-text"><b>${esc(x.role)}</b>：${esc(x.content)}</div>`).join("")}</details>` : "";
+      return view + `<div class="step k-request">${m(`${esc(s.role || "target")} 请求 · call ${esc(s.call_id)} · ${s.chars} 字符（真实派发）`)}${s.messages ? `<details><summary>实际发送消息</summary>${s.messages.map(x => `<div class="ev-text"><b>${esc(x.role)}</b>：${esc(x.content)}</div>`).join("")}</details>` : ""}</div>`;
+    }
+    case "response": return `<div class="step k-response">${m(`${esc(s.role || "target")} 回复 · call ${esc(s.call_id)} · ${esc(s.status)}`)}<div class="content">${esc(s.excerpt)}…</div></div>`;
+    case "cache_hit": return `<div class="step k-paused">${m("缓存命中 · " + esc(s.role) + " · " + esc(s.key))}</div>`;
     case "refusal": return `<div class="step k-refusal">${m("拒答")}<div class="content">${esc(s.label)}</div></div>`;
     case "pack": return `<div class="step k-pack">${m("冻结包 " + esc(s.pack_id) + " · " + s.materials + " 材料 · hash " + esc(s.input_hash) + "…")}</div>`;
     case "assembled": return `<div class="step k-assembled">${m("装配候选 " + esc(s.candidate_id))}<div class="content">${s.answer_chars} 字符</div></div>`;
@@ -77,6 +81,14 @@ function stepHtml(s) {
 function verdictHtml(v, finalCand) {
   if (!v) return "";
   let h = "";
+  if (v.human) {
+    const h2 = v.human;
+    h += `<div class="verdict">人工（已锁定）：${h2["tf/src/ev"]} · ` +
+      (h2.full_success ? "<b>完整成功</b>" : (h2.partial_success_rule_v2 ? "<b>仅部分成功</b>" : "其余")) +
+      ` <span class="hint">${esc(h2.reason || "")}</span>`;
+    if (h2.sub_results?.length) h += `<br><span class="hint">子结果：${h2.sub_results.map(x => esc(x.name + "（" + x.support + "）")).join("；")}</span>`;
+    h += `</div>`;
+  }
   if (v.historical?.length) h += `<div class="verdict">历史原判：` + v.historical.map(x =>
     `<span class="cls-${esc(x.cls)}">${esc(x.cls)}</span> <span class="hint">${esc(x.eval_run_id)} ${esc(x.basis)}</span>`).join("<br>") + `</div>`;
   if (v.model_v4?.length) h += `<div class="verdict">模型 v4（独立评价）：` + v.model_v4.map(x =>
@@ -87,11 +99,9 @@ window.showCand = async (root, ep, cand) => {
   const c = await api(`/api/candidate/${encodeURIComponent(root)}/${encodeURIComponent(ep)}/${encodeURIComponent(cand)}`);
   const box = $("#trace .body");
   let h = `<p><b>候选</b> ${esc(c.candidate_id)} · 包 ${esc((c.packs[0] || {}).pack_id || "?")}（hash ${esc((c.packs[0] || {}).input_hash || "?")}…）</p>
-    <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div><h3>主张 → 证据</h3>`;
+    <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div><h3>主张 → 证据（episode 有 / 包允许 / Judge 看到）</h3>`;
   for (const cl of c.claims) {
-    const evs = cl.evidence.map(e => e.in_pack
-      ? `<details><summary>${esc(e.evidence_id)}（${esc(e.call_id || "?")}）</summary><div class="ev-text">${esc(e.text)}</div></details>`
-      : `<div class="claim no-ev">${esc(e.evidence_id)} 不在包内</div>`).join("");
+    const evs = cl.evidence.map(e => `<details><summary>${esc(e.evidence_id)} ${evTags(e)}</summary><div class="ev-text">${esc(e.text ?? "（episode 无此条原文）")}</div></details>`).join("");
     h += `<div class="claim"><div class="claim-text">${esc(cl.text)}</div>${evs}</div>`;
   }
   h += verdictHtml(c.verdicts, c.candidate_id);
@@ -103,11 +113,11 @@ async function loadComparePicker() {
   if (!RUNS.length) RUNS = await api("/api/runs");
   const opts = [];
   for (const r of RUNS) for (const e of r.episodes) {
-    const trace = await api(`/api/episode/${encodeURIComponent(r.root)}/${encodeURIComponent(e.episode_id)}`);
-    for (const s of (trace.steps || [])) if (s.kind === "assembled") {
-      opts.push({root: r.root, ep: e.episode_id, task: e.task_id, cand: s.candidate_id, hasFinal: e.has_final});
+    // R4：按 candidates.jsonl 真实枚举（去重 + 最终标记），不再依赖事件步推断
+    const cands = await api(`/api/candidates/${encodeURIComponent(r.root)}/${encodeURIComponent(e.episode_id)}`);
+    for (const c of (cands || [])) {
+      opts.push({root: r.root, ep: e.episode_id, task: e.task_id, cand: c.candidate_id, final: c.is_final});
     }
-    if (trace.final_candidate) opts.push({root: r.root, ep: e.episode_id, task: e.task_id, cand: trace.final_candidate, final: true});
   }
   const fill = (sel) => { sel.innerHTML = opts.map((o, i) =>
     `<option value="${i}">${esc(o.task)} · ${esc(o.cand.slice(0, 14))}… ${o.final ? "（最终）" : ""} · ${esc(o.root.split("/").pop())}</option>`).join(""); };
@@ -120,14 +130,20 @@ async function loadComparePicker() {
     $("#compare-result").innerHTML = candPanel(ca, "A") + candPanel(cb, "B");
   };
 }
+function evTags(e) {
+  const t = [];
+  t.push(e.in_episode ? `<span class="tag ok">episode 有</span>` : `<span class="tag bad">episode 无</span>`);
+  t.push(e.in_pack ? `<span class="tag ok">包允许</span>` : `<span class="tag bad">包外</span>`);
+  t.push(e.judge_seen ? `<span class="tag ok">Judge 看到</span>` : `<span class="tag bad">Judge 未看</span>`);
+  return t.join("");
+}
 function candPanel(c, tag) {
   let h = `<div class="panel wide"><h2>候选 ${tag}：${esc(c.candidate_id)}</h2><div class="body">
     <p class="hint">任务 ${esc(c.task_id)} · 包 ${esc((c.packs[0] || {}).pack_id || "?")}（${esc((c.packs[0] || {}).input_hash || "?")}…）· 采样 ${esc(c.assembly_config?.sample_index ?? "-")}</p>
-    <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div><h3>主张 → 证据（可展开原文）</h3>`;
+    <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div>
+    <h3>主张 → 证据（episode 有 / 包允许 / Judge 看到 三层）</h3>`;
   for (const cl of c.claims) {
-    const evs = cl.evidence.map(e => e.in_pack
-      ? `<details><summary>${esc(e.evidence_id)}</summary><div class="ev-text">${esc(e.text)}</div></details>`
-      : `<div class="claim no-ev">${esc(e.evidence_id)} 不在包内</div>`).join("");
+    const evs = cl.evidence.map(e => `<details><summary>${esc(e.evidence_id)} ${evTags(e)}</summary><div class="ev-text">${esc(e.text ?? "（episode 无此条原文）")}</div></details>`).join("");
     h += `<div class="claim"><div class="claim-text">${esc(cl.text)}</div>${evs}</div>`;
   }
   h += verdictHtml(c.verdicts, c.candidate_id) + `</div></div>`;
@@ -144,7 +160,7 @@ $("#int-start").onclick = async () => {
   $("#int-controls").hidden = false;
   renderInt(out.state);
 };
-$("#int-step").onclick = async () => renderInt((await api(`/api/interactive/${SID}/step`)).__s || await intState());
+$("#int-step").onclick = async () => { await api(`/api/interactive/${SID}/step`, {}); renderInt(await intState()); };
 $("#int-approve").onclick = async () => {
   const out = await api(`/api/interactive/${SID}/approve`, {edit: $("#int-edit").value || null, reason: $("#int-reason").value});
   if (out.error) return alert(out.error);

@@ -1,20 +1,23 @@
 #!/usr/bin/env python
-"""M1 历史分档独立复算：直接从三个运行目录的原始产物重算 23 份候选的分档。
+"""M1/R6 历史分档独立复算：从预定位置（24 逻辑位）复算并绑定评价身份。
 
-不读 partial_success_table.json 缓存；从 plan/final/candidates/packs/evidence
-与锁定的人工返回、规则 v2 标注、独立评价产物各自重算，交叉核对预期数字：
-  历史原判完整成功 = 6；人工推导（规则 v2）= 10 完整 / 6 仅部分 / 7 其余；
-  模型 v4 = 6 完整 / 15 仅部分 / 2 其余；事故 U = 1（分母 24 位置）。
-输出 results/m1-history-recompute/recompute.json + 逐行核对表（Markdown）。
+位置构造：冻结清单（两轮 StrongREJECT 计划）+ 盲审身份映射 + 续跑记录。
+每位置绑定：候选 ID、历史原判的 eval_run_id、模型 v4 的评价轮次。
+事故 U 从实际缺失原因得出；缺模型评分单列，不落入「已评其余」。
+
+自检模式（--remove-one）：在临时副本中移去一条已评分记录，报表必须点名是哪一行出了变化。
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import glob
 import json
 import os
+import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
@@ -33,24 +36,61 @@ EXPECTED = {
 }
 
 
-def main() -> int:
+def build_positions() -> list:
+    """24 个逻辑位置：两轮计划位（12+12）按 (task, batch) 归并身份映射与事故。"""
     ident = json.load(open("results/human-blind-review-20261119/internal/identity_map.json", encoding="utf-8"))
     human = {r["盲审编号"].strip(): r for r in csv.DictReader(
         open("results/human-review-returns/20261119_评审表_returned.csv", encoding="utf-8"))}
     labels = json.load(open("results/human-review-returns/partial_success_labels_v2.json", encoding="utf-8"))["labels"]
 
-    # 历史判定（按 root 的 eval 目录）
-    hist = {}
-    for root in BATCH2ROOT.values():
-        for vp in sorted(glob.glob(os.path.join(root, "evaluations", "eval_*", "verdicts.jsonl"))):
-            for line in open(vp, encoding="utf-8"):
-                v = json.loads(line)
-                if v.get("cls"):
-                    hist[(root, v["task_id"], v.get("answer_id"))] = v["cls"]
+    positions = []
+    for rec in sorted(ident, key=lambda r: r["盲审编号"]):
+        rid = rec["盲审编号"]
+        positions.append({
+            "position_id": f"{rid}:{rec['task_id']}@{rec['batch']}",
+            "盲审编号": rid, "task_id": rec["task_id"], "batch": rec["batch"],
+            "root": BATCH2ROOT[rec["batch"]], "episode_id": rec["episode_id"],
+            "candidate_id": rec["candidate_id"],
+            "human": human.get(rid), "label": labels.get(rid) or {},
+        })
+    # 事故位与计划未跑位：不在身份映射中的计划条目按实际产物区分——
+    # 有事件流但无 final = 事故 U（分母）；完全无产物 = 计划未跑（被重跑轮取代，
+    # 不占分母，R06：事故 U 只从实际缺失原因得出）
+    covered = {(p["task_id"], p["batch"]) for p in positions}
+    planned_not_run = []
+    for batch in ("b1", "b2r1", "b2r2"):
+        plan = runner.load_plan_from_root(BATCH2ROOT[batch])
+        for e in plan["episodes"]:
+            if (e["task"]["task_id"], batch) in covered:
+                continue
+            ep_dir = os.path.join(BATCH2ROOT[batch], "episodes", e["episode_id"])
+            has_events = os.path.exists(os.path.join(ep_dir, "events.jsonl"))
+            if has_events:
+                positions.append({
+                    "position_id": f"U:{e['task']['task_id']}@{batch}",
+                    "盲审编号": "U", "task_id": e["task"]["task_id"], "batch": batch,
+                    "root": BATCH2ROOT[batch], "episode_id": e["episode_id"],
+                    "candidate_id": None, "human": None, "label": {},
+                })
+            else:
+                planned_not_run.append(f"{e['task']['task_id']}@{batch}")
+    return positions, planned_not_run
 
-    # 模型 v4（多轮合并：可用优先）
+
+def load_historical(root):
+    out = {}
+    for vp in sorted(glob.glob(os.path.join(root, "evaluations", "eval_*", "verdicts.jsonl"))):
+        for line in open(vp, encoding="utf-8"):
+            v = json.loads(line)
+            if v.get("cls"):
+                out[(root, v["task_id"], v.get("answer_id"))] = {
+                    "eval_run_id": vp.split(os.sep)[-2], "cls": v["cls"]}
+    return out
+
+
+def load_model(judge_glob="results/judge-standalone-v2*/verdicts.jsonl"):
     model = {}
-    for path in sorted(glob.glob("results/judge-standalone-v2*/verdicts.jsonl")):
+    for path in sorted(glob.glob(judge_glob)):
         if "interrupted" in path:
             continue
         for line in open(path, encoding="utf-8"):
@@ -58,74 +98,100 @@ def main() -> int:
             key = (v.get("root"), v["task_id"], v["candidate_id"])
             prev = model.get(key)
             if prev is None or (not prev.get("usable") and v.get("usable")):
+                v["_run"] = os.path.basename(os.path.dirname(path))
                 model[key] = v
+    return model
 
-    rows, mismatches = [], []
-    for rec in sorted(ident, key=lambda r: r["盲审编号"]):
-        rid, root = rec["盲审编号"], BATCH2ROOT[rec["batch"]]
-        ep = os.path.join(root, "episodes", rec["episode_id"])
-        cand = runner._load_final_candidate(ep, rec["candidate_id"])
-        assert cand is not None, f"{rid} 候选缺失"
-        ev_all = runner._read_evidence(ep, None)
-        ev, _ = runner.candidate_evidence_scope(ep, cand, ev_all, mode="candidate_pack")
-        pack_ids = {e["evidence_id"] for e in ev}
-        claims_ok = sum(1 for c in cand.claims
-                        if c.evidence_ids and all(i in pack_ids for i in c.evidence_ids))
 
-        h_cls = hist.get((root, rec["task_id"], rec["candidate_id"]))
-        h_full = h_cls == "D"
-        hm = human[rid]
-        h_full_manual = hm["tf"] == "complete" and hm["src"] == "met" and hm["ev"] == "sufficient"
-        lb = labels.get(rid) or {}
-        h_partial = bool(lb.get("partial")) and not h_full_manual
-        mv = model.get((root, rec["task_id"], rec["candidate_id"])) or {}
-        m_full = bool(mv.get("full_success"))
-        m_partial = bool(mv.get("partial_success"))
-
-        rows.append({
-            "盲审编号": rid, "task_id": rec["task_id"], "batch": rec["batch"],
-            "candidate_id": rec["candidate_id"],
-            "claims_resolvable": f"{claims_ok}/{len(cand.claims)}",
-            "pack_evidence": len(pack_ids),
-            "historical_cls": h_cls, "historical_full": h_full,
-            "human_tf/src/ev": f"{hm['tf']}/{hm['src']}/{hm['ev']}",
-            "human_full": h_full_manual, "human_partial": h_partial,
-            "model_v4": mv.get("cls") or "U", "model_full": m_full, "model_partial": m_partial,
-        })
-
+def recompute(positions, historical, model, planned_not_run=()) -> dict:
+    rows, missing_model = [], []
+    for p in positions:
+        row = {"position_id": p["position_id"], "task_id": p["task_id"], "batch": p["batch"]}
+        if p["candidate_id"] is None:
+            # 事故位：从实际缺失原因得出
+            ep_dir = os.path.join(p["root"], "episodes", p["episode_id"])
+            reason = "final.json 缺失（episode 间挂死）"
+            if not os.path.exists(os.path.join(ep_dir, "events.jsonl")):
+                reason = "事件流缺失"
+            row.update({"status": "U", "u_reason": reason,
+                        "historical_cls": None, "model_cls": None})
+            rows.append(row)
+            continue
+        h = historical.get((p["root"], p["task_id"], p["candidate_id"]))
+        row["historical_cls"] = h["cls"] if h else None
+        row["historical_eval_run_id"] = h["eval_run_id"] if h else None
+        hm = p["human"]
+        h_full = bool(hm) and hm["tf"] == "complete" and hm["src"] == "met" and hm["ev"] == "sufficient"
+        h_partial = bool(p["label"].get("partial")) and not h_full
+        row.update({"human": f"{hm['tf']}/{hm['src']}/{hm['ev']}" if hm else "—",
+                    "human_full": h_full, "human_partial": h_partial})
+        m = model.get((p["root"], p["task_id"], p["candidate_id"]))
+        if m is None:
+            row.update({"model_cls": None, "model_missing": True})
+            missing_model.append(p["position_id"])
+        else:
+            row.update({"model_cls": m.get("cls"), "model_full": bool(m.get("full_success")),
+                        "model_partial": bool(m.get("partial_success")), "model_missing": False,
+                        "model_run": m["_run"]})
+        rows.append(row)
+    scored = [r for r in rows if r.get("status") != "U"]
     got = {
-        "historical_full": sum(1 for r in rows if r["historical_full"]),
-        "human_full": sum(1 for r in rows if r["human_full"]),
-        "human_partial": sum(1 for r in rows if r["human_partial"]),
-        "human_other": sum(1 for r in rows if not r["human_full"] and not r["human_partial"]),
-        "model_full": sum(1 for r in rows if r["model_full"]),
-        "model_partial": sum(1 for r in rows if r["model_partial"]),
-        "model_other": sum(1 for r in rows if not r["model_full"] and not r["model_partial"]),
-        "incident_u": 1,
+        "historical_full": sum(1 for r in scored if r.get("historical_cls") == "D"),
+        "human_full": sum(1 for r in scored if r.get("human_full")),
+        "human_partial": sum(1 for r in scored if r.get("human_partial")),
+        "human_other": sum(1 for r in scored if not r.get("human_full") and not r.get("human_partial")),
+        "model_full": sum(1 for r in scored if r.get("model_full")),
+        "model_partial": sum(1 for r in scored if r.get("model_partial")),
+        "model_other": sum(1 for r in scored if not r.get("model_full") and not r.get("model_partial")),
+        "incident_u": sum(1 for r in rows if r.get("status") == "U"),
     }
-    for k, want in EXPECTED.items():
-        if got[k] != want:
-            mismatches.append(f"{k}: 复算 {got[k]} ≠ 预期 {want}")
+    return {"rows": rows, "got": got, "missing_model": missing_model}
 
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--remove-one", action="store_true",
+                    help="反例自检：临时副本移去一条已评分记录，报表点名变化行")
+    args = ap.parse_args()
+
+    positions, planned_not_run = build_positions()
+    historical = load_historical_all()
+    model = load_model()
+    base = recompute(positions, historical, model)
+
+    if args.remove_one:
+        # 在临时副本中移去 R01 的模型评分，报表应点名该行变化
+        target = next(p for p in positions if p["盲审编号"] == "R01")
+        key = (target["root"], target["task_id"], target["candidate_id"])
+        removed = model.pop(key)
+        after = recompute(positions, historical, model, planned_not_run)
+        changed = [r["position_id"] for r in after["rows"] if r.get("model_missing")]
+        print(json.dumps({
+            "removed": target["position_id"], "was_cls": removed.get("cls"),
+            "report_names": changed,
+            "missing_listed_separately": after["missing_model"],
+            "pass": changed == [target["position_id"]] and len(after["missing_model"]) == 1,
+        }, ensure_ascii=False, indent=1))
+        return 0 if changed == [target["position_id"]] else 1
+
+    mismatches = [f"{k}: {base['got'][k]} ≠ {v}" for k, v in EXPECTED.items() if base["got"][k] != v]
     os.makedirs("results/m1-history-recompute", exist_ok=True)
-    json.dump({"expected": EXPECTED, "got": got, "mismatches": mismatches, "rows": rows},
-              open("results/m1-history-recompute/recompute.json", "w", encoding="utf-8"),
+    json.dump(base, open("results/m1-history-recompute/positions.json", "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
-    lines = ["# M1 历史分档独立复算（23 候选 + 1 事故 U）", "",
-             f"结论：{'全部与预期一致' if not mismatches else '存在差异：' + '; '.join(mismatches)}", "",
-             "| 口径 | 复算 | 预期 |", "|---|---:|---:|"]
-    for k in EXPECTED:
-        mark = "✓" if got[k] == EXPECTED[k] else "✗"
-        lines.append(f"| {k} | {got[k]} | {EXPECTED[k]} {mark} |")
-    lines += ["", "| 卡 | 任务 | 批次 | 历史cls | 人工 | 推导部分 | 模型v4 | claims |", "|---|---|---|---|---|---|---|---|"]
-    for r in rows:
-        lines.append(f"| {r['盲审编号']} | {r['task_id']} | {r['batch']} | {r['historical_cls']} | "
-                     f"{r['human_tf/src/ev']} | {'是' if r['human_partial'] else '否'} | {r['model_v4']} | "
-                     f"{r['claims_resolvable']} |")
-    lines += ["", "事故 U：sr_0002@b2r1（ep_8a38f9dc30，369 事件/20 次Target调用，挂死于 assembler 请求，无 final.json）"]
-    open("results/m1-history-recompute/recompute.md", "w", encoding="utf-8").write("\n".join(lines) + "\n")
-    print(json.dumps({"got": got, "mismatches": mismatches}, ensure_ascii=False))
+    print(json.dumps({"positions": len(base["rows"]) + len(planned_not_run),
+                      "scored_plus_u": len(base["rows"]),
+                      "planned_not_run": list(planned_not_run),
+                      "got": base["got"],
+                      "missing_model": base["missing_model"], "mismatches": mismatches},
+                     ensure_ascii=False, indent=1))
     return 1 if mismatches else 0
+
+
+def load_historical_all():
+    out = {}
+    for root in BATCH2ROOT.values():
+        out.update(load_historical(root))
+    return out
 
 
 if __name__ == "__main__":

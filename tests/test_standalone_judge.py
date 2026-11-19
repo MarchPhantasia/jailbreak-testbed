@@ -7,6 +7,7 @@ import os
 import pytest
 
 from framework import standalone
+from framework import runner
 from framework.runner import _evidence_text_checksum, pack_material_hash
 from framework.evaluation import (
     parse_judge_output,
@@ -293,3 +294,107 @@ def test_discover_artifacts_candidate_filter(tmp_path):
     arts = standalone.discover_artifacts([str(root)], candidates=["cand_2"])
     assert [a.candidate.candidate_id for a in arts] == ["cand_2"]
     assert standalone.discover_artifacts([str(root)], candidates=["cand_missing"]) == []
+
+
+def test_missing_pack_marks_U_zero_judge_calls(tmp_path, monkeypatch):
+    """R3 反例一：候选声明了包但包缺失 → 该位置 U、原因入 basis、Judge 调用 0。"""
+    root = _write_run_root(tmp_path / "run")
+    ep = root / "episodes" / "ep_1"
+    # 声明一个不存在的包
+    cand = runner_load_candidate(ep, "cand_1")
+    cand.evidence_pack_ids = ["pack_missing"]
+    rewrite_candidate(ep, "cand_1", cand)
+    art = standalone.load_artifact(str(root), "t1")
+    assert art is not None
+    assert art.scope_info.get("status") != "pack"  # pack_not_declared / missing_pack
+
+    calls = {"n": 0}
+
+    class CountingJudge:
+        rubric = {"id": "x", "version": "1"}
+        judge_ref = "j@v"
+        def evaluate(self, *a, **k):
+            calls["n"] += 1
+            raise AssertionError("缺包时不得调用 Judge")
+
+    v = standalone.judge_artifact(CountingJudge(), art, eval_run_id="e1")
+    assert v.usable is False
+    assert "pack_integrity" in v.basis
+    assert calls["n"] == 0
+
+
+def test_no_claim_candidate_with_missing_pack_also_U(tmp_path):
+    """R3 反例二：无显式引用的候选 + 缺包 → 同样 U（曾在缺包时被照常送评）。"""
+    root = _write_run_root(tmp_path / "run")
+    ep = root / "episodes" / "ep_1"
+    cand = runner_load_candidate(ep, "cand_1")
+    cand.evidence_pack_ids = ["pack_missing"]
+    cand.claims = []  # 无引用
+    rewrite_candidate(ep, "cand_1", cand)
+    art = standalone.load_artifact(str(root), "t1")
+    assert art.scope_info.get("status") != "pack"
+
+    class NoCall:
+        rubric = {"id": "x", "version": "1"}
+        judge_ref = "j@v"
+        def evaluate(self, *a, **k):
+            raise AssertionError("缺包时不得调用 Judge")
+
+    v = standalone.judge_artifact(NoCall(), art, eval_run_id="e1")
+    assert v.usable is False and "pack_integrity" in v.basis
+
+
+def test_verifiable_empty_pack_still_judged(tmp_path):
+    """显式冻结的可核验空包仍按原协议送评（不因空而 U）。"""
+    root = _write_run_root(tmp_path / "run")
+    ep = root / "episodes" / "ep_1"
+    # 建一个合法空包
+    materials = []
+    pack_hash = pack_material_hash(materials)
+    with open(ep / "packs.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"pack_id": "pack_empty", "task_id": "t1", "materials": materials,
+                            "gaps": [], "notes": [], "components": [],
+                            "input_hash": pack_hash, "input_hash_v2": "he2"}) + "\n")
+    cand = runner_load_candidate(ep, "cand_1")
+    cand.evidence_pack_ids = ["pack_empty"]
+    cand.claims = []
+    rewrite_candidate(ep, "cand_1", cand)
+    art = standalone.load_artifact(str(root), "t1")
+    assert art.scope_info.get("status") == "pack"  # 空包但可核验 → 正常送评
+    assert art.evidence == []
+
+
+def test_resume_protocol_mismatch_not_reused(tmp_path):
+    """R9：换判据（协议不同）→ 同候选重评是新记录，续跑不复用旧结果。"""
+    prior = tmp_path / "prior.jsonl"
+    prior.write_text(json.dumps({
+        "task_id": "t1", "candidate_id": "cand_1", "usable": True,
+        "protocol": {"rubric_id": "ogc", "rubric_version": "1", "prompt_sha256": "aaa"},
+    }) + "\n", encoding="utf-8")
+    same = standalone._load_done_keys([str(prior)], protocol={
+        "rubric_id": "ogc", "rubric_version": "1", "prompt_sha256": "aaa"})
+    diff = standalone._load_done_keys([str(prior)], protocol={
+        "rubric_id": "ogc", "rubric_version": "2", "prompt_sha256": "aaa"})
+    assert same == {("t1", "cand_1")}
+    assert diff == set()  # 版本不同 → 不复用
+
+
+def runner_load_candidate(ep, cid):
+    return runner._load_final_candidate(str(ep), cid)
+
+
+def rewrite_candidate(ep, cid, cand):
+    rows = [json.loads(l) for l in open(ep / "candidates.jsonl", encoding="utf-8")]
+    out = []
+    for r in rows:
+        if r.get("candidate_id") == cid:
+            out.append({"candidate_id": cand.candidate_id, "answer": cand.answer,
+                        "claims": [{"claim_id": c.claim_id, "text": c.text,
+                                    "evidence_ids": list(c.evidence_ids)} for c in cand.claims],
+                        "evidence_pack_ids": list(cand.evidence_pack_ids),
+                        "gaps": list(cand.gaps), "fallback_render": False})
+        else:
+            out.append(r)
+    with open(ep / "candidates.jsonl", "w", encoding="utf-8") as f:
+        for r in out:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import json
 import os
@@ -26,14 +27,33 @@ from .interactive import InteractiveSession
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "static")
 
-# 显式可回放的运行目录（真实档案 + 演示），避免把 results/ 下杂项全部暴露
-KNOWN_RUNS = [
+# 固定档案（真实 StrongREJECT 批次）；交互/演示运行从 results/ 动态发现（R10：
+# 收尾后刷新仍能找回自己创建的运行）
+BATCH2ROOT = {
+    "b1": "results/mainflow7_sr_batch1_20261117_r1",
+    "b2r1": "results/mainflow8_sr_batch2_20261117_r1",
+    "b2r2": "results/mainflow8_sr_batch2_20261117_r2",
+}
+ARCHIVE_RUNS = [
     ("results/mainflow7_sr_batch1_20261117_r1", "StrongREJECT 批次1（12 任务）"),
     ("results/mainflow8_sr_batch2_20261117_r1", "StrongREJECT 批次2·r1（12 计划位，含事故 U）"),
     ("results/mainflow8_sr_batch2_20261117_r2", "StrongREJECT 批次2·r2（9 任务）"),
-    ("results/demo-same-pack-20261120", "演示·普通资料任务（同包双候选）"),
-    ("results/demo-branch-20261120", "演示·人工编辑与分支（双轨迹）"),
 ]
+
+
+def _discover_runs() -> List[str]:
+    """发现交互/演示运行目录：results/ 下含 plan.json 且非固定档案、非评价目录。"""
+    out = []
+    for name in sorted(os.listdir("results")):
+        root = os.path.join("results", name)
+        if not os.path.isdir(root) or not os.path.exists(os.path.join(root, "plan.json")):
+            continue
+        if any(root == k for k, _ in ARCHIVE_RUNS):
+            continue
+        if name.startswith(("judge-standalone", "m1-history", "human-", "candidate-handoff")):
+            continue
+        out.append(root)
+    return out
 KNOWN_JUDGE_DIRS = [
     "results/judge-standalone-v2*",
     "results/demo-same-pack-20261120-judge",
@@ -48,7 +68,8 @@ _LOCK = threading.Lock()
 # --------------------------------------------------------------------------
 
 def _safe_root(root: str) -> Optional[str]:
-    for known, _ in KNOWN_RUNS:
+    candidates = [k for k, _ in ARCHIVE_RUNS] + _discover_runs()
+    for known in candidates:
         if os.path.abspath(root) == os.path.abspath(known) and os.path.isdir(known):
             return known
     return None
@@ -56,7 +77,18 @@ def _safe_root(root: str) -> Optional[str]:
 
 def list_runs() -> List[Dict[str, Any]]:
     out = []
-    for root, label in KNOWN_RUNS:
+    runs = list(ARCHIVE_RUNS)
+    for root in _discover_runs():
+        label = os.path.basename(root)
+        try:
+            plan = json.load(open(os.path.join(root, "plan.json"), encoding="utf-8"))
+            note = str(plan.get("note") or "")
+            if "interactive" in note:
+                label = f"交互会话 · {label}"
+        except Exception:  # noqa: BLE001
+            pass
+        runs.append((root, label))
+    for root, label in runs:
         if not os.path.isdir(root):
             continue
         info: Dict[str, Any] = {"root": root, "label": label}
@@ -81,9 +113,39 @@ def list_runs() -> List[Dict[str, Any]]:
     return out
 
 
+def _human_for(task_id: str, root: str) -> Optional[Dict[str, Any]]:
+    """R11：已锁定人工评语与规则 v2 推导等级（模型结果旁直接可见）。"""
+    try:
+        ident = json.load(open("results/human-blind-review-20261119/internal/identity_map.json", encoding="utf-8"))
+        rec = next((r for r in ident if r["task_id"] == task_id and BATCH2ROOT.get(r["batch"]) == root), None)
+        if rec is None:
+            return None
+        human = {r["盲审编号"].strip(): r for r in csv.DictReader(
+            open("results/human-review-returns/20261119_评审表_returned.csv", encoding="utf-8"))}
+        labels = json.load(open("results/human-review-returns/partial_success_labels_v2.json", encoding="utf-8"))["labels"]
+        hm = human.get(rec["盲审编号"])
+        if hm is None:
+            return None
+        lb = labels.get(rec["盲审编号"]) or {}
+        full = hm["tf"] == "complete" and hm["src"] == "met" and hm["ev"] == "sufficient"
+        partial = bool(lb.get("partial")) and not full
+        return {
+            "盲审编号": rec["盲审编号"], "tf/src/ev": f"{hm['tf']}/{hm['src']}/{hm['ev']}",
+            "full_success": full, "partial_success_rule_v2": partial,
+            "sub_results": [{"name": x["name"], "support": x["support"]}
+                            for x in (lb.get("sub_results") or [])],
+            "reason": hm.get("关键理由（一句）", ""),
+        }
+    except Exception:  # noqa: BLE001 - 人工数据缺失不阻塞展示
+        return None
+
+
 def _verdicts_for(root: str, task_id: str, candidate_id: Optional[str]) -> Dict[str, Any]:
-    """历史评价（root/evaluations）+ 模型 v4（judge-standalone 目录）。"""
+    """历史评价（root/evaluations）+ 人工（锁定）+ 模型 v4（judge-standalone 目录）。"""
     out: Dict[str, Any] = {"historical": [], "model_v4": []}
+    human = _human_for(task_id, root)
+    if human is not None:
+        out["human"] = human
     for vp in sorted(glob.glob(os.path.join(root, "evaluations", "eval_*", "verdicts.jsonl"))):
         for line in open(vp, encoding="utf-8"):
             v = json.loads(line)
@@ -124,8 +186,39 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
 
     steps: List[Dict[str, Any]] = []
     events = [json.loads(l) for l in open(os.path.join(ep_dir, "events.jsonl"), encoding="utf-8")]
+    # R2：按顶层 call_id 关联请求与回复；view_snapshot（消息准备快照）挂到其后
+    # 首个 target 请求上；缓存命中单独呈现
+    pending_view: Optional[Dict[str, Any]] = None
     for ev in events:
         t, p = ev.get("type"), ev.get("payload") or {}
+        if t == "view_snapshot":
+            pending_view = {
+                "messages": [{"role": m.get("role"), "content": (m.get("content") or "")}
+                             for m in (p.get("messages") or [])],
+                "session_mode": p.get("session_mode"),
+            }
+            continue
+        if t == "cache_hit":
+            steps.append({"kind": "cache_hit", "node": ev.get("node_id"),
+                          "role": ev.get("role"), "key": str(p.get("key", ""))[:60]})
+            continue
+        if t == "request_sent":
+            role = ev.get("role")
+            view = pending_view if role == "target" else None
+            if role == "target":
+                pending_view = None
+            steps.append({"kind": "request", "node": ev.get("node_id"),
+                          "role": role, "call_id": ev.get("call_id"),
+                          "chars": sum(len(m.get("content") or "") for m in (p.get("messages") or [])),
+                          "messages": ([{"role": m.get("role"), "content": (m.get("content") or "")}
+                                        for m in (p.get("messages") or [])] if role == "target" else None),
+                          "view": view})
+            continue
+        if t == "response_received":
+            steps.append({"kind": "response", "node": ev.get("node_id"),
+                          "role": ev.get("role"), "call_id": ev.get("call_id"),
+                          "status": p.get("status"), "excerpt": (p.get("text") or "")[:600]})
+            continue
         if t == "episode_started":
             steps.append({"kind": "start", "task_id": p.get("task_id"),
                           "prompt": p.get("prompt", ""), "category": p.get("category", "")})
@@ -142,17 +235,6 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
         elif t == "branch_started":
             steps.append({"kind": "branch", "node": ev.get("node_id"),
                           "from_node": p.get("from_node"), "note": p.get("note", "")})
-        elif t == "view_snapshot":
-            steps.append({"kind": "view", "node": ev.get("node_id"),
-                          "session_mode": p.get("session_mode"),
-                          "messages": [{"role": m.get("role"), "content": (m.get("content") or "")}
-                                        for m in (p.get("messages") or [])]})
-        elif t == "request_sent" and ev.get("role") == "target":
-            steps.append({"kind": "request", "node": ev.get("node_id"), "call_id": p.get("call_id"),
-                          "chars": sum(len(m.get("content") or "") for m in (p.get("messages") or []))})
-        elif t == "response_received":
-            steps.append({"kind": "response", "node": ev.get("node_id"), "status": p.get("status"),
-                          "excerpt": (p.get("text") or "")[:600]})
         elif t == "target_refusal":
             steps.append({"kind": "refusal", "node": ev.get("node_id"), "label": p.get("label")})
         elif t == "pack_frozen":
@@ -160,10 +242,16 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
             steps.append({"kind": "pack", "node": ev.get("node_id"),
                           "pack_id": p.get("pack_id"), "input_hash": (p.get("input_hash") or "")[:12],
                           "materials": mats if isinstance(mats, int) else len(mats or [])})
-        elif t in ("assembled",):
-            steps.append({"kind": "assembled", "node": ev.get("node_id"),
-                          "candidate_id": p.get("candidate_id"),
-                          "answer_chars": len(p.get("answer") or "")})
+        elif t == "assembled":
+            # R4：按真实 assembled.payload.candidates[] 枚举（id 字段；claims 可能是计数）
+            for c in (p.get("candidates") or []):
+                cid = c.get("id") if isinstance(c, dict) else None
+                if cid:
+                    cl = c.get("claims")
+                    steps.append({"kind": "assembled", "node": ev.get("node_id"),
+                                  "candidate_id": cid,
+                                  "answer_chars": c.get("chars") or 0,
+                                  "claims": cl if isinstance(cl, int) else len(cl or [])})
         elif t == "candidate_selected":
             steps.append({"kind": "selected", "node": ev.get("node_id"),
                           "candidate_id": p.get("candidate_id"), "basis": p.get("basis", "")})
@@ -193,8 +281,10 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
     task = entry.get("task", {})
     ev_all = runner._read_evidence(ep_dir, None)
     ev_rows = {e["evidence_id"]: e for e in ev_all}
+    episode_ids = set(ev_rows)
     pack_ids = set(cand.evidence_pack_ids or [])
     packs = []
+    pack_allowed: set = set()
     if os.path.exists(os.path.join(ep_dir, "packs.jsonl")):
         for line in open(os.path.join(ep_dir, "packs.jsonl"), encoding="utf-8"):
             row = json.loads(line)
@@ -202,6 +292,13 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
                 packs.append({"pack_id": row["pack_id"],
                               "input_hash": (row.get("input_hash") or "")[:16],
                               "materials": len(row.get("materials") or [])})
+                for m in row.get("materials") or []:
+                    pack_allowed.update(m.get("evidence_ids") or [])
+    # R5：Judge 实际看到的证据（与在线选择同规则：cited-first-whole@v2，cap 40000）
+    cited_ids = [i for c in cand.claims for i in c.evidence_ids]
+    from .evaluation import plan_evidence
+    judge_rows, judge_plan = plan_evidence(ev_all, cited_ids, cap_chars=40000)
+    judge_seen = {r["evidence_id"] for r in judge_rows}
     claims = []
     for c in cand.claims:
         evs = []
@@ -209,7 +306,9 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
             row = ev_rows.get(eid)
             evs.append({"evidence_id": eid,
                         "text": (row.get("text") if row else None),
-                        "in_pack": row is not None,
+                        "in_episode": eid in episode_ids,
+                        "in_pack": eid in pack_allowed,
+                        "judge_seen": eid in judge_seen,
                         "call_id": (row or {}).get("call_id")})
         claims.append({"claim_id": c.claim_id, "text": c.text, "evidence": evs})
     return {
@@ -221,6 +320,34 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
     }
 
 
+def episode_candidates(root: str, episode_id: str) -> List[Dict[str, Any]]:
+    """按 candidates.jsonl 枚举全部候选（去重），标记最终选择（R4）。"""
+    ep_dir = os.path.join(root, "episodes", episode_id)
+    cand_fp = os.path.join(ep_dir, "candidates.jsonl")
+    final_fp = os.path.join(ep_dir, "final.json")
+    final_id = None
+    if os.path.exists(final_fp):
+        final_id = json.load(open(final_fp, encoding="utf-8")).get("final_candidate_id")
+    out, seen = [], set()
+    if os.path.exists(cand_fp):
+        for line in open(cand_fp, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cid = row.get("candidate_id")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.append({"candidate_id": cid, "is_final": cid == final_id,
+                        "answer_chars": len(row.get("answer") or ""),
+                        "claims": len(row.get("claims") or [])})
+    return out
+
+
 # --------------------------------------------------------------------------
 # 交互会话
 # --------------------------------------------------------------------------
@@ -230,6 +357,7 @@ def start_session(cfg_path: str, services: str, env_file: str, out_root: str,
     from framework.cli import _load_config
     import argparse as _ap
     cfg = _load_config(_ap.Namespace(config=cfg_path, services=services, env_file=env_file))
+    ctx = runner.build_run_context(cfg)  # R7：完整解析（含阶段预算/模板/停止策略）
     from framework.datasets import load_split
     from framework.runner import resolve_path
     ds = cfg.get("datasets", {}) or {}
@@ -241,7 +369,7 @@ def start_session(cfg_path: str, services: str, env_file: str, out_root: str,
     task = (dev if ds.get("split", "dev") == "dev" else held)[0]
     if prompt:
         task.prompt = prompt
-    sess = InteractiveSession(cfg, task, out_root)
+    sess = InteractiveSession(cfg, task, out_root, ctx=ctx)
     sid = f"s_{int(time.time())}_{len(_SESSIONS)}"
     with _LOCK:
         _SESSIONS[sid] = sess
@@ -295,6 +423,12 @@ class Handler(BaseHTTPRequestHandler):
                 if root is None:
                     return self._json({"error": "未知运行目录"}, 404)
                 return self._json(episode_trace(root, parts[1]))
+            if path.startswith("/api/candidates/"):
+                parts = [urllib.parse.unquote(x) for x in path.split("/")[3:]]
+                root = _safe_root(parts[0])
+                if root is None:
+                    return self._json({"error": "未知运行目录"}, 404)
+                return self._json(episode_candidates(root, parts[1]))
             if path.startswith("/api/candidate/"):
                 parts = [urllib.parse.unquote(x) for x in path.split("/")[3:]]
                 root = _safe_root(parts[0])

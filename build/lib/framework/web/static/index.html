@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>越狱研究工作台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>越狱研究工作台</h1>
+  <nav>
+    <button data-view="runs" class="active">回放</button>
+    <button data-view="compare">对照</button>
+    <button data-view="interactive">交互</button>
+  </nav>
+</header>
+
+<!-- 回放 -->
+<section id="view-runs">
+  <div class="cols">
+    <div id="run-list" class="panel"><h2>运行</h2><div class="body"></div></div>
+    <div id="episode-list" class="panel"><h2>任务</h2><div class="body"></div></div>
+    <div id="trace" class="panel wide"><h2>记录链</h2><div class="body"></div></div>
+  </div>
+</section>
+
+<!-- 对照 -->
+<section id="view-compare" hidden>
+  <div id="compare-picker" class="panel">
+    <h2>选择两份候选</h2>
+    <div class="body">
+      <div class="row">
+        <select id="cmp-side-a"></select>
+        <select id="cmp-side-b"></select>
+        <button id="cmp-go">并排对照</button>
+      </div>
+      <p class="hint">同一任务两轮（跨批次）、或同一冻结包的两份装配候选（同包对照）。</p>
+    </div>
+  </div>
+  <div id="compare-result" class="cols"></div>
+</section>
+
+<!-- 交互 -->
+<section id="view-interactive" hidden>
+  <div class="cols">
+    <div class="panel">
+      <h2>交互会话</h2>
+      <div class="body">
+        <button id="int-start">开始普通资料任务</button>
+        <div id="int-status"></div>
+        <div id="int-controls" hidden>
+          <button id="int-step">下一步（控制器提议）</button>
+          <div id="int-pending"></div>
+          <div class="row">
+            <input id="int-edit" placeholder="编辑后的查询（留空=原样批准）" style="flex:1">
+            <input id="int-reason" placeholder="编辑理由" style="width:160px">
+          </div>
+          <div class="row">
+            <button id="int-approve">批准/编辑后发送</button>
+            <button id="int-skip">跳过</button>
+          </div>
+          <div class="row">
+            <input id="int-branch-node" placeholder="从哪个节点开分支（node id）" style="width:220px">
+            <input id="int-branch-note" placeholder="分支说明" style="flex:1">
+            <button id="int-branch">开分支</button>
+          </div>
+          <div class="row">
+            <button id="int-assemble">装配（k=2）</button>
+            <button id="int-finalize">收尾</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="int-tree" class="panel wide"><h2>分支树与消耗</h2><div class="body"></div></div>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

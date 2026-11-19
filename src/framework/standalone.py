@@ -48,6 +48,15 @@ DEFAULT_RUBRIC = {
 }
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def judge_prompt_text(judge: SemanticJudge) -> str:
+    t = getattr(getattr(judge, "template", None), "text", "")
+    return str(t or "")
+
+
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -270,8 +279,12 @@ def _with_service_override(cfg: Dict[str, Any], role: str, patch: Dict[str, Any]
     return new_cfg
 
 
-def _load_done_keys(paths: Sequence[str]) -> set:
-    """从既有 verdicts.jsonl 读回「已可用」的 (task_id, candidate_id)，用于中断后续跑。"""
+def _load_done_keys(paths: Sequence[str], *, protocol: Optional[Dict[str, Any]] = None) -> set:
+    """读回「已可用且同协议」的 (task_id, candidate_id)，用于中断后续跑。
+
+    R9：换判据/换 prompt 属于不同评价协议——同候选的重评是**新评价记录**，
+    续跑只复用同一协议（rubric id+version 与 prompt sha256 均相同）下已可用的结果。
+    """
     keys = set()
     for path in paths or ():
         if not path or not os.path.exists(path):
@@ -280,9 +293,19 @@ def _load_done_keys(paths: Sequence[str]) -> set:
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
-            if row.get("usable") and row.get("candidate_id"):
-                keys.add((row["task_id"], row["candidate_id"]))
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not (row.get("usable") and row.get("candidate_id")):
+                continue
+            if protocol is not None:
+                meta = row.get("protocol") or {}
+                if meta.get("rubric_id") != protocol.get("rubric_id") \
+                        or str(meta.get("rubric_version")) != str(protocol.get("rubric_version")) \
+                        or meta.get("prompt_sha256") != protocol.get("prompt_sha256"):
+                    continue
+            keys.add((row["task_id"], row["candidate_id"]))
     return keys
 
 
@@ -319,7 +342,23 @@ def call_with_deadline(fn, deadline_s: float):
 
 
 def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> Verdict:
-    """复用 evaluate：只喂已有产物，不重建、不改写。"""
+    """复用 evaluate：只喂已有产物，不重建、不改写。
+
+    R3：先做包完整性检查（与在线主入口同一套 candidate_evidence_scope 结论）。
+    候选声明了包但包缺失/损坏/不可核验 → 该位置记 U、basis 记原因，Judge 调用 0。
+    显式冻结的可核验空包仍按原协议送评；无候选/final 缺失的位置在装配阶段就
+    不会被枚举（discover_artifacts 返回 None，不占评价位）。
+    """
+    status = str((art.scope_info or {}).get("status") or "pack")
+    if status != "pack":
+        from .contracts import Status, Verdict as _V
+        reason = f"unscored:pack_integrity:{status}"
+        return _V(
+            verdict_id=new_id("vd"), eval_run_id=eval_run_id,
+            task_id=art.task.task_id, answer_id=art.candidate.candidate_id,
+            rubric_version=str(judge.rubric.get("version", "v1")),
+            judge_ref=judge.judge_ref, cls=None, usable=False, basis=reason, payload={},
+        )
     return judge.evaluate(
         art.task,
         art.candidate,
@@ -329,7 +368,8 @@ def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> 
     )
 
 
-def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any]) -> Dict[str, Any]:
+def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any],
+                *, prompt_sha256: str = "") -> Dict[str, Any]:
     payload = verdict.payload or {}
     full = success_from_rule(payload, rubric.get("success_rule") or {}) if verdict.usable else False
     sub = partial_success_from_rule(
@@ -361,6 +401,11 @@ def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any]) -> Dict
         "pack_ids": list(art.pack_ids),
         "pack_input_hash": list(art.pack_input_hash),
         "evidence_in_view": len(art.evidence),
+        "protocol": {
+            "rubric_id": rubric.get("id"),
+            "rubric_version": rubric.get("version"),
+            "prompt_sha256": prompt_sha256,
+        },
     }
 
 
@@ -374,7 +419,7 @@ def summarize(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "full_success": sum(1 for r in usable if r["full_success"]),
         "partial_success": sum(1 for r in usable if r["partial_success"]),
         "neither": sum(1 for r in usable if not r["full_success"] and not r["partial_success"]),
-        "cls_dist": {c: sum(1 for r in usable if r["cls"] == c) for c in "AD"},
+        "cls_dist": {c: sum(1 for r in usable if r["cls"] == c) for c in "ACD"},
         "tf_dist": {
             k: sum(1 for r in usable if r["task_fulfillment"] == k)
             for k in ("complete", "partial", "none", "uncertain")
@@ -412,8 +457,13 @@ def run(
     if tasks:
         wanted = set(tasks)
         arts = [a for a in arts if a.task_id in wanted]
-    # 续跑：跳过此前已获得可用判定（同 task+candidate）的产物，避免重复花费裁判调用
-    done_keys = _load_done_keys(resume_from)
+    # 续跑：只跳过同协议下已可用的候选（R9：换判据=新评价，不复用）
+    protocol = {
+        "rubric_id": rubric.get("id"),
+        "rubric_version": rubric.get("version"),
+        "prompt_sha256": _sha256_text(open(prompt_path, encoding="utf-8").read()),
+    }
+    done_keys = _load_done_keys(resume_from, protocol=protocol)
     if done_keys:
         before = len(arts)
         arts = [a for a in arts if (a.task_id, a.candidate.candidate_id) not in done_keys]
@@ -444,7 +494,7 @@ def run(
                 art.task, art.candidate, eval_run_id=eval_run_id,
                 rubric_version=str(rubric.get("version", "v1")), failure=failure,
             )
-        row = verdict_row(art, verdict, rubric)
+        row = verdict_row(art, verdict, rubric, prompt_sha256=protocol["prompt_sha256"])
         rows.append(row)
         print(
             f"[{len(rows)}/{len(arts)}] {art.task_id} cls={row['cls']} "
@@ -453,7 +503,25 @@ def run(
             flush=True,
         )
 
-    with open(os.path.join(out_dir, "verdicts.jsonl"), "w", encoding="utf-8") as f:
+    # R9：复用同一输出位置时保留已落盘结果（按 task+candidate 合并，本轮可用优先）
+    out_fp = os.path.join(out_dir, "verdicts.jsonl")
+    if os.path.exists(out_fp):
+        existing = {}
+        for line in open(out_fp, encoding="utf-8"):
+            line = line.strip()
+            if line:
+                try:
+                    row = json.loads(line)
+                    existing[(row.get("task_id"), row.get("candidate_id"))] = row
+                except json.JSONDecodeError:
+                    continue
+        for row in rows:
+            key = (row["task_id"], row["candidate_id"])
+            prev = existing.get(key)
+            if prev is None or (not prev.get("usable") and row.get("usable")) or row.get("usable"):
+                existing[key] = row
+        rows = list(existing.values())
+    with open(out_fp, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     summary = summarize(rows)

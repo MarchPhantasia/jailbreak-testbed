@@ -243,6 +243,10 @@ class InteractiveSession:
             return {"status": "pending_approval", "action": self._action_view(action)}
         res = self.engine.execute(action)
         self.steps += 1
+        if getattr(self.engine, "stop_action_requested", False):
+            # R7：Controller 提出 STOP → 统一收尾（装配判断 + 唯一 terminate），
+            # 不在这里直接 terminate
+            return self.finalize("controller_stop")
         return {"status": "executed", "action_type": action.type.value,
                 "ok": res.status.value if hasattr(res.status, "value") else str(res.status)}
 
