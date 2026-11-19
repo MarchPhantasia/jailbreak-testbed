@@ -91,7 +91,10 @@ def main() -> int:
     ap.add_argument("--identity", default="results/human-blind-review-20261119/internal/identity_map.json")
     ap.add_argument("--human", default="results/human-review-returns/20261119_评审表_returned.csv")
     ap.add_argument("--labels", default="results/human-review-returns/partial_success_labels_v1.json")
-    ap.add_argument("--model", default="results/judge-standalone-v2_20261119/verdicts.jsonl")
+    ap.add_argument(
+        "--model", action="append", default=None,
+        help="模型 v4 verdicts.jsonl（可重复；多轮补评合并，同一候选取首个可用判定）",
+    )
     ap.add_argument("--out-md", default="docs/delivery/partial-success-table.md")
     ap.add_argument("--out-json", default="results/human-review-returns/partial_success_table.json")
     args = ap.parse_args()
@@ -103,18 +106,22 @@ def main() -> int:
     original = load_original(BATCH2ROOT.values())
     stats = artifact_stats(ident)
 
-    model = {}
-    if os.path.exists(args.model):
-        for line in open(args.model, encoding="utf-8"):
+    model_paths = args.model or [
+        "results/judge-standalone-v2_20261119/verdicts.jsonl",
+        "results/judge-standalone-v2-pass2_20261119/verdicts.jsonl",
+        "results/judge-standalone-v2-pass3_20261119/verdicts.jsonl",
+    ]
+    # 多轮合并：首次出现即可，但可用判定优先于 U
+    model_by_cand: dict = {}
+    for path in model_paths:
+        if not path or not os.path.exists(path):
+            continue
+        for line in open(path, encoding="utf-8"):
             row = json.loads(line)
-            model[(row["task_id"], row["batch"] if "batch" in row else None)] = row  # 占位，下面按候选绑定
-    # 模型行按 (task_id, candidate_id) 绑定更稳妥
-    model_by_cand = {}
-    if os.path.exists(args.model):
-        for line in open(args.model, encoding="utf-8"):
-            row = json.loads(line)
-            model_by_cand[(row["task_id"], row["candidate_id"])] = row
-    del model
+            key = (row["task_id"], row["candidate_id"])
+            prev = model_by_cand.get(key)
+            if prev is None or (not prev.get("usable") and row.get("usable")):
+                model_by_cand[key] = row
 
     rows = []
     for rec in sorted(ident, key=lambda r: r["盲审编号"]):
@@ -150,8 +157,11 @@ def main() -> int:
             "引用可解析": f"{st.get('claims_resolvable', 0)}/{st.get('claims_total', 0)}",
             "包证据数": st.get("pack_evidence", 0),
             "人工理由": h["reason"],
-            "模型v4判定": (f"{m['cls']} sub={m['sub_result']} partial={m['partial_success']} "
-                          f"ev={m['sub_result_evidence_count']} cit={m['citation_status']}" if m else "未评"),
+            "模型v4判定": (
+                (f"{m['cls']} sub={m['sub_result']} partial={m['partial_success']} "
+                 f"ev={m['sub_result_evidence_count']} cit={m['citation_status']}")
+                if m and m.get("usable") else "U（硬时限/上游故障）"
+            ),
             "模型v4仅部分成功": bool(m and m["partial_success"]),
         })
 

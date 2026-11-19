@@ -90,7 +90,26 @@ python -m framework.cli judge \
 - 汇总：完整成功/仅部分成功/其余三桶计数；
 - 硬时限：超时返回 `hard_deadline_exceeded`、无时限时直通。
 
-## 7. 已知边界
+## 7. 中断与上游故障的处置（2026-11-19 实测）
+
+本次运行遇到两类中断，处置方式已固化为命令参数：
+
+| 中断类型 | 现象 | 处置 |
+|---|---|---|
+| 上游网关波动（504/TIMEOUT） | 单次调用 5 分钟级失败；同一批里 34 次响应有 16 次 TRANSPORT_ERROR | `--deadline` 保证不卡死；失败的候选记 U 并继续；上游恢复后**用 `--resume-from` 续跑**，已可用的候选自动跳过（不重复花裁判调用） |
+| 进程被外部中断（工具调用 abort） | 只写了 `eval/events.jsonl`，没有 verdicts/summary/provenance | 该输出目录整体改名为 `*-interrupted_<日期>` 留档；用新目录 + `--resume-from` 重跑，产物永远只由完整跑写成 |
+
+续跑示例（自动跳过已完成）：
+
+```bash
+python -m framework.cli judge ... --tasks A B C \
+  --resume-from <上一轮>/verdicts.jsonl [--resume-from <再上一轮>/verdicts.jsonl]
+```
+
+`provenance.json` 里会记录 `resume_from` 与 `skipped_already_usable`，续跑不会污染可比性：
+每轮的 rubric/prompt sha256 与证据口径都各自留档。
+
+## 8. 已知边界
 
 1. 硬时限只保证「不阻塞」，被放弃的调用线程仍在后台跑（daemon，不阻塞进程退出）；
 2. 单裁判通道：本入口不提供多通道投票；跨通道比较需另建 eval 目录；

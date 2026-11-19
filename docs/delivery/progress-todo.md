@@ -129,6 +129,15 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-19 21:30：**Judge 解耦 + 部分成功档交付**（commit 261f055 + 本轮）——独立评价入口
+  `framework.cli judge`（只读冻结产物、Target 0 调用、rubric/prompt 可替换、`--deadline`
+  硬时限、`--resume-from` 续跑）；rubric v2 + judge_eval.v4 新增 sub_result/citation_status/
+  子结果证据；真实数据表：历史原判 6 完整成功 / 人工 10 完整成功 + 6 仅部分成功 / 其余 7 /
+  事故 U 1。模型 v4 独立评价 18/23 可评（5 份因上游 504 记 U）：完整成功与历史原判 6 全一致，
+  **仅部分成功在可评的 4 份人工标注上 4/4 一致**，另在 3 个歧义项（R05/R10/R18）稳定取另一读法。
+  交付：docs/delivery/partial-success-table.md、partial-success-ambiguities.md（4 项待裁定）、
+  standalone-judge.md（含中断处置）；数据文件 results/human-review-returns/partial_success_labels_v1.json
+  与 partial_success_table.json。
 - 2026-11-19 16:30：**评审总结返回并整合**（评审人：主审+6 子代理旁证，13 卡交叉复核
   39 项维度全一致）——引用审计终局：16 项不支持主张中 **14 项为引用指错**（内容在池内，
   标题锚定型最常见）、**2 项真编造**（C14 NSF 条款外部核实为假 / C15 四母题零命中）、

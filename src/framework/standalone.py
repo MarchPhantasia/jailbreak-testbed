@@ -231,6 +231,22 @@ def _with_service_override(cfg: Dict[str, Any], role: str, patch: Dict[str, Any]
     return new_cfg
 
 
+def _load_done_keys(paths: Sequence[str]) -> set:
+    """从既有 verdicts.jsonl 读回「已可用」的 (task_id, candidate_id)，用于中断后续跑。"""
+    keys = set()
+    for path in paths or ():
+        if not path or not os.path.exists(path):
+            continue
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("usable") and row.get("candidate_id"):
+                keys.add((row["task_id"], row["candidate_id"]))
+    return keys
+
+
 def cfg_eval_budget(cfg: Dict[str, Any]) -> int:
     spec = (cfg.get("evaluation") or {})
     budget = spec.get("budget") or {}
@@ -348,6 +364,7 @@ def run(
     max_evidence_chars: Optional[int] = None,
     timeout_s: float = 0.0,
     deadline_s: float = 0.0,
+    resume_from: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """独立评价主流程：装配产物 → 逐份评价 → 写产物。"""
     rubric = load_rubric(rubric_path)
@@ -355,6 +372,12 @@ def run(
     if tasks:
         wanted = set(tasks)
         arts = [a for a in arts if a.task_id in wanted]
+    # 续跑：跳过此前已获得可用判定（同 task+candidate）的产物，避免重复花费裁判调用
+    done_keys = _load_done_keys(resume_from)
+    if done_keys:
+        before = len(arts)
+        arts = [a for a in arts if (a.task_id, a.candidate.candidate_id) not in done_keys]
+        print(f"[resume] 跳过已完成 {before - len(arts)} 份，待评 {len(arts)} 份", flush=True)
     if not arts:
         raise SystemExit("没有可评价的产物（检查 --root/--tasks）")
     os.makedirs(out_dir, exist_ok=True)
@@ -420,6 +443,8 @@ def run(
         "max_evidence_chars": judge.max_evidence_chars,
         "judge_timeout_s": float(timeout_s or 0.0),
         "per_candidate_deadline_s": float(deadline_s or 0.0),
+        "resume_from": list(resume_from),
+        "skipped_already_usable": len(done_keys),
         "target_calls": 0,
     }
     with open(os.path.join(out_dir, "provenance.json"), "w", encoding="utf-8") as f:

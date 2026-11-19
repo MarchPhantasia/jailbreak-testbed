@@ -247,3 +247,18 @@ def test_call_with_deadline_returns_failure_on_timeout():
 
 def test_call_with_deadline_passes_through_without_limit():
     assert standalone.call_with_deadline(lambda: 42, 0) == (42, "")
+
+
+def test_resume_skips_already_usable(tmp_path):
+    prior = tmp_path / "prior.jsonl"
+    prior.write_text(
+        json.dumps({"task_id": "t1", "candidate_id": "cand_1", "usable": True}) + "\n"
+        + json.dumps({"task_id": "t1", "candidate_id": "cand_2", "usable": False}) + "\n",
+        encoding="utf-8",
+    )
+    keys = standalone._load_done_keys([str(prior)])
+    assert keys == {("t1", "cand_1")}
+
+
+def test_resume_missing_file_is_noop(tmp_path):
+    assert standalone._load_done_keys([str(tmp_path / "nope.jsonl")]) == set()
