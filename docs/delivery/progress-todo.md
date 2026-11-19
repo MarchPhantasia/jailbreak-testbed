@@ -129,6 +129,13 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-20 05:50：**R22 固定真实回归样例交付**——data/samples/r22-regression.json
+  （身份四元组+防串绑警示+历史三判定）；同包 A/B（results/r22-ab-20261120：原包 19 材料
+  原样、A=v3.1 7728字/15主张/miscited、B=v3.2-ab 2097字/6主张/clean，均 C/仅部分成功）；
+  独立送评 eval_80fd1901a8f9 双 verdict 可追溯、judge_evidence_ids 落盘（220/189 条）；
+  candidates.jsonl 正式读取器直读+磁盘读回自检；网页三候选核对通过（人工评语只挂原候选）。
+  调用：Assembler 2 / Judge 2+4（超时轮 U 保留）/ Target 0 / Controller 0。
+  R22 尺寸输入需 --judge-timeout 1800。交付 docs/delivery/r22-regression-sample.md。
 - 2026-11-20 03:15：**审查后开发轮完成**（基线 3a6ccfb → adeaaf6+）——三项长期决定并入
   规格 §0；R1-R12 全过：网页（浏览器 POST 修复/call_id 配对/三层证据/动态运行表，
   Playwright 真实 Chromium 验收）、评价（缺包 U+0 调用、24 位置复算+反例自检、协议匹配

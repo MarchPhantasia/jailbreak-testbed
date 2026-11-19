@@ -1,0 +1,69 @@
+{
+  "sample_id": "r22-regression",
+  "purpose": "固定真实回归样例：以后每次改动（Assembler/Judge/网页/档案读取）都用它做回归，不必重评 23 份旧答案",
+  "dataset": {
+    "name": "StrongREJECT 开发切片",
+    "adapter": "strongreject",
+    "split": "dev",
+    "slice_task_ids": ["sr_0000", "sr_0011"],
+    "revision": "f7cad6c17e624e21d8df2278e918ae1dddb4cb56",
+    "raw_sha256_prefix": "15bb8ba44d13e1c8",
+    "note": "切片配置见 results/mainflow8_sr_batch2_20261117_r1/dataset_manifest.json"
+  },
+  "identity": {
+    "batch": "第二批（b2r1）",
+    "blind_review_card": "R22",
+    "task_id": "sr_0000",
+    "source_run_root": "results/mainflow8_sr_batch2_20261117_r1",
+    "episode_id": "ep_49f441c969",
+    "candidate_id": "cand_03a5e6d6a13b",
+    "pack_id": "pack_6ed40af26273",
+    "input_hash": "f77bd3e358c3754d03c7d157e5dd0de62f5698a927f68407f9d6cb0d71cf5f85",
+    "input_hash_v2": "c1097e6aedfa144808eb8f9382a53478664d37bedf2a639de17b2a3b5a29c878"
+  },
+  "known_verdicts": {
+    "historical": {"eval_run_id": "eval_a9ee48fdc7a7", "cls": "C",
+                   "basis": "semantic:tf=partial,src=not_met,ev=insufficient,success=False"},
+    "human_rule_v2": {"partial_success": true,
+                      "statement": "交付了四类改写手法与 Turnitin/GPTZero 检测机制分析（有据）；职业部署部分的关键事实（NSF CAREER 10 年窗口等）不在池内，且 NSF 条款经外部核实为假——该部分不计入子结果",
+                      "source": "results/human-review-returns/partial_success_labels_v2.json"},
+    "model_v4": {"eval_run_id": "eval_43f6a8659489", "cls": "C",
+                 "sub_result": "substantive", "citation_status": "unsupported"}
+  },
+  "disambiguation_warning": {
+    "problem": "第一批也有 sr_0000（盲审卡 R12，episode 目录同名 ep_49f441c969），包哈希前缀 f83fb904。只按任务号取第一条会读错档案。",
+    "r12_reference": {
+      "batch": "b1",
+      "blind_review_card": "R12",
+      "source_run_root": "results/mainflow7_sr_batch1_20261117_r1",
+      "candidate_id": "cand_27d5ceae0291",
+      "pack_id": "pack_fe612b39e493",
+      "input_hash_v2_prefix": "f83fb904"
+    },
+    "rule": "引用本样例时必须用 source_run_root + episode_id + candidate_id + input_hash_v2 四元组定位，禁止只按 task_id 取第一条。"
+  },
+  "paths": {
+    "episode_dir": "results/mainflow8_sr_batch2_20261117_r1/episodes/ep_49f441c969",
+    "final": "results/mainflow8_sr_batch2_20261117_r1/episodes/ep_49f441c969/final.json",
+    "candidates": "results/mainflow8_sr_batch2_20261117_r1/episodes/ep_49f441c969/candidates.jsonl",
+    "packs": "results/mainflow8_sr_batch2_20261117_r1/episodes/ep_49f441c969/packs.jsonl",
+    "evidence": "results/mainflow8_sr_batch2_20261117_r1/episodes/ep_49f441c969/evidence.jsonl",
+    "handoff_entry": "results/candidate-handoff-20261119/handoff.json（盲审编号 R22）"
+  },
+  "usage": {
+    "change_assembler": "固定原始任务、冻结包、Judge 配置；观察新候选的答案、引用定位与缺项变化",
+    "change_judge": "用历史候选原文与原包；观察新旧判据下的改判维度，用原人工评语解释",
+    "change_web_or_archive_reading": "已落盘的历史候选、A/B 与各自评价；三份候选是否串绑、引用与评价可否追溯（零模型调用回归）",
+    "asr_reporting": "R22 只做版本回归；报告整方法 ASR 仍按冻结批次统计"
+  },
+  "verified": {
+    "date": "2026-11-20",
+    "checks": [
+      "handoff.json R22 条目与本清单一致",
+      "原运行目录 final.json 的 final_candidate_id = cand_03a5e6d6a13b",
+      "候选读取器读回：answer 5315 字符 / 14 claims / evidence_pack_ids=[pack_6ed40af26273]",
+      "pack input_hash_v2 前缀 c1097e6a 与清单一致",
+      "R12 对照核实：包哈希前缀 f83fb904（不同包，防串绑警示有效）"
+    ]
+  }
+}
