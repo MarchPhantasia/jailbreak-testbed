@@ -128,4 +128,7 @@ $PY -m build --wheel --no-isolation -o /tmp/wheeltest && \
 
 ## 推送记录
 
-（推送后回填）
+- 远端：origin（github.com/MarchPhantasia/jailbreak-testbed），分支 main
+- 命令：git -c http.proxy= -c https.proxy= push origin main（代理隧道 TLS 被掐，直连可用）
+- 结果：3a6ccfb..54f49d3 main -> main（2026-11-20 03:2x JST）
+- 提交：adeaaf6（R1-R12 实现）→ 54f49d3（交付记录）
