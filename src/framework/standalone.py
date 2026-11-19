@@ -91,21 +91,29 @@ class Artifact:
         }
 
 
-def load_artifact(root: str, task_id: str, *, evidence_scope: str = "") -> Optional[Artifact]:
-    """从运行目录读取一份候选的全部评价输入；缺失即返回 None（不补位、不猜测）。"""
+def load_artifact(root: str, task_id: str, *, evidence_scope: str = "",
+                   candidate_id: Optional[str] = None) -> Optional[Artifact]:
+    """从运行目录读取一份候选的全部评价输入；缺失即返回 None（不补位、不猜测）。
+
+    candidate_id 为空 → 读 final.json 的最终候选；否则从 candidates.jsonl 读指定候选
+    （同包对照：同一冻结包下的多份候选都需要能独立送评）。
+    """
     plan = runner.load_plan_from_root(root)
     entry = next((e for e in plan["episodes"] if e["task"]["task_id"] == task_id), None)
     if entry is None:
         return None
     ep_dir = os.path.join(root, "episodes", entry["episode_id"])
-    final_fp = os.path.join(ep_dir, "final.json")
-    if not os.path.exists(final_fp):
-        return None
-    final = json.load(open(final_fp, encoding="utf-8"))
-    candidate_id = final.get("final_candidate_id")
-    if not candidate_id:
-        return None
-    candidate = runner._load_final_candidate(ep_dir, candidate_id)
+    if candidate_id:
+        wanted = candidate_id
+    else:
+        final_fp = os.path.join(ep_dir, "final.json")
+        if not os.path.exists(final_fp):
+            return None
+        final = json.load(open(final_fp, encoding="utf-8"))
+        wanted = final.get("final_candidate_id")
+        if not wanted:
+            return None
+    candidate = runner._load_final_candidate(ep_dir, wanted)
     if candidate is None:
         return None
     scope = evidence_scope or str((plan.get("evaluation_spec") or {}).get("evidence_scope") or "candidate_pack")
@@ -132,22 +140,53 @@ def load_artifact(root: str, task_id: str, *, evidence_scope: str = "") -> Optio
         scope_info=scope_info or {},
         pack_ids=pack_ids,
         pack_input_hash=pack_hash,
-        final_answer_path=final_fp,
+        final_answer_path=(final_fp if not candidate_id else os.path.join(ep_dir, "candidates.jsonl")),
         candidates_path=os.path.join(ep_dir, "candidates.jsonl"),
         packs_path=packs_path,
     )
 
 
-def discover_artifacts(roots: Sequence[str], *, evidence_scope: str = "") -> List[Artifact]:
-    """按冻结计划顺序枚举所有可评价产物（缺失位置不生成占位）。"""
+def discover_artifacts(roots: Sequence[str], *, evidence_scope: str = "",
+                        candidates: Optional[Sequence[str]] = None) -> List[Artifact]:
+    """按冻结计划顺序枚举所有可评价产物（缺失位置不生成占位）。
+
+    candidates 给定时只评这些 candidate_id（跨任务匹配；同包对照用）。
+    """
     out: List[Artifact] = []
+    wanted = set(candidates or ()) or None
     for root in roots:
         plan = runner.load_plan_from_root(root)
         for entry in plan["episodes"]:
-            art = load_artifact(root, entry["task"]["task_id"], evidence_scope=evidence_scope)
-            if art is not None:
-                out.append(art)
+            if wanted is None:
+                art = load_artifact(root, entry["task"]["task_id"], evidence_scope=evidence_scope)
+                if art is not None:
+                    out.append(art)
+                continue
+            ep_dir = os.path.join(root, "episodes", entry["episode_id"])
+            cand_fp = os.path.join(ep_dir, "candidates.jsonl")
+            if not os.path.exists(cand_fp):
+                continue
+            for row_cid in _candidate_ids(cand_fp):
+                if row_cid in wanted:
+                    art = load_artifact(root, entry["task"]["task_id"],
+                                        evidence_scope=evidence_scope, candidate_id=row_cid)
+                    if art is not None:
+                        out.append(art)
     return out
+
+
+def _candidate_ids(cand_fp: str) -> List[str]:
+    ids: List[str] = []
+    with open(cand_fp, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ids.append(str(json.loads(line).get("candidate_id") or ""))
+            except json.JSONDecodeError:
+                continue
+    return [i for i in ids if i]
 
 
 def load_rubric(path: Optional[str]) -> Dict[str, Any]:
@@ -359,6 +398,7 @@ def run(
     prompt_path: str,
     out_dir: str,
     tasks: Optional[Sequence[str]] = None,
+    candidates: Optional[Sequence[str]] = None,
     evidence_scope: str = "",
     budget: int = 0,
     max_evidence_chars: Optional[int] = None,
@@ -368,7 +408,7 @@ def run(
 ) -> Dict[str, Any]:
     """独立评价主流程：装配产物 → 逐份评价 → 写产物。"""
     rubric = load_rubric(rubric_path)
-    arts = discover_artifacts(roots, evidence_scope=evidence_scope)
+    arts = discover_artifacts(roots, evidence_scope=evidence_scope, candidates=candidates)
     if tasks:
         wanted = set(tasks)
         arts = [a for a in arts if a.task_id in wanted]

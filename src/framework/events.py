@@ -51,6 +51,10 @@ EVENT_TYPES = (
     "evaluation_verdict",
     "evaluation_completed",
     "terminate",
+    # 交互会话（framework.interactive）：人工介入的持久记录
+    "interactive_paused",  # 动作挂起等待人工批准/编辑
+    "query_edited",        # 人工编辑待发查询（原/改/理由）
+    "branch_started",      # 人工从历史节点开分支
 )
 
 

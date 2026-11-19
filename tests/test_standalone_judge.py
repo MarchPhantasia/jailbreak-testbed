@@ -262,3 +262,34 @@ def test_resume_skips_already_usable(tmp_path):
 
 def test_resume_missing_file_is_noop(tmp_path):
     assert standalone._load_done_keys([str(tmp_path / "nope.jsonl")]) == set()
+
+
+def test_load_artifact_specific_candidate(tmp_path):
+    """同包对照：指定 candidate_id 时读 candidates.jsonl 里的那份，而非 final。"""
+    root = _write_run_root(tmp_path / "run")
+    ep = root / "episodes" / "ep_1"
+    other = {
+        "candidate_id": "cand_2", "answer": "第二份候选", "claims": [
+            {"claim_id": "c1", "text": "主张二", "evidence_ids": ["ev_1"]},
+        ],
+        "evidence_pack_ids": ["pack_1"], "gaps": [], "fallback_render": False,
+    }
+    with open(ep / "candidates.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(other) + "\n")
+    art = standalone.load_artifact(str(root), "t1", candidate_id="cand_2")
+    assert art is not None and art.candidate.candidate_id == "cand_2"
+    assert art.candidate.answer == "第二份候选"
+    # final 仍是 cand_1
+    art_final = standalone.load_artifact(str(root), "t1")
+    assert art_final.candidate.candidate_id == "cand_1"
+
+
+def test_discover_artifacts_candidate_filter(tmp_path):
+    root = _write_run_root(tmp_path / "run")
+    ep = root / "episodes" / "ep_1"
+    with open(ep / "candidates.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"candidate_id": "cand_2", "answer": "b", "claims": [],
+                            "evidence_pack_ids": ["pack_1"], "gaps": []}) + "\n")
+    arts = standalone.discover_artifacts([str(root)], candidates=["cand_2"])
+    assert [a.candidate.candidate_id for a in arts] == ["cand_2"]
+    assert standalone.discover_artifacts([str(root)], candidates=["cand_missing"]) == []

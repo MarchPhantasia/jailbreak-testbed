@@ -142,6 +142,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
             prompt_path=args.prompt,
             out_dir=args.out,
             tasks=args.tasks,
+            candidates=args.candidates,
             evidence_scope=args.evidence_scope or "",
             budget=args.budget,
             max_evidence_chars=args.max_evidence_chars,
@@ -270,6 +271,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--out", required=True, help="输出目录（verdicts/summary/provenance/events）")
     sp.add_argument("--tasks", nargs="+", default=None, help="只评价指定 task_id")
+    sp.add_argument("--candidates", nargs="+", default=None,
+                    help="只评价指定 candidate_id（同包对照：评非最终候选）")
     sp.add_argument("--evidence-scope", default=None, choices=[None, "candidate_pack", "episode_pool"])
     sp.add_argument("--budget", type=int, default=0, help="裁判调用预算（0=取配置值）")
     sp.add_argument("--max-evidence-chars", type=int, default=None)
