@@ -32,8 +32,12 @@ KNOWN_RUNS = [
     ("results/mainflow8_sr_batch2_20261117_r1", "StrongREJECT 批次2·r1（12 计划位，含事故 U）"),
     ("results/mainflow8_sr_batch2_20261117_r2", "StrongREJECT 批次2·r2（9 任务）"),
     ("results/demo-same-pack-20261120", "演示·普通资料任务（同包双候选）"),
+    ("results/demo-branch-20261120", "演示·人工编辑与分支（双轨迹）"),
 ]
-KNOWN_JUDGE_DIRS = "results/judge-standalone-v2*"
+KNOWN_JUDGE_DIRS = [
+    "results/judge-standalone-v2*",
+    "results/demo-same-pack-20261120-judge",
+]
 
 _SESSIONS: Dict[str, InteractiveSession] = {}
 _LOCK = threading.Lock()
@@ -88,7 +92,10 @@ def _verdicts_for(root: str, task_id: str, candidate_id: Optional[str]) -> Dict[
                     "eval_run_id": vp.split(os.sep)[-2], "cls": v.get("cls"),
                     "basis": (v.get("basis") or "")[:200],
                 })
-    for path in sorted(glob.glob(KNOWN_JUDGE_DIRS + os.sep + "verdicts.jsonl")):
+    paths: List[str] = []
+    for pat in KNOWN_JUDGE_DIRS:
+        paths.extend(glob.glob(os.path.join(pat, "verdicts.jsonl")))
+    for path in sorted(set(paths)):
         if "interrupted" in path:
             continue
         for line in open(path, encoding="utf-8"):
@@ -149,9 +156,10 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
         elif t == "target_refusal":
             steps.append({"kind": "refusal", "node": ev.get("node_id"), "label": p.get("label")})
         elif t == "pack_frozen":
+            mats = p.get("materials")
             steps.append({"kind": "pack", "node": ev.get("node_id"),
                           "pack_id": p.get("pack_id"), "input_hash": (p.get("input_hash") or "")[:12],
-                          "materials": len(p.get("materials") or [])})
+                          "materials": mats if isinstance(mats, int) else len(mats or [])})
         elif t in ("assembled",):
             steps.append({"kind": "assembled", "node": ev.get("node_id"),
                           "candidate_id": p.get("candidate_id"),
