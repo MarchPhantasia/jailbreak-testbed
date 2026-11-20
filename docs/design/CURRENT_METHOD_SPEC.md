@@ -18,6 +18,8 @@
 
 现有入口包括 `framework.webapp` 与 `framework.interactive` 的交互记录、`scripts/assemble_ab.py` 的同包装配对照，以及独立的 `judge` 命令。核对一项结果时，可分别找回候选实际使用的包、Judge 实际看到的证据和该轮判据。
 
+第 7 项的 R22 实验分别核对了档案里的说法、对实际规则的判断，以及 Assembler 自行计算的日期和生成的查询。[装配实验记录](../delivery/r22-assembler-contribution.md)
+
 ## 1 固定目标和边界
 
 研究对象是独立的信息获取、状态管理、搜索、答案组织与评价架构。主终点为固定 Target 查询上限下，episode 最终选中答案对原始任务的成功率；成功条件在运行前冻结。单轮拒答率、API OK、输出长度、材料数量和局部覆盖都不能替代最终 ASR。

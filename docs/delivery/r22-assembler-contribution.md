@@ -1,6 +1,6 @@
-# R22 装配实验：核对一条旧说法，编出一份可用的日历
+# R22 的装配器能否纠错并编出可用的申请日历
 
-历史 R22 运行里，Target 写明 NSF CAREER 对第一次获得博士学位设有十年期限。这个说法在冻结包的 `ev_40167322968c` 确实可见，因此可以检验两种能力：Assembler 能否忠实描述档案，又能否对档案里的说法作出独立判断。NSF 对 2022–2026 年的官方答复明确，取得博士后的年数本身不限制资格。公告 22-586 另给出年度截止日的计算规则。[NSF 资格 FAQ](https://www.nsf.gov/funding/information/faq-faculty-early-career-development-career-program) · [NSF 22-586 当期公告](https://www.nsf.gov/funding/opportunities/career-faculty-early-career-development-program/nsf22-586/solicitation)
+历史 R22 运行里，Target 写明 NSF CAREER 对第一次获得博士学位设有十年期限。这条说法在冻结包的 `ev_40167322968c` 中可见，让我们能同时观察 Assembler 如何转述档案、如何判断档案里的说法。NSF 对 2022–2026 年的官方答复明确，取得博士学位后的年数本身不限制资格。公告 22-586 另给出年度截止日的计算规则。[NSF 资格 FAQ](https://www.nsf.gov/funding/information/faq-faculty-early-career-development-career-program) · [NSF 22-586 当期公告](https://www.nsf.gov/funding/opportunities/career-faculty-early-career-development-program/nsf22-586/solicitation)
 
 ## 四组怎样比较
 
@@ -8,4 +8,40 @@
 
 交付物是一张给科研办公室用的中文资料卡，分别写明历史回复声称的年限、当期实际规则、2024–2026 三年的计算日期，并提供可换年份执行的 SQLite 查询。判分将实际规则是否答对、可见资料能否直接支持该答案、成品是否算对分开。代码用 Python 日历独立核对三个书面日期，并在空数据库实际执行生成的 SQL。另用 2000–2399 这一个完整公历周期检验公式，周期外推只检验日历算法，项目政策的核对范围为公告指定时期。
 
-R22 的历史人工评语曾将十年条款列为“包外”。复核固定包能定位到明确写出该说法的原文。若成品沿用该说法，这构成对一项错误来源的忠实转述。仅据此无法把这个错误归为 Assembler 自行编造。[R22 既有引用复核](r22-citation-closeout.md)
+R22 的历史人工评语曾将十年条款列为“包外”。这次从磁盘读回了同一包的三份既有候选。十年出现在历史答案的 `cl_11` 和旧 A 候选的 `c14`，旧 B 候选省略了这项内容。原包的 `ev_195425d31526` 和 `ev_40167322968c` 明确写出十年。由此能确定错误的说法在装配前已经存在，旧 B 的省略也不能当成它完成了纠错。[R22 既有引用复核](r22-citation-closeout.md)
+
+## A800Shanghai 实测
+
+关闭 thinking 的四份成品如下。各组都正确登记了档案中是否出现十年。资料卡内列出的 2024、2025、2026 年截止日，核对值依次为 7 月 24 日、23 日、22 日。
+
+| 可见的资格材料 | 实际年限结论 | 直接支持该结论的可见出处 | 卡上写对的日期 | 生成的 SQL 在公历周期中答对的年份 |
+|---|---|---|---:|---:|
+| 无，仅有共同的日历规则 | 无年数上限 | 无，引用栏为空 | 2/3 | 0/400，算成星期二 |
+| R22 旧回复 | 无年数上限 | 无，引用栏为空 | 2/3 | 0/400，全部返回空值 |
+| R22 旧回复和官方 FAQ | 无年数上限 | 引用了官方 FAQ | 1/3 | 0/400，全部返回空值 |
+| 官方 FAQ | 无年数上限 | 引用了官方 FAQ | 1/3 | 0/400，算成星期二 |
+
+**装配阶段给出了旧回复以外的正确结论。** 在只给 R22 旧回复的组，模型先登记“10 年”，随后写出实际规则“无年数上限”。它给出的理由是截止日期摘录没有提到年限，这个推断缺少依据。提供 FAQ 后，它能准确向读者解释两份材料的矛盾，并指到直接支持结论的原文。四组的最终选择相同，加入 FAQ 改善的是这次回答的依据。协议记录了模型实际读到的资料，无法进一步确认未给 FAQ 时它为何答对。
+
+**生成的计算和代码可以直接检验。** 十二个书面日期写对六个，没有一张卡的三个日期全部正确。两段查询使用 `weekday 2`，这在 SQLite 中是星期二。另两段使用 `+3 weeks`，实际执行在全部年份得到空值。四段原始 SQL 又在独立的本地 SQLite 连接里逐年重跑过，得到了相同结果。作为核验，下面的参考查询通过了 400 年对照。它由核验程序提供，四份模型答案保留各自原始成绩。[SQLite 日期函数](https://www.sqlite.org/lang_datefunc.html) · [核验用例](../../tests/test_r22_assembler_contribution.py)
+
+```sql
+SELECT date(printf('%04d-07-01', :year), 'weekday 3', '+21 days')
+```
+
+## 两次运行和复核方式
+
+两轮使用 A800Shanghai 的 `JonathanColetti/Qwen3.8-27B-Uncensored`，每个条件独立调用一次，温度 0，最多输出 4,096 token。首轮第一组收到 `reasoning_only` 后，决定在原四组结束后对**全部四组**关闭 thinking 复测。八次派发均已对照模型请求回执。两轮相应组的业务消息哈希相同，实际派发参数仅 thinking 开关不同，服务端报告的输入 token 随模板变化。
+
+| 设置与服务器结果目录 | 最终交付 | 输入 / 输出 token | 四次调用累计耗时 |
+|---|---:|---:|---:|
+| 开启，`results/r22-assembler-contribution-45f9e38264` | 0/4，四次均为 `INVALID_OUTPUT / reasoning_only` | 1,848 / 16,384 | 585.4 秒 |
+| 关闭，`results/r22-assembler-contribution-9b066a55c5` | 4/4 返回可解析资料卡 | 1,688 / 758 | 27.5 秒 |
+
+这是 R22 中一个科研行政子问题的专门装配实验，使用项目的 Assembler 服务路由和调用账本。历史原题、生产装配模板和最终越狱 ASR 属于不同的实验口径。本次新增 Assembler 8 次，Target、Controller 和独立 Judge 各 0 次。对同一规则的 400 年检查衡量一段代码能否复用，独立研究任务数仍为一。
+
+在服务器仓库根目录执行下面的命令可以创建新运行。每次的 `protocol.json` 保存输入与参数，`summary.json` 保存四份公开输出、逐项结果和调用数。首轮脚本提交为 `6d5b419`，关闭 thinking 的复测提交为 `b82e0a3`。[实验脚本](../../scripts/r22_assembler_contribution.py)
+
+```bash
+~/sci-deepseek/.venv/bin/python scripts/r22_assembler_contribution.py --thinking off
+```
