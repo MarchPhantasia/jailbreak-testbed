@@ -12,6 +12,7 @@
     <button data-view="runs" class="active">回放</button>
     <button data-view="compare">对照</button>
     <button data-view="interactive">交互</button>
+    <button data-view="workbench">工作台</button>
   </nav>
 </header>
 
@@ -72,6 +73,24 @@
       </div>
     </div>
     <div id="int-tree" class="panel wide"><h2>分支树与消耗</h2><div class="body"></div></div>
+  </div>
+</section>
+
+<!-- Controller 人工干预工作台 -->
+<section id="view-workbench" hidden>
+  <div class="panel">
+    <h2>Controller 工作台（人工回退记录）</h2>
+    <div class="body">
+      <p><button id="wb-open-r22">打开固定样例 R22 工作台</button>
+         <span class="hint">data/samples/r22-regression.json → 原始运行</span></p>
+      <p class="hint">或从「回放」页的任务记录链里点「打开工作台」。</p>
+      <div id="wb-anno-count"></div>
+    </div>
+  </div>
+  <div id="wb-main" hidden>
+    <div class="panel wide"><h2 id="wb-title">交互轨迹</h2><div class="body" id="wb-body"></div></div>
+    <div class="panel wide" id="wb-draft-panel"><h2>回退判断与草稿</h2><div class="body" id="wb-draft"></div></div>
+    <div class="panel wide"><h2>已保存草稿</h2><div class="body" id="wb-saved"></div></div>
   </div>
 </section>
 

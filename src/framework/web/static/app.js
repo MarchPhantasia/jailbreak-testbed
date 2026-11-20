@@ -12,9 +12,10 @@ async function api(path, body) {
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
   b.classList.add("active");
-  ["runs", "compare", "interactive"].forEach(v => $(`#view-${v}`).hidden = v !== b.dataset.view);
+  ["runs", "compare", "interactive", "workbench"].forEach(v => $(`#view-${v}`).hidden = v !== b.dataset.view);
   if (b.dataset.view === "runs") loadRuns();
   if (b.dataset.view === "compare") loadComparePicker();
+  if (b.dataset.view === "workbench") wbInit();
 });
 
 /* ---------- 回放 ---------- */
@@ -50,6 +51,7 @@ async function showTrace(run, ep) {
   for (const s of t.steps) html += stepHtml(s);
   html += `<h3>判定</h3>` + verdictHtml(t.verdicts, t.final_candidate);
   if (t.final_candidate) html += `<p><button onclick="showCand('${esc(run.root)}','${esc(ep.episode_id)}','${esc(t.final_candidate)}')">查看最终候选（主张→证据）</button></p>`;
+  html += `<p><button onclick="wbOpenFromReplay('${esc(run.root)}','${esc(ep.episode_id)}')">打开工作台（人工回退记录）</button></p>`;
   box.innerHTML = html;
 }
 function stepHtml(s) {
@@ -212,3 +214,157 @@ function renderInt(s) {
 }
 
 loadRuns();
+
+/* ---------- Controller 工作台（人工回退记录，Issue #1） ---------- */
+let WB = null;            // {root, episode_id, task, interactions}
+let WB_SEL = { discovery: null, fallback: null };
+
+function wbInit() {
+  const btn = $("#wb-open-r22");
+  if (!btn.onclick) btn.onclick = async () => {
+    const s = await api("/api/workbench/sample");
+    if (s.error) { $("#wb-anno-count").textContent = "失败：" + s.error; return; }
+    wbOpen(s.run_root, s.episode_id);
+  };
+  wbRefreshCount();
+}
+async function wbRefreshCount() {
+  const rows = await api("/api/workbench/annotations");
+  $("#wb-anno-count").innerHTML = rows.length
+    ? `<span class="hint">工作台共 ${rows.length} 份草稿（data/workbench/annotations.jsonl）</span>` : "";
+}
+async function wbOpen(root, ep) {
+  WB = await api(`/api/workbench/${encodeURIComponent(root)}/${encodeURIComponent(ep)}`);
+  if (WB.error) { $("#wb-body").innerHTML = `<p class="hint">${esc(WB.error)}</p>`; return; }
+  $("#wb-main").hidden = false;
+  $("#wb-title").textContent = `交互轨迹 · ${root.split("/").pop()} · ${ep}`;
+  // 默认选第一条有实际请求和回复的交互
+  const first = WB.interactions.find(x => x.call_id && x.reply_text != null) || WB.interactions[0];
+  WB_SEL = { discovery: first, fallback: first };
+  wbRenderList();
+  wbRenderDraft();
+  wbRenderSaved();
+}
+function wbCollapsible(title, content, open) {
+  return `<details ${open ? "open" : ""}><summary>${title}</summary><div class="content" style="white-space:pre-wrap">${content}</div></details>`;
+}
+function wbMsgs(msgs) {
+  if (!Array.isArray(msgs) || !msgs.length) return `<span class="hint">该次运行未记录</span>`;
+  return msgs.map(m => `<div class="meta">${esc(m.role)}</div><div class="content" style="white-space:pre-wrap">${esc(m.content)}</div>`).join("<hr>");
+}
+function wbRenderList() {
+  const t = WB.task || {};
+  let h = wbCollapsible(`<b>原始任务</b> ${esc(t.task_id || "")}`, esc(t.prompt || ""), false) + "<hr>";
+  WB.interactions.forEach(it => {
+    const retry = it.node_total > 1 ? ` · 同节点第 ${it.node_nth}/${it.node_total} 次` : "";
+    const isD = WB_SEL.discovery && WB_SEL.discovery.call_id === it.call_id;
+    const isF = WB_SEL.fallback && WB_SEL.fallback.call_id === it.call_id;
+    h += `<div class="step k-propose" id="wb-it-${esc(it.call_id)}">
+      <div class="meta">第 ${it.seq} 次提问 · ${esc(it.node_id)}${retry} · ${esc(it.call_id)}
+        ${isD ? '<span class="tag ok">发现点</span>' : ""}${isF ? '<span class="tag">回退点</span>' : ""}
+        ${it.reply_status ? `<span class="hint">回复 ${esc(it.reply_status)}</span>` : '<span class="tag bad">无回复记录</span>'}
+      </div>
+      ${wbCollapsible("① Controller 当时收到的上下文（该次快照，不含后来材料）", wbMsgs(it.view_messages))}
+      ${wbCollapsible(`② 原提议${it.generation_call_id ? "（规划调用 " + esc(it.generation_call_id) + "）" : ""}`,
+        `<div class="content">${esc(it.proposal ?? "该次运行未记录")}</div>
+         ${it.rationale ? `<div class="meta">理由</div><div class="content">${esc(it.rationale)}</div>` : ""}
+         ${it.strategy ? `<div class="hint">策略 ${esc(it.strategy)}</div>` : ""}
+         ${it.planning_call ? wbCollapsible("规划调用原文（输入→响应）",
+            wbMsgs(it.planning_call.input_messages) + `<div class="meta">响应</div><div class="content">${esc(it.planning_call.response_text ?? "未记录")}</div>`) : '<div class="hint">规划调用关联不确定</div>'}`)}
+      ${wbCollapsible("③ 人工修改记录", it.human_edit
+        ? `<div class="content">${esc(JSON.stringify(it.human_edit))}</div>`
+        : '<span class="hint">该次运行未记录（批次运行无人工编辑）</span>')}
+      ${wbCollapsible("④ 实际发送给 Target 的消息（完整）", wbMsgs(it.sent_messages))}
+      ${wbCollapsible("⑤ Target 回复", it.reply_text != null
+        ? `<div class="content">${esc(it.reply_text)}</div>`
+        : '<span class="hint">该次运行未记录</span>')}
+      <p><button onclick="wbSetDiscovery('${esc(it.call_id)}')">设为发现点</button>
+         <button onclick="wbSetFallback('${esc(it.call_id)}')">设为回退点</button></p>
+    </div>`;
+  });
+  $("#wb-body").innerHTML = h;
+}
+window.wbSetDiscovery = (callId) => {
+  WB_SEL.discovery = WB.interactions.find(x => x.call_id === callId);
+  if (WB_SEL.fallback && WB_SEL.fallback.seq > WB_SEL.discovery.seq) WB_SEL.fallback = WB_SEL.discovery;
+  wbRenderList(); wbRenderDraft();
+};
+window.wbSetFallback = (callId) => {
+  WB_SEL.fallback = WB.interactions.find(x => x.call_id === callId);
+  wbRenderList(); wbRenderDraft();
+};
+function wbRenderDraft() {
+  const d = WB_SEL.discovery, f = WB_SEL.fallback;
+  if (!d || !f) { $("#wb-draft").innerHTML = '<p class="hint">先从上方选择一次交互。</p>'; return; }
+  const opts = WB.interactions.filter(x => x.seq <= d.seq).map(x =>
+    `<option value="${esc(x.call_id)}" ${x.call_id === f.call_id ? "selected" : ""}>第 ${x.seq} 次（${esc((x.sent_text || "").slice(0, 40))}…）</option>`).join("");
+  $("#wb-draft").innerHTML = `
+    <p><b>发现问题的位置：</b>第 ${d.seq} 次回复 · ${esc(d.call_id)}
+       <button onclick="document.getElementById('wb-it-${esc(d.call_id)}').scrollIntoView()">回到该步</button></p>
+    <p><b>希望退回的位置：</b><select id="wb-fb-sel" onchange="wbFallbackChanged(this.value)">${opts}</select>
+       <span class="hint">＝从第 ${f.seq} 次发送前开始改写</span></p>
+    <div id="wb-fb-context"></div>
+    <p><b>我的批注（为什么第 ${d.seq} 次回复改变了判断）：</b><br>
+       <textarea id="wb-reason" style="width:100%;height:56px"></textarea></p>
+    <p><b>替代问题（草稿 · 未发送，预填第 ${f.seq} 次实际发送）：</b><br>
+       <textarea id="wb-draft-text" style="width:100%;height:90px">${esc(f.sent_text || "")}</textarea></p>
+    <p><button onclick="wbSaveDraft()">保存草稿（只写工作台数据，模型调用 0）</button>
+       <span class="hint">可在同一位置保存多份草稿，刷新后均可找回</span></p>`;
+  wbLoadContext(f.call_id);
+}
+window.wbFallbackChanged = (callId) => {
+  WB_SEL.fallback = WB.interactions.find(x => x.call_id === callId);
+  $("#wb-draft-text").value = WB_SEL.fallback.sent_text || "";
+  wbLoadContext(callId);
+};
+async function wbLoadContext(callId) {
+  const c = await api(`/api/workbench/context/${encodeURIComponent(WB.root)}/${encodeURIComponent(WB.episode_id)}/${encodeURIComponent(callId)}`);
+  const el = $("#wb-fb-context");
+  if (c.error) { el.innerHTML = `<p class="hint">${esc(c.error)}</p>`; return; }
+  el.innerHTML = wbCollapsible(`回退点发送前可见的上下文（Controller 当时已知；第 ${c.seq} 次之后的回复不在此列）`,
+    wbMsgs(c.view_messages) + (c.prior_turns.length
+      ? `<div class="meta">此前各轮</div>` + c.prior_turns.map(p =>
+        `<div class="hint">第 ${p.seq} 次问：${esc((p.question || "").slice(0, 60))}… → 回复 ${esc(p.reply_status ?? "?")}</div>`).join("")
+      : '<div class="hint">（这是第一次提问，无此前轮次）</div>'), false);
+}
+async function wbSaveDraft() {
+  const d = WB_SEL.discovery, f = WB_SEL.fallback;
+  const body = {
+    root: WB.root, episode_id: WB.episode_id,
+    discovery: { seq: d.seq, call_id: d.call_id, text_sha: d.text_sha },
+    fallback: { seq: f.seq, call_id: f.call_id, text_sha: f.text_sha },
+    reason: $("#wb-reason").value, draft_text: $("#wb-draft-text").value,
+  };
+  const out = await api("/api/workbench/annotations", body);
+  if (out.error) { alert("保存失败：" + out.error); return; }
+  alert(`已保存：${out.saved.draft_id}`);
+  wbRenderSaved(); wbRefreshCount();
+}
+async function wbRenderSaved() {
+  const rows = await api(`/api/workbench/annotations?root=${encodeURIComponent(WB.root)}&ep=${encodeURIComponent(WB.episode_id)}`);
+  if (!rows.length) { $("#wb-saved").innerHTML = '<p class="hint">尚无草稿。</p>'; return; }
+  $("#wb-saved").innerHTML = rows.map(r => {
+    const f = WB.interactions.find(x => x.call_id === r.fallback.call_id) || {};
+    const d = WB.interactions.find(x => x.call_id === r.discovery.call_id) || {};
+    return `<div class="cols">
+      <div class="panel"><h3>原（第 ${r.fallback.seq} 次实际发送 · ${esc(r.fallback.call_id)}）</h3><div class="body">
+        <div class="content" style="white-space:pre-wrap">${esc(f.sent_text ?? r.fallback.text_head ?? "")}</div>
+        <div class="meta">Target 回复（归属原调用）</div>
+        <div class="content" style="white-space:pre-wrap">${esc((f.reply_text ?? "").slice(0, 600))}</div>
+      </div></div>
+      <div class="panel"><h3>草稿 ${esc(r.draft_id)}（发现点：第 ${r.discovery.seq} 次回复）</h3><div class="body">
+        <span class="tag bad">草稿 · 未发送</span>
+        <div class="content" style="white-space:pre-wrap">${esc(r.draft_text)}</div>
+        <div class="meta">修改理由</div>
+        <div class="content">${esc(r.reason)}</div>
+        <div class="hint">${esc(r.ts)} · 展示序号 #${r.display_index}</div>
+        <p><button onclick="wbSetDiscovery('${esc(r.discovery.call_id)}');wbSetFallback('${esc(r.fallback.call_id)}');document.getElementById('wb-it-${esc(r.discovery.call_id)}').scrollIntoView()">回到发现点那一轮</button></p>
+      </div></div>
+    </div>`;
+  }).join("<hr>");
+}
+
+window.wbOpenFromReplay = (root, ep) => {
+  document.querySelector('nav button[data-view="workbench"]').click();
+  wbOpen(root, ep);
+};

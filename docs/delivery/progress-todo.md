@@ -129,6 +129,15 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-21 02:30：**Controller 人工干预工作台交付**（Issue #1，基线 eb9a49c）——
+  工作台入口（固定 R22 样例 + 回放页按钮）；交互轨迹按时间列出（20 次，同节点多次
+  可分辨）；五区块详情（Controller 上下文→原提议[generation_call_id 可回查规划调用]→
+  人工修改→实际发送→Target 回复，长文可折叠，缺项就地标注）；双锚点回退草稿
+  （发现点/回退点=seq+call_id+text_sha，回退点发送前上下文，预填实际发送，
+  草稿·未发送）；data/workbench/annotations.jsonl 存储；并排回看（左原问右草稿）。
+  Playwright 真实浏览器验收全过（第5次回复→第2次提问、双草稿、R12 防串绑、截图）；
+  4 项回归测试（同题不同运行/同位双草稿/text_sha 防错位/原文件不动）。
+  调用全 0。交付 docs/delivery/controller-workbench.md。
 - 2026-11-20 07:50：**R22 引用定位收尾**——A 的 miscited 全部由引用粒度解释（15 主张
   各引 1 行：8 元行 + 7 同材料"代表行"；B 按条件引材料跨度故 clean；判级差异=职业部署
   包内真实缺失，NSF 条款 A 保留 B 弃为主张集差异）。修复 citation-relocate@v1（层 1 元行
