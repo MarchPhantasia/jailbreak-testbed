@@ -41,6 +41,23 @@ def test_field_match_alone_does_not_satisfy_scope_or_direction():
         assert not result["request_correct"]
 
 
+def test_offline_report_explains_markers_without_changing_result(tmp_path):
+    case = publication_case()
+    (tmp_path / "protocol.json").write_text(json.dumps({"cases": [case], "source_terms": ["材料"]}), encoding="utf-8")
+    plan = {"decision": "ask", "fields": ["发表年份"], "note": ""}
+    for arm, question in (("A", "按材料，请告知发表年份？"), ("B", "请提供【发表年份】，核对【发表年份】。")):
+        data = {"question": question, "plan": plan, "calls": [], "elapsed_ms": 0,
+                "grade": probe.evaluate(case, plan, question)}
+        (tmp_path / f"paper_title-{arm}.json").write_text(json.dumps(data), encoding="utf-8")
+    snapshots = {f: f.read_bytes() for f in tmp_path.iterdir()}
+    report = probe.read_report(tmp_path)
+    a, b = report["wording_notes"]
+    assert a["planned_fields_in_text_without_marker"] == ["发表年份"] and a["explicit_source_term"] == "材料"
+    assert b["repeated_markers"] == ["发表年份"]
+    assert report["paired_requests"]["unscored"] == ["paper_title"]
+    assert all(path.read_bytes() == original for path, original in snapshots.items())
+
+
 def test_split_sends_only_handoff_then_skips_writer_on_done(tmp_path):
     case = publication_case()
     plan = {"decision": "ask", "fields": ["发表年份"], "note": "按原文询问年份"}

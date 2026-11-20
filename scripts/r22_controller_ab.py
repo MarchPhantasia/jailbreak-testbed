@@ -185,6 +185,39 @@ def summarize(pairs):
     return {"by_arm": by_arm, "paired_requests": outcomes}
 
 
+def wording_notes(cases, pairs, source_words):
+    """Explain the recorded scores without upgrading a lexical match to a pass."""
+    notes = []
+    for case in cases:
+        key = case["id"]
+        for arm, result in pairs[key].items():
+            question = result.get("question")
+            if not isinstance(question, str) or not question.strip():
+                continue
+            tags = re.findall("【([^【】]+)】", question)
+            planned = (result.get("plan") or {}).get("fields", [])
+            notes.append({
+                "case": key, "arm": arm, "question": question, "status": result["grade"]["status"],
+                "explicit_source_term": next((w for w in source_words if w in question), None),
+                "repeated_markers": sorted({f for f in tags if tags.count(f) > 1}),
+                "planned_fields_in_text_without_marker": [f for f in planned if f not in tags and f in question],
+            })
+    return notes
+
+
+def read_report(root):
+    protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+    pairs = {}
+    for case in protocol["cases"]:
+        key = case["id"]
+        pairs[key] = {}
+        for arm in ("A", "B"):
+            pairs[key][arm] = json.loads((root / f"{key}-{arm}.json").read_text(encoding="utf-8"))
+    report = summarize(pairs)
+    report["wording_notes"] = wording_notes(protocol["cases"], pairs, protocol["source_terms"])
+    return report
+
+
 def run(args):
     identity, _, evidence = load_r22()
     cases = cases_from(evidence)
@@ -222,9 +255,14 @@ def run(args):
     summary = summarize(pairs)
     roles = [e.role for e in store.events if e.type == "request_sent"]
     summary["calls"] = {r: roles.count(r) for r in ("controller", "target", "assembler", "judge_eval")}
+    calls = [c for pair in pairs.values() for result in pair.values() for c in result["calls"]]
+    summary["model_calls_ok"] = all(c["dispatched"] and c["status"] == Status.OK.value for c in calls)
+    summary["wording_notes"] = wording_notes(cases, pairs, SOURCE_WORDS)
     write_json(summary, str(root / "summary.json"))
     print(json.dumps(summary, ensure_ascii=False), flush=True)
-    return 1 if summary["paired_requests"]["unscored"] else 0
+    # An unreadable field marker is a measured format outcome. Dispatch and
+    # provider failures still produce a nonzero command exit and remain in the data.
+    return 0 if summary["model_calls_ok"] else 1
 
 
 if __name__ == "__main__":
@@ -233,4 +271,9 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--out", help="New results directory (defaults to a unique path under results/)")
-    sys.exit(run(parser.parse_args()))
+    parser.add_argument("--report", type=Path, metavar="RESULT_DIR", help="Read the existing per-case outputs and explain their scores")
+    args = parser.parse_args()
+    if args.report is not None:
+        print(json.dumps(read_report(args.report), ensure_ascii=False, indent=2))
+    else:
+        sys.exit(run(args))
