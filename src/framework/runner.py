@@ -1561,7 +1561,9 @@ def _load_final_candidate(ep_dir: str, candidate_id: Optional[str]) -> Optional[
 # --------------------------------------------------------------------------
 # 报告（E05）：逐题 + 汇总量，不重跑任何模型
 # --------------------------------------------------------------------------
-def report_run(root: str) -> Dict[str, Any]:
+def report_run(root: str, *, eval_run_id: Optional[str] = None) -> Dict[str, Any]:
+    from .reporting import episode_accounting
+
     root = os.path.abspath(root)
     plan = load_plan_from_root(root)
     eval_root = os.path.join(root, "evaluations")
@@ -1573,7 +1575,10 @@ def report_run(root: str) -> Dict[str, Any]:
         if os.path.isdir(eval_root)
         else []
     )
-    latest = os.path.join(eval_root, evals[-1]) if evals else ""
+    if eval_run_id is not None and eval_run_id not in evals:
+        raise ValueError(f"Unknown evaluation in this experiment: {eval_run_id!r}")
+    selected_id = eval_run_id if eval_run_id is not None else (evals[-1] if evals else "")
+    latest = os.path.join(eval_root, selected_id) if selected_id else ""
     metrics = json.load(open(os.path.join(latest, "metrics.json"), encoding="utf-8")) if latest else {}
     records = []
     if latest and os.path.exists(os.path.join(latest, "records.jsonl")):
@@ -1598,6 +1603,7 @@ def report_run(root: str) -> Dict[str, Any]:
         "experiment_id": plan.get("experiment_id"),
         "episodes": len(plan["episodes"]),
         "eval_run_id": os.path.basename(latest) if latest else "",
+        "episode_accounting": episode_accounting(len(plan["episodes"]), metrics),
         "metrics": {
             k: metrics.get(k)
             for k in ("N", "S", "F", "U", "asr_point", "asr_task_range", "task_eval_coverage", "any_success_rate")
@@ -1620,7 +1626,8 @@ def report_run(root: str) -> Dict[str, Any]:
         "prompt_manifest": plan.get("prompt_manifest", []),
         "note": "ASR 点值是任务等权下界；有 U 时必须同时报 asr_task_range。评价覆盖低时不能把 0% 当作方法效果。",
     }
-    write_json(report, os.path.join(root, "report.json"))
+    if eval_run_id is None:
+        write_json(report, os.path.join(root, "report.json"))
     return report
 
 

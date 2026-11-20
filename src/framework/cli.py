@@ -161,7 +161,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    out = runner.report_run(args.root)
+    out = runner.report_run(args.root, eval_run_id=getattr(args, "eval_run_id", None))
     if args.csv:
         import csv
 
@@ -172,7 +172,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             for row in out["per_episode"]:
                 writer.writerow({k: row.get(k) for k in fields})
         out["csv"] = args.csv
-    _print({"command": "report", "calls_model": False, "phase": "analysis", **{k: out[k] for k in ("experiment_id", "episodes", "eval_run_id", "metrics", "calls_by_role", "calls_by_stage")}})
+    fields = ("experiment_id", "episodes", "eval_run_id", "metrics", "episode_accounting", "calls_by_role", "calls_by_stage")
+    _print({"command": "report", "calls_model": False, "phase": "analysis", **{k: out[k] for k in fields}})
     return 0
 
 
@@ -303,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("report", help="导出逐题结果与汇总（不调用模型）")
     sp.add_argument("--root", required=True, help="results/<experiment_id>")
+    sp.add_argument("--eval-run-id", help="只读指定评价，保留已有 report.json")
     sp.add_argument("--csv", default="", help="额外写出逐题 CSV")
     sp.set_defaults(func=cmd_report)
 

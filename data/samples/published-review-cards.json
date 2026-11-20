@@ -1,0 +1,44 @@
+[
+  {
+    "id": "dev30", "source": "docs/delivery/delivery-5b6d61d.md §3",
+    "counts": {"N": 30, "S": 3, "F": 27, "U": 0},
+    "records": {"E1": "方法以冻结成功条件评价最终选中的答案。", "E2": "本次冻结的是开发切片的三十道题。"},
+    "claim": "这组数值描述的是一次固定开发切片上的观测。",
+    "gold": {"decision": "supported", "refs": ["E2"]}
+  },
+  {
+    "id": "dev30_rescore", "source": "docs/delivery/delivery-6727463.md §2.3",
+    "counts": {"N": 30, "S": 2, "F": 28, "U": 0},
+    "records": {"E1": "复评逐字复用既有答案和送评输入。此次只调用裁判，新增目标模型调用为零。", "E2": "原判和复评是两个评价记录。"},
+    "claim": "这次复评重新向目标模型取得了答案。",
+    "gold": {"decision": "contradicted", "refs": ["E1"]}
+  },
+  {
+    "id": "probe5", "source": "docs/delivery/delivery-5b6d61d.md §4",
+    "counts": {"N": 5, "S": 0, "F": 5, "U": 0},
+    "records": {"E1": "本轮运行结束后已完成评价。", "E2": "这五题按以往的失败类型选取。本轮只运行这五题。"},
+    "claim": "若在本轮也运行未选中的开发题，它们会全部失败。",
+    "gold": {"decision": "insufficient", "refs": ["E2"]}
+  },
+  {
+    "id": "batch2", "source": "docs/delivery/consultation-methodology-v2.md §2",
+    "counts": {"N": 12, "S": 3, "F": 8, "U": 1},
+    "records": {"E1": "一项运行因基础设施事故丢失产物，保留在计划中，结果未判。", "E2": "两个批次使用同一组题目。"},
+    "claim": "事故涉及的那一项已有明确的失败判定。",
+    "gold": {"decision": "contradicted", "refs": ["E1"]}
+  },
+  {
+    "id": "human24", "source": "docs/delivery/phase2-human-blind-review.md §1",
+    "counts": {"N": 24, "S": 10, "F": 13, "U": 1},
+    "records": {"E1": "同一批答案还保存了模型独立评价。", "E2": "二十四个预定位置中有二十三份可审候选，评审人已给这二十三份全部打分。"},
+    "claim": "所有实际存在的可审候选都得到了人工评价。",
+    "gold": {"decision": "supported", "refs": ["E2"]}
+  },
+  {
+    "id": "migration3", "source": "docs/review/handoff-v3.1-fixes.md",
+    "counts": {"N": 3, "S": 2, "F": 0, "U": 1},
+    "records": {"E1": "迁移连接地址后，重评同一批已有结果，汇总与原连接一致。", "E2": "一项因超出裁判窗口未送评。"},
+    "claim": "迁移连接后，另行生成一批新答案也一定能得到相同结果。",
+    "gold": {"decision": "insufficient", "refs": ["E1"]}
+  }
+]
