@@ -226,8 +226,28 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
     reqs = [e for e in evs if e.get("type") == "request_sent" and e.get("role") == "target"]
     resp_by_call = {e.get("call_id"): e for e in evs
                     if e.get("type") == "response_received"}
-    gen_by_view = {e.get("view_id"): e for e in evs if e.get("type") == "request_generated"}
-    view_by_id = {e.get("view_id"): e for e in evs if e.get("type") == "view_snapshot"}
+    gens = [e for e in evs if e.get("type") == "request_generated"]
+    # 关联优先级（Issue #1 小修）：request_id（一次请求）→ generation_call_id（规划调用）
+    # → call_id（具体发送与回复）。同一视图下的多次请求必须各自归位；
+    # 旧记录无法唯一对应时该项置 None 并标 ambiguous，前端显示"关联不确定"。
+    gen_by_rid = {}
+    for g in gens:
+        rid = (g.get("payload") or {}).get("request_id")
+        if rid and rid not in gen_by_rid:
+            gen_by_rid[rid] = g
+    gens_by_view: Dict[str, list] = {}
+    for g in gens:
+        gens_by_view.setdefault(g.get("view_id"), []).append(g)
+    # view_snapshot 是 Target 发送前的消息准备快照（同 view_id 可能有多份——
+    # 同视图多次请求各有一份）。按事件流序配对：每个 target 请求取其**之前最近**的
+    # 同 view_id 快照；找不到则未记录。
+    snap_before: Dict[int, Any] = {}
+    last_snap_by_view: Dict[str, Any] = {}
+    for idx, e in enumerate(evs):
+        if e.get("type") == "view_snapshot":
+            last_snap_by_view[e.get("view_id")] = (idx, e)
+        elif e.get("type") == "request_sent" and e.get("role") == "target":
+            snap_before[idx] = last_snap_by_view.get(e.get("view_id"), (None, None))[1]
     edited_by_view = {}
     for e in evs:
         if e.get("type") == "query_edited":
@@ -238,6 +258,8 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
     seen_nodes: Dict[str, int] = {}
 
     interactions = []
+    req_idxs = [i for i, e in enumerate(evs)
+                if e.get("type") == "request_sent" and e.get("role") == "target"]
     for i, r in enumerate(reqs, 1):
         node = r.get("node_id") or ""
         node_counts[node] = node_counts.get(node, 0) + 1
@@ -245,9 +267,16 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
         seen_nodes[node] = nth
         msgs = (r.get("payload") or {}).get("messages") or []
         sent_text = msgs[-1].get("content", "") if msgs else ""
-        gen = gen_by_view.get(r.get("view_id"))
+        rid = (r.get("payload") or {}).get("request_id")
+        gen, gen_ambiguous = gen_by_rid.get(rid), False
+        if gen is None:
+            cands = gens_by_view.get(r.get("view_id")) or []
+            if len(cands) == 1:
+                gen = cands[0]
+            elif len(cands) > 1:
+                gen_ambiguous = True  # 同视图多次请求且无 request_id 可区分
         resp = resp_by_call.get(r.get("call_id"))
-        view = view_by_id.get(r.get("view_id"))
+        view = snap_before.get(req_idxs[i - 1])
         edit = edited_by_view.get(r.get("view_id"))
         # 规划调用（generation_call_id → controller 角色 request/response 配对；
         # 关联不确定时置 null，前端标『该次运行未记录』）
@@ -270,15 +299,18 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
             "sent_text": sent_text,
             "reply_status": (resp or {}).get("payload", {}).get("status") if resp else None,
             "reply_text": (resp or {}).get("payload", {}).get("text") if resp else None,
-            "view_messages": (view or {}).get("payload", {}).get("messages") if view else None,
+            "controller_input_messages": ((ctrl_req or {}).get("payload") or {}).get("messages")
+                if ctrl_req and gen and not gen_ambiguous else None,
+            "target_view_snapshot": (view or {}).get("payload", {}).get("messages") if view else None,
             "generation_call_id": ((gen or {}).get("payload") or {}).get("generation_call_id"),
-            "request_id": ((gen or {}).get("payload") or {}).get("request_id"),
+            "request_id": rid,
+            "proposal_ambiguous": gen_ambiguous,
             "planning_call": ({
                 "call_id": ctrl_req.get("call_id"),
                 "input_messages": (ctrl_req.get("payload") or {}).get("messages"),
                 "status": ctrl_resp.get("payload", {}).get("status"),
                 "response_text": ctrl_resp.get("payload", {}).get("text"),
-            } if ctrl_req else None),
+            } if ctrl_req and gen and not gen_ambiguous else None),
         })
     for it in interactions:
         it["node_total"] = node_counts.get(it["node_id"], 1)
@@ -301,7 +333,8 @@ def workbench_context(root: str, episode_id: str, call_id: str) -> Dict[str, Any
         "root": root, "episode_id": episode_id, "call_id": call_id, "seq": it["seq"],
         "task": wb["task"],
         # Controller 当时收到的上下文（该次快照）
-        "view_messages": it["view_messages"],
+        "controller_input_messages": it["controller_input_messages"],
+        "target_view_snapshot": it["target_view_snapshot"],
         # 此前各轮（晚于该步的回复不出现——只列到 seq-1）
         "prior_turns": [{"seq": p["seq"], "call_id": p["call_id"],
                          "question": p["sent_text"], "reply": p["reply_text"],

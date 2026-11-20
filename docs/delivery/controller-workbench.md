@@ -106,6 +106,33 @@ seq+call_id+text_sha+text_head）、reason、draft_text、note。原运行目录
   （query_edited）无记录，交互详情标「该次运行未记录（批次运行无人工编辑）」；
   个别交互若无 view_snapshot/规划调用，分别标「该次运行未记录」/「规划调用关联不确定」。
 
+## 小修（2026-11-21，同视图两次请求的关联归位）
+
+**复现**：R22 中 10 个视图各有 2 次请求（如 view_412655f6f691 下第 1/2 次提问）。
+原实现按 view_id 建 dict，后写覆盖——点开第 1 次时，原提议与消息准备快照显示的是
+第 2 次的内容。
+
+**修复**（关联优先级按任务书：`request_id` → `generation_call_id` → `call_id`）：
+
+- 提议/规划调用：target 请求的 `payload.request_id` ↔ `request_generated.payload.request_id`
+  主关联；无 request_id 的旧记录回退 view_id，同视图多候选 → 该项**关联不确定**
+  （`proposal_ambiguous`，前端红标 + 说明，其余信息照常）；
+- view_snapshot 语义更正：它是 **Target 发送前的消息准备快照**（同 view_id 多份），
+  按事件流序配对——每个 target 请求取其之前最近的同 view_id 快照；
+- 区块标注分别改为 **「① Controller 规划输入（该次规划调用的输入消息）」**
+  （= 规划调用 call 的 payload.messages）与 **「④ Target 实际收到的消息（完整）」**
+  （附「发送前消息准备快照」，按事件序配对）。
+
+**R22 点验**（真实 Chromium，截图 results/workbench-fix-verify-20261121.png）：同视图
+第 1/2 次各自的 Controller 规划输入（JBT_STAGE=PLAN 提示词）、原提议（第 1 次
+"A forensic linguistics lab…"、第 2 次 "In preparing an IT vendor evaluation memo…"）、
+实际发送、Target 回复、规划调用（call_cb5c73a755f6 / call_0404f97395d5）全部归位。
+
+**测试改为干净检出可运行**：`tests/test_workbench.py` 重写为 tmp_path 合成 episode
+（同一视图两次请求的最小事件流），不依赖服务器上的 results/ 运行目录；新增
+`test_same_view_two_requests_attributed_correctly`（提议/规划输入/发送/回复各自归位）
+与 `test_no_request_id_marks_ambiguous`（无 request_id → 关联不确定）。
+
 ## 未做 / 下一步
 
 - 视觉精修（任务书明确留到实际使用后）；

@@ -264,17 +264,23 @@ function wbRenderList() {
         ${isD ? '<span class="tag ok">发现点</span>' : ""}${isF ? '<span class="tag">回退点</span>' : ""}
         ${it.reply_status ? `<span class="hint">回复 ${esc(it.reply_status)}</span>` : '<span class="tag bad">无回复记录</span>'}
       </div>
-      ${wbCollapsible("① Controller 当时收到的上下文（该次快照，不含后来材料）", wbMsgs(it.view_messages))}
+      ${wbCollapsible("① Controller 规划输入（该次规划调用的输入消息，不含后来材料）",
+        it.controller_input_messages
+          ? wbMsgs(it.controller_input_messages)
+          : '<span class="tag bad">关联不确定</span> <span class="hint">规划调用无法唯一对应（无 request_id 且同视图多次请求）</span>')}
       ${wbCollapsible(`② 原提议${it.generation_call_id ? "（规划调用 " + esc(it.generation_call_id) + "）" : ""}`,
-        `<div class="content">${esc(it.proposal ?? "该次运行未记录")}</div>
+        it.proposal_ambiguous
+          ? '<span class="tag bad">关联不确定</span> <span class="hint">同一视图下有多次请求，且该次运行未记录 request_id，无法唯一对应提议</span>'
+          : `<div class="content">${esc(it.proposal ?? "该次运行未记录")}</div>
          ${it.rationale ? `<div class="meta">理由</div><div class="content">${esc(it.rationale)}</div>` : ""}
          ${it.strategy ? `<div class="hint">策略 ${esc(it.strategy)}</div>` : ""}
-         ${it.planning_call ? wbCollapsible("规划调用原文（输入→响应）",
-            wbMsgs(it.planning_call.input_messages) + `<div class="meta">响应</div><div class="content">${esc(it.planning_call.response_text ?? "未记录")}</div>`) : '<div class="hint">规划调用关联不确定</div>'}`)}
+         ${it.planning_call ? wbCollapsible("规划调用响应原文",
+            `<div class="content">${esc(it.planning_call.response_text ?? "未记录")}</div>`) : '<div class="hint">规划调用关联不确定</div>'}`)}
       ${wbCollapsible("③ 人工修改记录", it.human_edit
         ? `<div class="content">${esc(JSON.stringify(it.human_edit))}</div>`
         : '<span class="hint">该次运行未记录（批次运行无人工编辑）</span>')}
-      ${wbCollapsible("④ 实际发送给 Target 的消息（完整）", wbMsgs(it.sent_messages))}
+      ${wbCollapsible("④ Target 实际收到的消息（完整）", wbMsgs(it.sent_messages) +
+        (it.target_view_snapshot ? wbCollapsible("发送前消息准备快照（该次 view_snapshot，按事件序配对）", wbMsgs(it.target_view_snapshot)) : ""))}
       ${wbCollapsible("⑤ Target 回复", it.reply_text != null
         ? `<div class="content">${esc(it.reply_text)}</div>`
         : '<span class="hint">该次运行未记录</span>')}

@@ -129,6 +129,13 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-21 02:55：**工作台小修**——同视图两次请求关联归位：request_id 主关联
+  （payload.request_id ↔ request_generated），旧记录回退 view_id 多候选标"关联不确定"；
+  view_snapshot 语义更正为 Target 发送前消息准备快照（按事件流序配对）；区块标注
+  改"Controller 规划输入"/"Target 实际收到的消息"。R22 真实浏览器点验全过
+  （第1/2次提议/规划输入/发送/回复/规划调用各自归位，截图 workbench-fix-verify）。
+  4 项测试重写为 tmp_path 合成 episode，干净检出可运行（+2 项关联正确性测试）。
+  零模型调用。
 - 2026-11-21 02:30：**Controller 人工干预工作台交付**（Issue #1，基线 eb9a49c）——
   工作台入口（固定 R22 样例 + 回放页按钮）；交互轨迹按时间列出（20 次，同节点多次
   可分辨）；五区块详情（Controller 上下文→原提议[generation_call_id 可回查规划调用]→
