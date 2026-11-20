@@ -129,6 +129,11 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
   MANIFEST 记录归档清单与保留原因；实验/eval ID 引用仍可回溯）。顶层 35→10 项，
   129M→95M（历史数据以压缩形态保留）。活跃保留：mainflow7/8、judge-rescore、
   cka-judge-probe_594b、citation-audit、盲审包、两个交付 tar.gz。
+- 2026-11-21 04:10：**R22 工作台中文全文翻译**——60 单元（任务+20 查询+20 理由
+  [本为中文]+19 回复，~74.6k 英文字符）逐段译出，保留数字/例句/引用/否定/限制条件，
+  分清提问者声称 vs Target 回答 vs 模型自写示例。展示层替换：*_zh 字段 + 规划输入
+  JSON 状态内嵌文本哈希递归替换（外层对象定位法）。20/20 交互全覆盖零长英文残留，
+  浏览器实测中文可读（截图 workbench-zh-verify）。英文原件留事件流供复核。零模型调用。
 - 2026-11-21 02:55：**工作台小修**——同视图两次请求关联归位：request_id 主关联
   （payload.request_id ↔ request_generated），旧记录回退 view_id 多候选标"关联不确定"；
   view_snapshot 语义更正为 Target 发送前消息准备快照（按事件流序配对）；区块标注

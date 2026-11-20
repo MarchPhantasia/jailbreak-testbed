@@ -254,7 +254,9 @@ function wbMsgs(msgs) {
 }
 function wbRenderList() {
   const t = WB.task || {};
-  let h = wbCollapsible(`<b>原始任务</b> ${esc(t.task_id || "")}`, esc(t.prompt || ""), false) + "<hr>";
+  let h = wbCollapsible(`<b>原始任务</b> ${esc(t.task_id || "")}`,
+    esc(t.prompt_zh || t.prompt || ""), true) + "<hr>" +
+    `<p class="hint">正文已译为中文（保留数字、例句、引用、否定与限制条件）；英文原始记录保留在运行档案中供复核。</p>`;
   WB.interactions.forEach(it => {
     const retry = it.node_total > 1 ? ` · 同节点第 ${it.node_nth}/${it.node_total} 次` : "";
     const isD = WB_SEL.discovery && WB_SEL.discovery.call_id === it.call_id;
@@ -271,8 +273,8 @@ function wbRenderList() {
       ${wbCollapsible(`② 原提议${it.generation_call_id ? "（规划调用 " + esc(it.generation_call_id) + "）" : ""}`,
         it.proposal_ambiguous
           ? '<span class="tag bad">关联不确定</span> <span class="hint">同一视图下有多次请求，且该次运行未记录 request_id，无法唯一对应提议</span>'
-          : `<div class="content">${esc(it.proposal ?? "该次运行未记录")}</div>
-         ${it.rationale ? `<div class="meta">理由</div><div class="content">${esc(it.rationale)}</div>` : ""}
+          : `<div class="content">${esc(it.proposal_zh || it.proposal || "该次运行未记录")}</div>
+         ${(it.rationale_zh || it.rationale) ? `<div class="meta">理由</div><div class="content">${esc(it.rationale_zh || it.rationale)}</div>` : ""}
          ${it.strategy ? `<div class="hint">策略 ${esc(it.strategy)}</div>` : ""}
          ${it.planning_call ? wbCollapsible("规划调用响应原文",
             `<div class="content">${esc(it.planning_call.response_text ?? "未记录")}</div>`) : '<div class="hint">规划调用关联不确定</div>'}`)}
@@ -282,7 +284,7 @@ function wbRenderList() {
       ${wbCollapsible("④ Target 实际收到的消息（完整）", wbMsgs(it.sent_messages) +
         (it.target_view_snapshot ? wbCollapsible("发送前消息准备快照（该次 view_snapshot，按事件序配对）", wbMsgs(it.target_view_snapshot)) : ""))}
       ${wbCollapsible("⑤ Target 回复", it.reply_text != null
-        ? `<div class="content">${esc(it.reply_text)}</div>`
+        ? `<div class="content">${esc(it.reply_zh || it.reply_text)}</div>`
         : '<span class="hint">该次运行未记录</span>')}
       <p><button onclick="wbSetDiscovery('${esc(it.call_id)}')">设为发现点</button>
          <button onclick="wbSetFallback('${esc(it.call_id)}')">设为回退点</button></p>
@@ -313,14 +315,14 @@ function wbRenderDraft() {
     <p><b>我的批注（为什么第 ${d.seq} 次回复改变了判断）：</b><br>
        <textarea id="wb-reason" style="width:100%;height:56px"></textarea></p>
     <p><b>替代问题（草稿 · 未发送，预填第 ${f.seq} 次实际发送）：</b><br>
-       <textarea id="wb-draft-text" style="width:100%;height:90px">${esc(f.sent_text || "")}</textarea></p>
+       <textarea id="wb-draft-text" style="width:100%;height:90px">${esc(f.proposal_zh || f.sent_text || "")}</textarea></p>
     <p><button onclick="wbSaveDraft()">保存草稿（只写工作台数据，模型调用 0）</button>
        <span class="hint">可在同一位置保存多份草稿，刷新后均可找回</span></p>`;
   wbLoadContext(f.call_id);
 }
 window.wbFallbackChanged = (callId) => {
   WB_SEL.fallback = WB.interactions.find(x => x.call_id === callId);
-  $("#wb-draft-text").value = WB_SEL.fallback.sent_text || "";
+  $("#wb-draft-text").value = WB_SEL.fallback.proposal_zh || WB_SEL.fallback.sent_text || "";
   wbLoadContext(callId);
 };
 async function wbLoadContext(callId) {
@@ -354,9 +356,9 @@ async function wbRenderSaved() {
     const d = WB.interactions.find(x => x.call_id === r.discovery.call_id) || {};
     return `<div class="cols">
       <div class="panel"><h3>原（第 ${r.fallback.seq} 次实际发送 · ${esc(r.fallback.call_id)}）</h3><div class="body">
-        <div class="content" style="white-space:pre-wrap">${esc(f.sent_text ?? r.fallback.text_head ?? "")}</div>
+        <div class="content" style="white-space:pre-wrap">${esc(f.proposal_zh || f.sent_text || r.fallback.text_head || "")}</div>
         <div class="meta">Target 回复（归属原调用）</div>
-        <div class="content" style="white-space:pre-wrap">${esc((f.reply_text ?? "").slice(0, 600))}</div>
+        <div class="content" style="white-space:pre-wrap">${esc((f.reply_zh || f.reply_text || "").slice(0, 600))}</div>
       </div></div>
       <div class="panel"><h3>草稿 ${esc(r.draft_id)}（发现点：第 ${r.discovery.seq} 次回复）</h3><div class="body">
         <span class="tag bad">草稿 · 未发送</span>

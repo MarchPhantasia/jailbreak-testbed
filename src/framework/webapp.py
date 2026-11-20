@@ -198,6 +198,100 @@ def _sha256_short(t: str) -> str:
     return hashlib.sha256((t or "").encode("utf-8")).hexdigest()[:16]
 
 
+_WB_TRANSLATIONS: Dict[str, Dict[str, str]] = {}
+
+
+def _wb_translations(root: str, episode_id: str) -> Dict[str, str]:
+    """工作台中文译本映射：data/workbench/translations/<run>__<ep>.json（en sha16 → zh）。
+
+    英文原始记录保留在运行档案中供复核；译本只在展示层替换。
+    """
+    key = f"{os.path.basename(root.rstrip('/'))}__{episode_id}"
+    if key not in _WB_TRANSLATIONS:
+        m: Dict[str, str] = {}
+        fp = os.path.join("data", "workbench", "translations", key + ".json")
+        if os.path.exists(fp):
+            try:
+                for row in json.load(open(fp, encoding="utf-8")).values():
+                    if row.get("zh") and row.get("en"):
+                        m[_sha256_short(row["en"])] = row["zh"]
+            except (json.JSONDecodeError, OSError):
+                pass
+        _WB_TRANSLATIONS[key] = m
+    return _WB_TRANSLATIONS[key]
+
+
+def _wb_tr(text: Optional[str], m: Dict[str, str]) -> Tuple[Optional[str], bool]:
+    if not text:
+        return text, False
+    zh = m.get(_sha256_short(text))
+    return (zh, True) if zh else (text, False)
+
+
+def _wb_tr_messages(msgs, m):
+    """消息列表翻译：整条匹配；控制器输入的 JSON 状态内嵌英文按哈希递归替换。"""
+    if not msgs:
+        return msgs, False
+    out, any_hit = [], False
+    for msg in msgs:
+        content = msg.get("content") or ""
+        zh, hit = _wb_tr(content, m)
+        if not hit:
+            zh, hit = _wb_tr_json_blob(content, m)
+        out.append({**msg, "content": zh})
+        any_hit = any_hit or hit
+    return out, any_hit
+
+
+def _wb_tr_json_blob(content: str, m: Dict[str, str]):
+    """'中文指令 + 尾部 {JSON 状态}'：JSON 内字符串（查询/回复原文）按哈希替换。
+
+    指令文本里也内嵌 JSON 示例（action_schema 等），故从头扫描首个"能消费到
+    内容结尾"的 \n{ ——那才是外层状态对象。
+    """
+    dec = json.JSONDecoder()
+    best = None
+    start = 0
+    while True:
+        idx = content.find("\n{", start)
+        if idx < 0:
+            break
+        try:
+            _, end = dec.raw_decode(content, idx + 1)
+            if end >= len(content.rstrip()):
+                best = idx
+                break
+        except json.JSONDecodeError:
+            pass
+        start = idx + 1
+    if best is None:
+        return content, False
+    head, blob = content[: best + 1], content[best + 1:]
+    try:
+        obj = json.loads(blob)
+    except json.JSONDecodeError:
+        return content, False
+    hit = [False]
+
+    def walk(x):
+        if isinstance(x, str):
+            zh = m.get(_sha256_short(x))
+            if zh:
+                hit[0] = True
+                return zh
+            return x
+        if isinstance(x, list):
+            return [walk(i) for i in x]
+        if isinstance(x, dict):
+            return {k: walk(v) for k, v in x.items()}
+        return x
+
+    obj2 = walk(obj)
+    if not hit[0]:
+        return content, False
+    return head + json.dumps(obj2, ensure_ascii=False, indent=2), True
+
+
 def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
     """Controller 工作台：按时间列出该 episode 的 Target 交互（Issue #1）。
 
@@ -314,6 +408,18 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
         })
     for it in interactions:
         it["node_total"] = node_counts.get(it["node_id"], 1)
+    # 中文译本（存在即替换展示；英文原件保留在事件流中）
+    tr_map = _wb_translations(root, episode_id)
+    task_prompt_zh, _ = _wb_tr(task.get("prompt"), tr_map)
+    for it in interactions:
+        it["proposal_zh"], _ = _wb_tr(it["proposal"], tr_map)
+        it["rationale_zh"], _ = _wb_tr(it["rationale"], tr_map)
+        it["reply_zh"], _ = _wb_tr(it["reply_text"], tr_map)
+        it["controller_input_messages"], hit_c = _wb_tr_messages(it["controller_input_messages"], tr_map)
+        it["sent_messages"], hit_s = _wb_tr_messages(it["sent_messages"], tr_map)
+        it["target_view_snapshot"], _ = _wb_tr_messages(it["target_view_snapshot"], tr_map)
+        it["zh_translated"] = bool(it.get("proposal_zh") or hit_c or hit_s or it.get("reply_zh"))
+    task = {**task, "prompt_zh": task_prompt_zh}
     return {"root": root, "episode_id": episode_id, "task": task,
             "interactions": interactions,
             "note": "锚点=seq+call_id+text_sha；同节点第 2 次起标重试；"
@@ -337,9 +443,11 @@ def workbench_context(root: str, episode_id: str, call_id: str) -> Dict[str, Any
         "target_view_snapshot": it["target_view_snapshot"],
         # 此前各轮（晚于该步的回复不出现——只列到 seq-1）
         "prior_turns": [{"seq": p["seq"], "call_id": p["call_id"],
-                         "question": p["sent_text"], "reply": p["reply_text"],
+                         "question": p.get("proposal_zh") or p["sent_text"],
+                         "reply": p.get("reply_zh") or p["reply_text"],
                          "reply_status": p["reply_status"]} for p in prior],
         "sent_text": it["sent_text"], "text_sha": it["text_sha"],
+        "sent_text_zh": it.get("proposal_zh") or it["sent_text"],
     }
 
 
