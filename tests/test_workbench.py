@@ -13,6 +13,7 @@
 """
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -108,6 +109,28 @@ def test_same_view_two_requests_attributed_correctly(episode):
     # 发送前消息准备快照按事件序各归其位
     assert its[0]["target_view_snapshot"] is not None
     assert its[1]["target_view_snapshot"] is not None
+
+
+def test_context_keeps_planner_snapshot_and_episode_history_distinct(episode, monkeypatch):
+    root, ep = episode
+    translations = {webapp._sha256_short(text): translated for text, translated in [
+        ("proposal text 1", "规划原提议"), ("sent question 1", "实际派发的问题"),
+        ("controller input 2", "规划输入"), ("prep snapshot 2", "目标快照"),
+    ]}
+    monkeypatch.setattr(webapp, "_wb_translations", lambda *_: translations)
+    path = Path(root, "episodes", ep, "events.jsonl")
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    late = next(e for e in events if e["type"] == "response_received" and e["call_id"] == "call_target_1")
+    events.remove(late)
+    events.append(late)
+    path.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    context = webapp.workbench_context(root, ep, "call_target_2")
+    assert context["controller_input_messages"][0]["content"] == "规划输入"
+    assert context["target_view_snapshot"][0]["content"] == "目标快照"
+    assert context["prior_turns"] == [{"seq": 1, "call_id": "call_target_1", "question": "实际派发的问题",
+                                        "reply": None, "reply_status": None}]
+    assert webapp.workbench_context(root, ep, "call_target_1")["sent_text_zh"] == "实际派发的问题"
+    assert webapp.workbench_episode(root, ep)["interactions"][0]["reply_text"] == "target reply 1"
 
 
 def test_no_request_id_marks_ambiguous(tmp_path, monkeypatch):

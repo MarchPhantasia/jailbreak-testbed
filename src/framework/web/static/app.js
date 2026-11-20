@@ -48,11 +48,34 @@ async function showTrace(run, ep) {
   const box = $("#trace .body");
   if (t.error) { box.innerHTML = `<p class="hint">${esc(t.error)}</p>`; return; }
   let html = `<p><b>任务</b> ${esc(t.task.task_id)}<br>${esc(t.task.prompt || "")}</p>`;
+  html += contextProfileHtml(t.context_profile);
   for (const s of t.steps) html += stepHtml(s);
   html += `<h3>判定</h3>` + verdictHtml(t.verdicts, t.final_candidate);
-  if (t.final_candidate) html += `<p><button onclick="showCand('${esc(run.root)}','${esc(ep.episode_id)}','${esc(t.final_candidate)}')">查看最终候选（主张→证据）</button></p>`;
-  html += `<p><button onclick="wbOpenFromReplay('${esc(run.root)}','${esc(ep.episode_id)}')">打开工作台（人工回退记录）</button></p>`;
+  if (t.final_candidate) html += '<p><button data-candidate>查看最终候选（主张→证据）</button></p>';
+  html += '<p><button data-workbench>打开工作台（人工回退记录）</button></p>';
   box.innerHTML = html;
+  if (t.final_candidate) box.querySelector("[data-candidate]").onclick = () => showCand(run.root, ep.episode_id, t.final_candidate);
+  box.querySelector("[data-workbench]").onclick = () => wbOpenFromReplay(run.root, ep.episode_id);
+}
+function contextProfileHtml(profile) {
+  if (!profile?.stages.length) return '<p class="hint">档案中无规划或装配派发与缓存记录。</p>';
+  const roleName = role => role === "controller" ? "规划" : "装配";
+  const shown = value => value ?? "未记录";
+  const stages = profile.stages.map(s => `<tr><td>${roleName(s.role)} · ${esc(s.stage_id || "阶段未记录")}</td>
+    <td>${s.dispatched}</td><td>${s.cache_hits}</td><td>${shown(s.message_chars_peak)}（${s.message_chars_known_calls}/${s.dispatched}）</td>
+    <td>${shown(s.tokens_in_peak)}（${s.tokens_in_known_calls}/${s.dispatched}）</td></tr>`).join("");
+  const calls = profile.requests.map(r => {
+    const s = r.sections;
+    let split = "模板与材料占用无法从归档拆分";
+    if (s) {
+      split = `模板 ${s.template_chars} 字，输入 JSON ${s.payload_json_chars} 字。材料正文 ${shown(s.material_text_chars)} 字（${s.material_count} 条，全文相同的重复部分 ${shown(s.repeated_material_text_chars)} 字）`;
+      if (r.role === "controller") split += `。当前分支已问记录 ${shown(s.branch_query_count)} 条`;
+    }
+    return `<li>${roleName(r.role)} · ${esc(r.call_id || "无调用 ID")} · ${shown(r.message_chars)} 字符 · 输入 token ${shown(r.tokens_in)}<br>${split}</li>`;
+  }).join("");
+  return `<details><summary>规划和装配实际发出了多少内容？</summary>
+    <table><thead><tr><th>角色 / 阶段</th><th>派发</th><th>缓存</th><th>消息字符峰值（有记录/派发）</th><th>输入 token 峰值（有记录/派发）</th></tr></thead>
+    <tbody>${stages}</tbody></table><details><summary>逐次核对原始请求占用</summary><ol>${calls}</ol></details></details>`;
 }
 function stepHtml(s) {
   const m = (x) => `<div class="meta">${x}</div>`;
@@ -68,7 +91,7 @@ function stepHtml(s) {
     }
     case "request": {
       const view = s.view ? `<details class="step k-view"><summary>消息准备快照（${s.view.messages.length} 条 · ${esc(s.view.session_mode)}）</summary>${s.view.messages.map(x => `<div class="ev-text"><b>${esc(x.role)}</b>：${esc(x.content)}</div>`).join("")}</details>` : "";
-      return view + `<div class="step k-request">${m(`${esc(s.role || "target")} 请求 · call ${esc(s.call_id)} · ${s.chars} 字符（真实派发）`)}${s.messages ? `<details><summary>实际发送消息</summary>${s.messages.map(x => `<div class="ev-text"><b>${esc(x.role)}</b>：${esc(x.content)}</div>`).join("")}</details>` : ""}</div>`;
+      return view + `<div class="step k-request">${m(`${esc(s.role || "target")} 请求 · call ${esc(s.call_id)} · ${s.chars ?? "未知"} 字符（真实派发）`)}${s.messages ? `<details><summary>实际发送消息</summary>${s.messages.map(x => `<div class="ev-text"><b>${esc(x.role)}</b>：${esc(x.content)}</div>`).join("")}</details>` : ""}</div>`;
     }
     case "response": return `<div class="step k-response">${m(`${esc(s.role || "target")} 回复 · call ${esc(s.call_id)} · ${esc(s.status)}`)}<div class="content">${esc(s.excerpt)}…</div></div>`;
     case "cache_hit": return `<div class="step k-paused">${m("缓存命中 · " + esc(s.role) + " · " + esc(s.key))}</div>`;
@@ -102,10 +125,7 @@ window.showCand = async (root, ep, cand) => {
   const box = $("#trace .body");
   let h = `<p><b>候选</b> ${esc(c.candidate_id)} · 包 ${esc((c.packs[0] || {}).pack_id || "?")}（hash ${esc((c.packs[0] || {}).input_hash || "?")}…）</p>
     <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div><h3>主张 → 证据（episode 有 / 包允许 / Judge 看到）</h3>`;
-  for (const cl of c.claims) {
-    const evs = cl.evidence.map(e => `<details><summary>${esc(e.evidence_id)} ${evTags(e)}</summary><div class="ev-text">${esc(e.text ?? "（episode 无此条原文）")}</div></details>`).join("");
-    h += `<div class="claim"><div class="claim-text">${esc(cl.text)}</div>${evs}</div>`;
-  }
+  h += c.claims.map(claimEvidenceHtml).join("");
   h += verdictHtml(c.verdicts, c.candidate_id);
   box.innerHTML = h;
 };
@@ -143,6 +163,30 @@ function evTags(e) {
   }
   return t.join("");
 }
+function claimEvidenceHtml(cl) {
+  const groups = new Map();
+  for (const e of cl.evidence) {
+    const source = e.source_event_id ? "回复事件 " + e.source_event_id : e.call_id ? "调用 " + e.call_id : "来源未定位";
+    if (!groups.has(source)) groups.set(source, []);
+    groups.get(source).push(e);
+  }
+  const problems = {checksum_missing: "未记录校验和", conflict: "同一证据 ID 的原文或位置冲突",
+    invalid: "归档原文或校验和异常", missing: "档案中没有此证据 ID"};
+  let html = `<div class="claim"><div class="claim-text">${esc(cl.text)}</div>`;
+  if (!groups.size) html += '<span class="hint">此主张未列引用</span>';
+  for (const [source, rows] of groups) {
+    const evidence = rows.map(e => {
+      const span = Number.isInteger(e.span_start) && Number.isInteger(e.span_end)
+        ? ` · 原回复字符 [${e.span_start}, ${e.span_end})` : "";
+      const note = problems[e.resolution];
+      return `<details><summary>${esc(e.evidence_id)}${span} ${evTags(e)}</summary>
+        ${note ? '<span class="tag">' + esc(note) + '</span>' : ""}
+        <div class="ev-text">${esc(e.text ?? "原文不可核对")}</div></details>`;
+    }).join("");
+    html += `<details><summary>${esc(source)} · ${rows.length} 条引用</summary>${evidence}</details>`;
+  }
+  return html + "</div>";
+}
 function fallbackBadge(ac) {
   if (!ac?.fallback_render) return "";
   const reason = ac.reason || ac.assembly_config?.reason || "";
@@ -162,10 +206,7 @@ function candPanel(c, tag) {
     <p class="hint">任务 ${esc(c.task_id)} · 包 ${esc((c.packs[0] || {}).pack_id || "?")}（${esc((c.packs[0] || {}).input_hash || "?")}…）· 采样 ${esc(ac.sample_index ?? "-")} ${fallbackBadge(ac)} ${citeFixBadge(ac)}</p>
     <div class="content" style="white-space:pre-wrap">${esc(c.answer)}</div>
     <h3>主张 → 证据（episode 有 / 包允许 / Judge 看到 三层）</h3>`;
-  for (const cl of c.claims) {
-    const evs = cl.evidence.map(e => `<details><summary>${esc(e.evidence_id)} ${evTags(e)}</summary><div class="ev-text">${esc(e.text ?? "（episode 无此条原文）")}</div></details>`).join("");
-    h += `<div class="claim"><div class="claim-text">${esc(cl.text)}</div>${evs}</div>`;
-  }
+  h += c.claims.map(claimEvidenceHtml).join("");
   h += verdictHtml(c.verdicts, c.candidate_id) + `</div></div>`;
   return h;
 }
@@ -249,14 +290,15 @@ function wbCollapsible(title, content, open) {
   return `<details ${open ? "open" : ""}><summary>${title}</summary><div class="content" style="white-space:pre-wrap">${content}</div></details>`;
 }
 function wbMsgs(msgs) {
-  if (!Array.isArray(msgs) || !msgs.length) return `<span class="hint">该次运行未记录</span>`;
+  if (!Array.isArray(msgs)) return '<span class="hint">该次运行未记录</span>';
+  if (!msgs.length) return '<span class="hint">记录为 0 条消息</span>';
   return msgs.map(m => `<div class="meta">${esc(m.role)}</div><div class="content" style="white-space:pre-wrap">${esc(m.content)}</div>`).join("<hr>");
 }
 function wbRenderList() {
   const t = WB.task || {};
   let h = wbCollapsible(`<b>原始任务</b> ${esc(t.task_id || "")}`,
     esc(t.prompt_zh || t.prompt || ""), true) + "<hr>" +
-    `<p class="hint">正文已译为中文（保留数字、例句、引用、否定与限制条件）；英文原始记录保留在运行档案中供复核。</p>`;
+    `<p class="hint">有归档译文的内容以中文展示，其余按原文展示。输入长度按实际派发的原文统计。</p>`;
   WB.interactions.forEach(it => {
     const retry = it.node_total > 1 ? ` · 同节点第 ${it.node_nth}/${it.node_total} 次` : "";
     const isD = WB_SEL.discovery && WB_SEL.discovery.call_id === it.call_id;
@@ -281,7 +323,7 @@ function wbRenderList() {
       ${wbCollapsible("③ 人工修改记录", it.human_edit
         ? `<div class="content">${esc(JSON.stringify(it.human_edit))}</div>`
         : '<span class="hint">该次运行未记录（批次运行无人工编辑）</span>')}
-      ${wbCollapsible("④ Target 实际收到的消息（完整）", wbMsgs(it.sent_messages) +
+      ${wbCollapsible("④ 向 Target 派发的消息（完整）", wbMsgs(it.sent_messages) +
         (it.target_view_snapshot ? wbCollapsible("发送前消息准备快照（该次 view_snapshot，按事件序配对）", wbMsgs(it.target_view_snapshot)) : ""))}
       ${wbCollapsible("⑤ Target 回复", it.reply_text != null
         ? `<div class="content">${esc(it.reply_zh || it.reply_text)}</div>`
@@ -305,7 +347,7 @@ function wbRenderDraft() {
   const d = WB_SEL.discovery, f = WB_SEL.fallback;
   if (!d || !f) { $("#wb-draft").innerHTML = '<p class="hint">先从上方选择一次交互。</p>'; return; }
   const opts = WB.interactions.filter(x => x.seq <= d.seq).map(x =>
-    `<option value="${esc(x.call_id)}" ${x.call_id === f.call_id ? "selected" : ""}>第 ${x.seq} 次（${esc((x.sent_text || "").slice(0, 40))}…）</option>`).join("");
+    `<option value="${esc(x.call_id)}" ${x.call_id === f.call_id ? "selected" : ""}>第 ${x.seq} 次（${esc((x.sent_text_zh || x.sent_text || "").slice(0, 40))}…）</option>`).join("");
   $("#wb-draft").innerHTML = `
     <p><b>发现问题的位置：</b>第 ${d.seq} 次回复 · ${esc(d.call_id)}
        <button onclick="document.getElementById('wb-it-${esc(d.call_id)}').scrollIntoView()">回到该步</button></p>
@@ -315,25 +357,28 @@ function wbRenderDraft() {
     <p><b>我的批注（为什么第 ${d.seq} 次回复改变了判断）：</b><br>
        <textarea id="wb-reason" style="width:100%;height:56px"></textarea></p>
     <p><b>替代问题（草稿 · 未发送，预填第 ${f.seq} 次实际发送）：</b><br>
-       <textarea id="wb-draft-text" style="width:100%;height:90px">${esc(f.proposal_zh || f.sent_text || "")}</textarea></p>
+       <textarea id="wb-draft-text" style="width:100%;height:90px">${esc(f.sent_text_zh || f.sent_text || "")}</textarea></p>
     <p><button onclick="wbSaveDraft()">保存草稿（只写工作台数据，模型调用 0）</button>
        <span class="hint">可在同一位置保存多份草稿，刷新后均可找回</span></p>`;
   wbLoadContext(f.call_id);
 }
 window.wbFallbackChanged = (callId) => {
   WB_SEL.fallback = WB.interactions.find(x => x.call_id === callId);
-  $("#wb-draft-text").value = WB_SEL.fallback.proposal_zh || WB_SEL.fallback.sent_text || "";
+  $("#wb-draft-text").value = WB_SEL.fallback.sent_text_zh || WB_SEL.fallback.sent_text || "";
   wbLoadContext(callId);
 };
 async function wbLoadContext(callId) {
-  const c = await api(`/api/workbench/context/${encodeURIComponent(WB.root)}/${encodeURIComponent(WB.episode_id)}/${encodeURIComponent(callId)}`);
+  const run = WB;
+  const c = await api(`/api/workbench/context/${encodeURIComponent(run.root)}/${encodeURIComponent(run.episode_id)}/${encodeURIComponent(callId)}`);
   const el = $("#wb-fb-context");
+  if (!el || WB !== run || WB_SEL.fallback?.call_id !== callId) return;
   if (c.error) { el.innerHTML = `<p class="hint">${esc(c.error)}</p>`; return; }
-  el.innerHTML = wbCollapsible(`回退点发送前可见的上下文（Controller 当时已知；第 ${c.seq} 次之后的回复不在此列）`,
-    wbMsgs(c.view_messages) + (c.prior_turns.length
-      ? `<div class="meta">此前各轮</div>` + c.prior_turns.map(p =>
-        `<div class="hint">第 ${p.seq} 次问：${esc((p.question || "").slice(0, 60))}… → 回复 ${esc(p.reply_status ?? "?")}</div>`).join("")
-      : '<div class="hint">（这是第一次提问，无此前轮次）</div>'), false);
+  const history = c.prior_turns.map(p =>
+    `<div class="hint">第 ${p.seq} 次 · ${esc((p.question || "").slice(0, 60))} · ${esc(p.reply_status ?? "截至此时无回复状态记录")}</div>`).join("");
+  el.innerHTML = wbCollapsible(`第 ${c.seq} 次派发前的归档记录`,
+    wbCollapsible("Controller 本次规划调用的输入", wbMsgs(c.controller_input_messages)) +
+    wbCollapsible("Target 发送前的准备快照", wbMsgs(c.target_view_snapshot)) +
+    wbCollapsible("整个 episode 此前的派发（可能包含其他分支）", history || "此前无派发"), false);
 }
 async function wbSaveDraft() {
   const d = WB_SEL.discovery, f = WB_SEL.fallback;
@@ -356,7 +401,7 @@ async function wbRenderSaved() {
     const d = WB.interactions.find(x => x.call_id === r.discovery.call_id) || {};
     return `<div class="cols">
       <div class="panel"><h3>原（第 ${r.fallback.seq} 次实际发送 · ${esc(r.fallback.call_id)}）</h3><div class="body">
-        <div class="content" style="white-space:pre-wrap">${esc(f.proposal_zh || f.sent_text || r.fallback.text_head || "")}</div>
+        <div class="content" style="white-space:pre-wrap">${esc(f.sent_text_zh || f.sent_text || r.fallback.text_head || "")}</div>
         <div class="meta">Target 回复（归属原调用）</div>
         <div class="content" style="white-space:pre-wrap">${esc((f.reply_zh || f.reply_text || "").slice(0, 600))}</div>
       </div></div>

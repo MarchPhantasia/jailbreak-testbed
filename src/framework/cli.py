@@ -9,9 +9,11 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List
 
 from . import runner
+from .context_audit import context_profile
 from .datasets import get_adapter, write_json
 from .envfile import EnvFileError, load_env_if_configured
 
@@ -203,15 +205,24 @@ def cmd_recompute_state(args: argparse.Namespace) -> int:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    """离线审计骨架：统计证据、状态写入与未评估项，不触发模型调用。"""
-    ep_dir = args.episode_dir
+    """Count archive events and optionally inspect dispatched model inputs."""
+    ep_dir = Path(args.episode_dir)
     counts: Dict[str, int] = {}
-    events_path = os.path.join(ep_dir, "events.jsonl")
-    with open(events_path, "r", encoding="utf-8") as f:
+    events = []
+    with (ep_dir / "events.jsonl").open(encoding="utf-8") as f:
         for line in f:
+            if not line.strip():
+                continue
             ev = json.loads(line)
             counts[ev["type"]] = counts.get(ev["type"], 0) + 1
-    out = {"command": "audit", "calls_model": False, "phase": "analysis", "episode": os.path.basename(ep_dir.rstrip("/")), "event_counts": counts}
+            if args.context and ev["type"] in {"request_sent", "budget_settled", "cache_hit"}:
+                events.append(ev)
+    out = {"command": "audit", "calls_model": False, "phase": "analysis", "episode": ep_dir.name, "event_counts": counts}
+    if args.context:
+        run_root = ep_dir.resolve().parent.parent
+        plan = run_root / "plan.json"
+        manifest = json.loads(plan.read_text(encoding="utf-8")).get("prompt_manifest") if plan.is_file() else []
+        out["context_profile"] = context_profile(events, run_root, manifest or [])
     _print(out)
     return 0
 
@@ -303,6 +314,8 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sp = sub.add_parser(name, help=help_text)
         sp.add_argument("--episode-dir", required=True)
+        if name == "audit":
+            sp.add_argument("--context", action="store_true", help="列出规划和装配请求的原文长度、输入 token 与模板占用（只读）")
         sp.set_defaults(func=fn)
     return p
 

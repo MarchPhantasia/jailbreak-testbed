@@ -20,9 +20,11 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from . import runner
+from .context_audit import context_profile, message_chars
 from .interactive import InteractiveSession
 from .standalone import recorded_evidence_ids
 
@@ -295,10 +297,8 @@ def _wb_tr_json_blob(content: str, m: Dict[str, str]):
 def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
     """Controller 工作台：按时间列出该 episode 的 Target 交互（Issue #1）。
 
-    每次交互：Controller 提议（request_generated，按 view_id 关联）、人工修改
-    （query_edited；旧档案缺项就地标"该次运行未记录"）、实际发送消息（request_sent
-    payload.messages）、回复（response_received 按 call_id 配对）、Controller 当时
-    上下文（view_snapshot 按 view_id）。同节点多次请求可分辨（重试标记）。
+    规划输入来自关联规划调用的 request_sent。Target 发送前快照与实际派发消息分别展示。
+    同一节点的多次派发保留各自的调用 ID 与时间顺序。
     锚点稳定标识 = {seq, call_id, text_sha}；列表序号只用于显示。
     """
     ep_dir = os.path.join(root, "episodes", episode_id)
@@ -318,8 +318,9 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
     task = (entry or {}).get("task") or {}
 
     reqs = [e for e in evs if e.get("type") == "request_sent" and e.get("role") == "target"]
-    resp_by_call = {e.get("call_id"): e for e in evs
-                    if e.get("type") == "response_received"}
+    response_positions = {e["call_id"]: idx for idx, e in enumerate(evs)
+                          if e.get("type") == "response_received" and e.get("call_id")}
+    resp_by_call = {cid: evs[idx] for cid, idx in response_positions.items()}
     gens = [e for e in evs if e.get("type") == "request_generated"]
     # 关联优先级（Issue #1 小修）：request_id（一次请求）→ generation_call_id（规划调用）
     # → call_id（具体发送与回复）。同一视图下的多次请求必须各自归位；
@@ -379,6 +380,8 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
                                     if gen else None) or {})
         interactions.append({
             "seq": i,
+            "send_event_index": req_idxs[i - 1],
+            "reply_event_index": response_positions.get(r.get("call_id")),
             "call_id": r.get("call_id") or "",
             "node_id": node,
             "node_nth": nth,
@@ -412,42 +415,43 @@ def workbench_episode(root: str, episode_id: str) -> Dict[str, Any]:
     tr_map = _wb_translations(root, episode_id)
     task_prompt_zh, _ = _wb_tr(task.get("prompt"), tr_map)
     for it in interactions:
-        it["proposal_zh"], _ = _wb_tr(it["proposal"], tr_map)
-        it["rationale_zh"], _ = _wb_tr(it["rationale"], tr_map)
-        it["reply_zh"], _ = _wb_tr(it["reply_text"], tr_map)
+        it["proposal_zh"], hit_p = _wb_tr(it["proposal"], tr_map)
+        it["rationale_zh"], hit_reason = _wb_tr(it["rationale"], tr_map)
+        it["reply_zh"], hit_reply = _wb_tr(it["reply_text"], tr_map)
         it["controller_input_messages"], hit_c = _wb_tr_messages(it["controller_input_messages"], tr_map)
         it["sent_messages"], hit_s = _wb_tr_messages(it["sent_messages"], tr_map)
-        it["target_view_snapshot"], _ = _wb_tr_messages(it["target_view_snapshot"], tr_map)
-        it["zh_translated"] = bool(it.get("proposal_zh") or hit_c or hit_s or it.get("reply_zh"))
+        it["sent_text_zh"] = it["sent_messages"][-1]["content"] if it["sent_messages"] else it["sent_text"]
+        it["target_view_snapshot"], hit_v = _wb_tr_messages(it["target_view_snapshot"], tr_map)
+        it["zh_translated"] = any((hit_p, hit_reason, hit_reply, hit_c, hit_s, hit_v))
     task = {**task, "prompt_zh": task_prompt_zh}
     return {"root": root, "episode_id": episode_id, "task": task,
             "interactions": interactions,
-            "note": "锚点=seq+call_id+text_sha；同节点第 2 次起标重试；"
+            "note": "锚点=seq+call_id+text_sha；同节点次数按真实派发计；"
                     "人工修改无记录的批次运行按项标『该次运行未记录』"}
 
 
 def workbench_context(root: str, episode_id: str, call_id: str) -> Dict[str, Any]:
-    """回退点发送前可见的上下文：该次 view_snapshot + 此前各轮的问答。"""
+    """分别列出规划调用输入、Target 准备快照和截至派发前的事件记录。"""
     wb = workbench_episode(root, episode_id)
     if wb.get("error"):
         return wb
     it = next((x for x in wb["interactions"] if x["call_id"] == call_id), None)
     if it is None:
         return {"error": "call_id 不在该 episode"}
-    prior = wb["interactions"][:it["seq"] - 1]
+    prior = []
+    for p in wb["interactions"][:it["seq"] - 1]:
+        replied = p["reply_event_index"] is not None and p["reply_event_index"] < it["send_event_index"]
+        prior.append({"seq": p["seq"], "call_id": p["call_id"], "question": p["sent_text_zh"],
+                      "reply": (p.get("reply_zh") or p["reply_text"]) if replied else None,
+                      "reply_status": p["reply_status"] if replied else None})
     return {
         "root": root, "episode_id": episode_id, "call_id": call_id, "seq": it["seq"],
         "task": wb["task"],
-        # Controller 当时收到的上下文（该次快照）
         "controller_input_messages": it["controller_input_messages"],
         "target_view_snapshot": it["target_view_snapshot"],
-        # 此前各轮（晚于该步的回复不出现——只列到 seq-1）
-        "prior_turns": [{"seq": p["seq"], "call_id": p["call_id"],
-                         "question": p.get("proposal_zh") or p["sent_text"],
-                         "reply": p.get("reply_zh") or p["reply_text"],
-                         "reply_status": p["reply_status"]} for p in prior],
+        "prior_turns": prior,
         "sent_text": it["sent_text"], "text_sha": it["text_sha"],
-        "sent_text_zh": it.get("proposal_zh") or it["sent_text"],
+        "sent_text_zh": it["sent_text_zh"],
     }
 
 
@@ -532,7 +536,8 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
         return {"error": "plan 无此 episode"}
 
     steps: List[Dict[str, Any]] = []
-    events = [json.loads(l) for l in open(os.path.join(ep_dir, "events.jsonl"), encoding="utf-8")]
+    with open(os.path.join(ep_dir, "events.jsonl"), encoding="utf-8") as f:
+        events = [json.loads(line) for line in f if line.strip()]
     # R2：按顶层 call_id 关联请求与回复；view_snapshot（消息准备快照）挂到其后
     # 首个 target 请求上；缓存命中单独呈现
     pending_view: Optional[Dict[str, Any]] = None
@@ -554,11 +559,13 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
             view = pending_view if role == "target" else None
             if role == "target":
                 pending_view = None
+            msgs = p.get("messages")
+            chars = message_chars(msgs)
             steps.append({"kind": "request", "node": ev.get("node_id"),
                           "role": role, "call_id": ev.get("call_id"),
-                          "chars": sum(len(m.get("content") or "") for m in (p.get("messages") or [])),
-                          "messages": ([{"role": m.get("role"), "content": (m.get("content") or "")}
-                                        for m in (p.get("messages") or [])] if role == "target" else None),
+                          "chars": chars,
+                          "messages": ([{"role": m.get("role"), "content": m["content"]} for m in msgs]
+                                       if role == "target" and chars is not None else None),
                           "view": view})
             continue
         if t == "response_received":
@@ -613,9 +620,37 @@ def episode_trace(root: str, episode_id: str) -> Dict[str, Any]:
         "root": root, "episode_id": episode_id,
         "task": entry["task"],
         "steps": steps,
+        "context_profile": context_profile(events, Path(root), plan.get("prompt_manifest") or []),
         "final_candidate": cand_id,
         "verdicts": _verdicts_for(root, entry["task"]["task_id"], episode_id, cand_id),
     }
+
+
+def _citation_sources(rows):
+    """Resolve cited spans for display, including legacy rows without a checksum."""
+    verified, problems = runner._index_evidence(rows)
+    issues = {}
+    for item in problems:
+        if item["problem"] != "duplicate_identical_record":
+            issues.setdefault(item.get("evidence_id"), set()).add(item["problem"])
+    first = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("evidence_id"), str):
+            continue
+        eid = row["evidence_id"]
+        previous = first.setdefault(eid, row)
+        if any(row.get(k) != previous.get(k) for k in ("text", "source_event_id", "call_id", "span_start", "span_end")):
+            issues.setdefault(eid, set()).add("conflicting_evidence_record")
+    sources = {}
+    for eid, row in first.items():
+        errors = issues.get(eid, set())
+        if not errors and eid in verified:
+            sources[eid] = (verified[eid], "verified")
+        elif errors == {"checksum_missing"}:
+            sources[eid] = (row, "checksum_missing")
+        else:
+            sources[eid] = ({}, "conflict" if "conflicting_evidence_record" in errors else "invalid")
+    return sources
 
 
 def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str, Any]:
@@ -626,9 +661,7 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
     plan = json.load(open(os.path.join(root, "plan.json"), encoding="utf-8"))
     entry = next((e for e in plan["episodes"] if e["episode_id"] == episode_id), {})
     task = entry.get("task", {})
-    ev_all = runner._read_evidence(ep_dir, None)
-    ev_rows = {e["evidence_id"]: e for e in ev_all}
-    episode_ids = set(ev_rows)
+    sources = _citation_sources(runner._read_evidence(ep_dir, None))
     pack_ids = set(cand.evidence_pack_ids or [])
     packs = []
     pack_allowed: set = set()
@@ -649,17 +682,19 @@ def candidate_detail(root: str, episode_id: str, candidate_id: str) -> Dict[str,
     for c in cand.claims:
         evs = []
         for eid in c.evidence_ids:
-            row = ev_rows.get(eid)
+            row, resolution = sources.get(eid, ({}, "missing"))
             receipts = [{"evaluation": ref, "included": eid in ids if ids is not None else None}
                         for ref, ids in views]
             seen = [r["included"] for r in receipts]
             evs.append({"evidence_id": eid,
-                        "text": (row.get("text") if row else None),
-                        "in_episode": eid in episode_ids,
+                        "text": row.get("text"), "resolution": resolution,
+                        "source_event_id": row.get("source_event_id"),
+                        "span_start": row.get("span_start"), "span_end": row.get("span_end"),
+                        "in_episode": eid in sources,
                         "in_pack": eid in pack_allowed,
                         "judge_seen": True if True in seen else (False if seen and None not in seen else None),
                         "judge_inputs": receipts,
-                        "call_id": (row or {}).get("call_id")})
+                        "call_id": row.get("call_id")})
         claims.append({"claim_id": c.claim_id, "text": c.text, "evidence": evs})
     return {
         "root": root, "episode_id": episode_id, "candidate_id": candidate_id,
