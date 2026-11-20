@@ -139,6 +139,29 @@ def grade(output, evidence):
     return grades
 
 
+def compare(summary):
+    a, b = summary["arms"]["A"], summary["arms"]["B"]
+    saved = None
+    if a["tokens_in"] is not None and b["tokens_in"] is not None:
+        saved = a["tokens_in"] - b["tokens_in"]
+    paired = {}
+    for metric in ("values_correct", "quote_supports_values", "cited_line_correct"):
+        groups = {key: [] for key in ("both_correct", "both_missed", "only_A", "only_B", "unscored")}
+        for key in dict.fromkeys([*a["grades"], *b["grades"]]):
+            ga = a["grades"].get(key, {})
+            gb = b["grades"].get(key, {})
+            if not ga.get("scored") or not gb.get("scored"):
+                group = "unscored"
+            elif ga[metric] == gb[metric]:
+                group = "both_correct" if ga[metric] else "both_missed"
+            else:
+                group = "only_A" if ga[metric] else "only_B"
+            groups[group].append(key)
+        paired[metric] = groups
+    percent = round(100 * saved / a["tokens_in"], 2) if saved is not None and a["tokens_in"] else None
+    return {"input_tokens_saved": saved, "input_tokens_saved_percent": percent, "paired_checks": paired}
+
+
 def run(args):
     identity, materials, evidence = load_r22()
     routing = resolve_routing(_load_config(args))
@@ -179,7 +202,9 @@ def run(args):
     summary = {"protocol": protocol["version"], "output": str(root), "planned_checks_per_arm": len(PROBES),
                "calls": {r: calls.count(r) for r in ("assembler", "target", "controller", "judge_eval")},
                "arms": arms}
+    summary["comparison"] = compare(summary)
     write_json(summary, str(root / "summary.json"))
+    print(json.dumps(summary["comparison"], ensure_ascii=False), flush=True)
     return 0 if all(a["counts"]["scored"] == len(PROBES) for a in arms.values()) else 1
 
 
@@ -189,4 +214,10 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--out", help="New results directory (default: a unique directory under results/)")
-    sys.exit(run(parser.parse_args()))
+    parser.add_argument("--compare", type=Path, metavar="RESULT_DIR", help="Read an existing summary and print paired differences")
+    args = parser.parse_args()
+    if args.compare is not None:
+        summary = json.loads((args.compare / "summary.json").read_text(encoding="utf-8"))
+        print(json.dumps(compare(summary), ensure_ascii=False, indent=2))
+    else:
+        sys.exit(run(args))

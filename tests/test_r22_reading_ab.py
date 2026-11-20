@@ -37,3 +37,16 @@ def test_answer_value_quotation_and_cited_row_are_independent():
     output["qualification"].update(values=["latest", "proposal deadline"], quote=line)
     q = probe.grade(output, rows)["qualification"]
     assert not q["values_correct"] and q["quote_supports_values"] and q["cited_line_correct"]
+
+
+def test_comparison_keeps_paired_flips_and_missing_usage():
+    def row(ok):
+        return {"scored": True, "values_correct": ok, "quote_supports_values": ok, "cited_line_correct": ok}
+    arms = {"A": {"tokens_in": 100, "grades": {"one": row(True), "two": row(False), "three": row(False)}},
+            "B": {"tokens_in": 60, "grades": {"one": row(False), "two": row(True), "three": {"scored": False}}}}
+    result = probe.compare({"arms": arms})
+    assert result["input_tokens_saved_percent"] == 40
+    assert result["paired_checks"]["cited_line_correct"] == {
+        "both_correct": [], "both_missed": [], "only_A": ["one"], "only_B": ["two"], "unscored": ["three"]}
+    arms["A"]["tokens_in"] = None
+    assert probe.compare({"arms": arms})["input_tokens_saved"] is None
