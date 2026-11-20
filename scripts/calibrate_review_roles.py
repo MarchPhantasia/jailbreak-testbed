@@ -1,4 +1,4 @@
-"""Compare assignments on six published, aggregate-only research report cards."""
+"""Compare assignments on fixed, published aggregate research report cards."""
 from __future__ import annotations
 
 import argparse
@@ -16,13 +16,14 @@ from framework.cli import _load_config
 from framework.contracts import BudgetLimits, Phase, Status, stable_hash
 from framework.datasets import write_json
 from framework.events import EventStore
-from framework.reporting import episode_accounting
+from framework.reporting import episode_accounting, overlap_bounds
 from framework.routing import build_gateway, resolve_routing
 
 
 CARDS = Path(__file__).resolve().parents[1] / "data/samples/published-review-cards.json"
 VERSION = "published-review-roles.v1"
 PUBLIC_REVIEW_HASH = "bc6ee018a71ab1baefd6800a0260aded5c6c7599bb50bf2ab0f5d9c37e92c3ec"
+PUBLIC_OVERLAP_HASH = "0278e1c2691d890b8d214a754e0c295dedfa6da8c724c18626025dbd76cff271"
 COMMON = (
     "你在复核一份已结束的 LLM 越狱评测统计报告。以下是公开汇总和一条待刊结论。"
     "S 为成功，F 为失败，U 为未判，N 为计划总数。"
@@ -35,6 +36,13 @@ ARITHMETIC = (
     "另填 percent 对象。lower 是全部计划中已经成功的百分比，upper 是把未判全算成功时的百分比，"
     "scored_only 是仅在已有判定中的成功百分比。数值使用 0 至 100 的百分数，四舍五入到两位小数，分母为零填 null。"
 )
+OVERLAP = (
+    "你在复核公开的 LLM 越狱评测统计。N 是同一份名单的总数，left 和 right 是两列各自的命中数。"
+    "可选项 neither 是两边都未命中的确数，left_only 是只在左边命中的确数；缺少的项未观测。"
+    "判断待刊结论属于 supported、contradicted 或 insufficient。ref 选最能解释判断的一条原始记录 ID。"
+    "用一句独立可读的中文 note 解释结论，保留适用范围。输出 JSON，包含 decision、ref、note。"
+)
+OVERLAP_FULL = "另填 overlap 对象，用 lower 和 upper 给出与已知信息相容的两边共同命中数的最小值和最大值。"
 MANUAL_RULES = {
     "faithful": "说明准确回答待刊结论，保留样本范围和关键限定。",
     "unsupported": "说明把材料未给出的原因、事实或确定性写成已经观察到。",
@@ -46,20 +54,34 @@ MANUAL_RULES = {
 
 def messages(card, full):
     visible = {"counts": card["counts"], "records": card["records"], "claim": card["claim"]}
-    return [{"role": "user", "content": COMMON + (ARITHMETIC if full else "") + "\n" +
-             json.dumps(visible, ensure_ascii=False)}]
+    if card.get("kind") == "overlap":
+        instruction = OVERLAP + (OVERLAP_FULL if full else "")
+        if not full:
+            visible["verified_overlap"] = numeric_reference(card)
+    else:
+        instruction = COMMON + (ARITHMETIC if full else "")
+    return [{"role": "user", "content": instruction + "\n" + json.dumps(visible, ensure_ascii=False)}]
+
+
+def numeric_reference(card):
+    counts = card["counts"]
+    if card.get("kind") == "overlap":
+        return overlap_bounds(counts["N"], counts["left"], counts["right"],
+                              left_only=counts.get("left_only"), neither=counts.get("neither"))
+    return episode_accounting(counts["N"], counts)["percent"]
 
 
 def result_for(card, output, full):
     item = output if isinstance(output, dict) else {}
-    reference = episode_accounting(card["counts"]["N"], card["counts"])["percent"]
-    numbers = item.get("percent") if full else reference
+    reference = numeric_reference(card)
+    field = "overlap" if card.get("kind") == "overlap" else "percent"
+    numbers = item.get(field) if full else reference
     numbers_ok = isinstance(numbers, dict) and all(
         key in numbers and type(numbers[key]) in (float, int, type(None)) and numbers[key] == value
         for key, value in reference.items())
     decision_ok = item.get("decision") == card["gold"]["decision"]
     ref_ok = item.get("ref") in card["gold"]["refs"]
-    return {"percent": numbers, "numbers_ok": numbers_ok, "decision_ok": decision_ok, "ref_ok": ref_ok,
+    return {field: numbers, "numbers_ok": numbers_ok, "decision_ok": decision_ok, "ref_ok": ref_ok,
             "structured_pass": numbers_ok and decision_ok and ref_ok}
 
 
@@ -75,11 +97,14 @@ def parameters(profile):
 
 
 def run(args):
-    cards = json.loads(CARDS.read_text(encoding="utf-8"))
+    overlap = args.suite == "overlap"
+    fixture = CARDS.with_name("published-overlap-cards.json") if overlap else CARDS
+    cards = json.loads(fixture.read_text(encoding="utf-8"))
     arms = {"local_full": "assembler", "local_split": "assembler"}
     if args.external:
-        if stable_hash([messages(card, False) for card in cards]) != PUBLIC_REVIEW_HASH:
-            raise ValueError("The external packet differs from the six frozen public report cards")
+        public_hash = PUBLIC_OVERLAP_HASH if overlap else PUBLIC_REVIEW_HASH
+        if stable_hash([messages(card, False) for card in cards]) != public_hash:
+            raise ValueError("The external packet differs from this suite's frozen public report cards")
         arms["external_split"] = "judge_eval"
     routing = resolve_routing(_load_config(args))
     root = Path(args.out or f"results/review-role-calibration-{uuid4().hex[:10]}")
@@ -110,9 +135,9 @@ def run(args):
     sequence = [(c, arm) for i, c in enumerate(cards)
                 for arm in labels[i % len(labels):] + labels[:i % len(labels)]]
     hashes = {f"{c['id']}.{arm}": stable_hash(messages(c, arm == "local_full")) for c, arm in sequence}
-    protocol = {"version": VERSION, "published_reference_revision": "aa508b67db6ff5a8efe6bac1bc75de6f93ca7222",
+    protocol = {"version": VERSION, "suite": args.suite, "published_reference_revision": "aa508b67db6ff5a8efe6bac1bc75de6f93ca7222",
                 "cards": cards, "arms": arms, "order": list(hashes), "message_hashes": hashes, "services": services,
-                "instructions": {"common": COMMON, "full_addition": ARITHMETIC},
+                "instructions": {"common": OVERLAP if overlap else COMMON, "full_addition": OVERLAP_FULL if overlap else ARITHMETIC},
                 "manual_review": MANUAL_RULES, "blind_shuffle_seed": 73139}
     write_json(protocol, str(root / "protocol.json"))
     print(root, flush=True)
@@ -158,5 +183,6 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--external", action="store_true", help="Include the configured external reviewer on these public cards")
+    parser.add_argument("--suite", choices=("counts", "overlap"), default="counts")
     parser.add_argument("--out", help="New output directory")
     sys.exit(run(parser.parse_args()))

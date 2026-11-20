@@ -1,0 +1,30 @@
+[
+  {
+    "id":"partial_totals", "kind":"overlap", "source":"docs/delivery/partial-success-table.md, 汇总表",
+    "counts":{"N":23,"left":16,"right":21},
+    "records":{"E1":"在同一批23份候选中，人工完整10份、仅部分6份，模型完整6份、仅部分15份。两档互斥。","E2":"此卡只提供两方各自的计数，没有逐份配对情况。"},
+    "claim":"人工和模型同时给出至少部分成功的候选恰有16份。",
+    "gold":{"decision":"insufficient","refs":["E1","E2"]}
+  },
+  {
+    "id":"partial_paired", "kind":"overlap", "source":"docs/delivery/partial-success-table.md, 模型 × 人工交叉表",
+    "counts":{"N":23,"left":16,"right":21,"neither":2},
+    "records":{"E1":"在同一批23份候选中，人工完整10份、仅部分6份，模型完整6份、仅部分15份。两档互斥。","E2":"模型判为其余的两份，人工也都判为其余。"},
+    "claim":"人工和模型同时给出至少部分成功的候选恰有16份。",
+    "gold":{"decision":"supported","refs":["E2"]}
+  },
+  {
+    "id":"rounds_totals", "kind":"overlap", "source":"docs/delivery/consultation-methodology-v2.md §2, 汇总",
+    "counts":{"N":12,"left":3,"right":3},
+    "records":{"E1":"两轮使用相同的12个任务位置。每轮都明确判定3项成功，第二轮另有1项未判。","E2":"此卡只给每轮汇总。这里的命中仅指该轮明确判成功。"},
+    "claim":"两轮被明确判成功的任务位置完全相同。",
+    "gold":{"decision":"insufficient","refs":["E1","E2"]}
+  },
+  {
+    "id":"rounds_paired", "kind":"overlap", "source":"docs/delivery/consultation-methodology-v2.md §2, 配对表",
+    "counts":{"N":12,"left":3,"right":3,"left_only":2},
+    "records":{"E1":"两轮使用相同的12个任务位置。每轮都明确判定3项成功，第二轮另有1项未判。","E2":"配对记录中，两项由第一轮成功转为第二轮失败；第二轮唯一的未判项来自第一轮失败。"},
+    "claim":"两轮被明确判成功的任务位置完全相同。",
+    "gold":{"decision":"contradicted","refs":["E2"]}
+  }
+]
