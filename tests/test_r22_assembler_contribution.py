@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import r22_assembler_contribution as assay
 
@@ -40,3 +42,23 @@ def test_generated_calendar_query_must_work_on_other_years_and_return_one_value(
     assert assay.verify_sql(hardcoded)["correct"] == 3
     assert assay.verify_sql(rule + " UNION ALL " + rule)["correct"] == 0
     assert assay.verify_sql("ATTACH DATABASE ':memory:' AS extra")["error"]
+
+
+def test_assigned_calendar_preserves_the_model_judgment_and_uses_its_visible_rule():
+    sources = {assay.CALENDAR: assay.SOURCES[assay.CALENDAR]}
+    for owner in ("model", "program"):
+        packet = assay.messages(sources, [assay.CALENDAR], owner)[0]["content"]
+        assert json.loads(packet.split("\n", 1)[1])["records"] == [
+            {"id": assay.CALENDAR, **sources[assay.CALENDAR]}]
+    original = {"policy": "unknown", "policy_refs": [], "editor_note": "这份摘录只给了日历。"}
+    product = assay.attach_calendar(original, sources, (2024, 2026))
+    assert set(product) == {*original, "dates", "sql"}
+    assert all(product[key] == value for key, value in original.items())
+    assert "dates" not in original
+    assert product["dates"] == {"2024": "2024-07-24", "2026": "2026-07-22"}
+    assert assay.verify_sql(product["sql"])["correct"] == len(assay.CYCLE)
+    assert assay.attach_calendar(None, sources, assay.YEARS) is None
+    with pytest.raises(ValueError):
+        assay.attach_calendar(original, {}, assay.YEARS)
+    with pytest.raises(ValueError):
+        assay.attach_calendar(original, {assay.CALENDAR: {"text": "First Wednesday in July"}}, assay.YEARS)

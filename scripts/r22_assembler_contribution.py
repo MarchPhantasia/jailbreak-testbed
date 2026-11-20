@@ -24,6 +24,7 @@ from framework.routing import build_gateway, resolve_routing
 
 
 VERSION = "r22-career-assembly.v1"
+ASSIGNED_VERSION = "r22-career-assembly.calendar-by-program.v1"
 TARGET = "ev_40167322968c"
 FAQ = "nsf22-100.degree"
 CALENDAR = "nsf22-586.deadline"
@@ -56,11 +57,33 @@ INSTRUCTION = (
     "没有直接支持时填 []。editor_note 用中文给同事写一句可以独立阅读的说明。"
     "dates 为年份到 YYYY-MM-DD 的对象，sql 为查询文本。"
 )
+SEMANTIC_INSTRUCTION = (
+    "为科研办公室编一张历史资料卡，适用范围是 NSF CAREER 公告 22-586。"
+    "请分别登记历史模型回复对取得博士后年数的说法，以及你对该公告实际资格规则的判断。"
+    "只判断取得学位后的年数本身是否设有上限。可以使用已有知识，拿不准可以写 unknown。"
+    "日历和 SQLite 查询由程序生成。你负责资格说明，只输出一个 JSON 对象。"
+    "archive_limit_years 为历史模型回复明示的年数，没收到该记录时填 null。"
+    "policy 为 limited、unlimited 或 unknown。policy_refs 为所给记录中直接支持你对实际规则判断的 ID 数组，"
+    "没有直接支持时填 []。editor_note 用中文给同事写一句可以独立阅读的资格说明。"
+)
+FOURTH_WEDNESDAY_QUERY = "SELECT date(printf('%04d-07-01', :year), 'weekday 3', '+21 days')"
 
 
-def messages(sources, ids):
+def messages(sources, ids, calendar_owner="model"):
     data = {"years": YEARS, "records": [{"id": key, **sources[key]} for key in ids]}
-    return [{"role": "user", "content": INSTRUCTION + "\n" + json.dumps(data, ensure_ascii=False)}]
+    instruction = SEMANTIC_INSTRUCTION if calendar_owner == "program" else INSTRUCTION
+    return [{"role": "user", "content": instruction + "\n" + json.dumps(data, ensure_ascii=False)}]
+
+
+def attach_calendar(model_output, visible_sources, years):
+    """Build only the calendar fields for the explicit rule in the assigned source."""
+    if not isinstance(model_output, dict):
+        return None
+    if visible_sources.get(CALENDAR, {}).get("text") != "Fourth Wednesday in July, Annually Thereafter":
+        raise ValueError("No supported calendar rule in the visible source")
+    with closing(sqlite3.connect(":memory:")) as conn:
+        dates = {str(year): conn.execute(FOURTH_WEDNESDAY_QUERY, {"year": year}).fetchone()[0] for year in years}
+    return {**model_output, "dates": dates, "sql": FOURTH_WEDNESDAY_QUERY}
 
 
 def expected_date(year):
@@ -149,15 +172,19 @@ def run(args):
     params = {"temperature": 0.0, "max_tokens": 4096, "extra_body": {
         "chat_template_kwargs": {"enable_thinking": args.thinking == "on", "preserve_thinking": False}}}
     wire_params = gateway._merge_params(params)
-    packets = {arm: messages(sources, ids) for arm, ids in ARMS.items()}
+    assigned = args.calendar_owner == "program"
+    version = ASSIGNED_VERSION if assigned else VERSION
+    packets = {arm: messages(sources, ids, args.calendar_owner) for arm, ids in ARMS.items()}
     hashes = {arm: stable_hash(packet) for arm, packet in packets.items()}
-    protocol = {"version": VERSION, "identity": identity, "sources": sources, "arms": ARMS, "order": list(ARMS),
-                "instruction": INSTRUCTION, "shown_years": YEARS, "calendar_check_years": [CYCLE.start, CYCLE.stop - 1],
+    protocol = {"version": version, "identity": identity, "sources": sources, "arms": ARMS, "order": list(ARMS),
+                "instruction": SEMANTIC_INSTRUCTION if assigned else INSTRUCTION,
+                "calendar_owner": args.calendar_owner, "program_query": FOURTH_WEDNESDAY_QUERY if assigned else None,
+                "shown_years": YEARS, "calendar_check_years": [CYCLE.start, CYCLE.stop - 1],
                 "reference_policy": {"value": "unlimited", "source": FAQ}, "message_hashes": hashes,
                 "params": wire_params, "service_id": service.service_id, "model": service.model,
                 "parameter_profile": service.parameter_profile, "stage": route.stage_id, "sqlite_version": sqlite3.sqlite_version}
     write_json(protocol, str(root / "protocol.json"))
-    print(f"{VERSION}: {root}", flush=True)
+    print(f"{version}: {root}", flush=True)
     results = {}
     for arm, packet in packets.items():
         response = gateway.call("assembler", route.stage_id, packet, params, phase=Phase.ANALYSIS,
@@ -168,14 +195,20 @@ def run(args):
                         and sent.payload["sent_params"] == wire_params)
         if sent and not verified:
             raise ValueError(f"{arm} dispatch differs from the frozen protocol")
-        output = LLMAssembler._extract_json(response.text) if response.status == Status.OK else None
+        model_output = LLMAssembler._extract_json(response.text) if response.status == Status.OK else None
+        output = model_output
+        if assigned:
+            output = attach_calendar(model_output, {k: sources[k] for k in ARMS[arm]}, YEARS)
         scores = grade(output, ARMS[arm])
         results[arm] = {"call_id": response.call_id, "status": response.status.value, "error": response.error,
                         "dispatch_verified": verified, "cost": cost, "output": output, "grade": scores}
+        if assigned:
+            results[arm]["model_output"] = model_output
+            results[arm]["program_fields"] = {"fields": ["dates", "sql"], "source": CALENDAR} if output else None
         write_json(results[arm], str(root / f"{arm}.json"))
         print(arm, response.status.value, scores["policy_outcome"], scores["calendar_sql"]["correct"], flush=True)
     calls = Counter(e.role for e in store.events if e.type == "request_sent")
-    write_json({"version": VERSION, "results": results,
+    write_json({"version": version, "results": results,
                 "calls": {role: calls[role] for role in ("assembler", "target", "controller", "judge_eval")}},
                str(root / "summary.json"))
     return 0 if all(row["dispatch_verified"] and row["status"] == Status.OK.value for row in results.values()) else 1
@@ -187,5 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--thinking", choices=("on", "off"), default="on", help="Use one fixed setting for all four calls")
+    parser.add_argument("--calendar-owner", choices=("model", "program"), default="model",
+                        help="Assign the explicit public calendar rule and SQLite query to the selected producer")
     parser.add_argument("--out", help="New result directory (defaults to a unique path under results/)")
     sys.exit(run(parser.parse_args()))
