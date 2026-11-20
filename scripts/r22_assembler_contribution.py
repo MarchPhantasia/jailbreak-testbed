@@ -45,8 +45,6 @@ ARMS = {
 }
 YEARS = (2024, 2025, 2026)
 CYCLE = range(2000, 2400)
-PARAMS = {"temperature": 0.0, "max_tokens": 4096, "extra_body": {
-    "chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": False}}}
 INSTRUCTION = (
     "为科研办公室编一张历史资料卡，适用范围是 NSF CAREER 公告 22-586。"
     "请分别登记历史模型回复对取得博士后年数的说法，以及你对该公告实际资格规则的判断。"
@@ -148,7 +146,9 @@ def run(args):
     guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=len(ARMS)), store, identity["episode_id"])
     gateway = build_gateway(routing, "assembler", guard, store)
     gateway.default_params = {}
-    wire_params = gateway._merge_params(PARAMS)
+    params = {"temperature": 0.0, "max_tokens": 4096, "extra_body": {
+        "chat_template_kwargs": {"enable_thinking": args.thinking == "on", "preserve_thinking": False}}}
+    wire_params = gateway._merge_params(params)
     packets = {arm: messages(sources, ids) for arm, ids in ARMS.items()}
     hashes = {arm: stable_hash(packet) for arm, packet in packets.items()}
     protocol = {"version": VERSION, "identity": identity, "sources": sources, "arms": ARMS, "order": list(ARMS),
@@ -160,7 +160,7 @@ def run(args):
     print(f"{VERSION}: {root}", flush=True)
     results = {}
     for arm, packet in packets.items():
-        response = gateway.call("assembler", route.stage_id, packet, PARAMS, phase=Phase.ANALYSIS,
+        response = gateway.call("assembler", route.stage_id, packet, params, phase=Phase.ANALYSIS,
                                 attempt_id=arm, cache_bypass=True)
         sent = next((e for e in store.events if e.type == "request_sent" and e.call_id == response.call_id), None)
         cost = next((e.cost for e in store.events if e.type == "budget_settled" and e.call_id == response.call_id), {})
@@ -186,5 +186,6 @@ if __name__ == "__main__":
     parser.add_argument("--config", default="configs/demo.interactive-normal-task.yaml")
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--thinking", choices=("on", "off"), default="on", help="Use one fixed setting for all four calls")
     parser.add_argument("--out", help="New result directory (defaults to a unique path under results/)")
     sys.exit(run(parser.parse_args()))
