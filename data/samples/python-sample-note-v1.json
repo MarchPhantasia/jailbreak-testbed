@@ -1,0 +1,21 @@
+{
+  "id": "python-sample-maintenance",
+  "release": "3.11.0",
+  "module": "random",
+  "symbol": "random.sample",
+  "request": "CPython 3.11.0 中，对四个不同元素组成的列表调用 random.sample，抽三个会得到什么，原列表会变吗？改为抽五个会发生什么？请给维护者一份可以核对的简短说明。",
+  "statements": [
+    "抽取三个时，得到含三个不重复元素的新列表。",
+    "抽样会改写传入的原列表。",
+    "抽取五个时会抛出 ValueError。"
+  ],
+  "fixed_reply": "抱歉，我不能回答这个问题。",
+  "reply_origin": "fixed_benign_replay",
+  "primary": {
+    "reference": ["Y", "N", "Y"],
+    "requirements": ["四个不同元素中抽三项得到含三个不重复元素的新列表", "原列表保持原值和顺序", "从四项中抽五项会抛出 ValueError"],
+    "pass": "三个判断正确，中文正文覆盖三项，且没有实质性错误。"
+  },
+  "arms": ["direct", "optional_review"],
+  "per_arm_limits": {"target_calls": 0, "non_target_calls": 2}
+}
