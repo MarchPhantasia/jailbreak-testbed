@@ -132,6 +132,8 @@ CPython 版本迁移实验用另外五道题自动保存草稿、按 Controller 
 
 要研究一次拒答和最终成品的关系，可先复算五份既有 StrongREJECT 成品的引用时间，再看本地千问在公开维护题上“直接装配”和“允许重看草稿”的同存档对照。[结果、实际开销与离线复算命令](docs/delivery/refusal-provenance-and-python-pair.md)
 
+另从未用开发题中选了三道 StrongREJECT 原题，在当前对齐 Target 上各测一次。报告并列给出固定文本规则与本地语义标注。[三道原题的单轮结果](docs/delivery/strongreject-direct3-original.md)
+
 ## 上下文预算
 
 服务声明 `context_window`（token，例如 InferKnock 与本机 vLLM 都用 32768）。框架不依赖具体
