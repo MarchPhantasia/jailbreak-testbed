@@ -20,6 +20,7 @@ from framework.routing import resolve_routing
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURE = REPO / "data/samples/repository-handoff-v1.json"
+SCOPES = REPO / "data/samples/repository-handoff-scopes.json"
 ARMS = ("documents", "controller", "checked")
 ITEMS = ("P1", "P2", "P3")
 
@@ -61,6 +62,41 @@ def canonical_brief(output, visible_ids):
 
 def reference_brief(reference):
     return [{"id": k, "value": val, "sources": sorted(ids)} for k, (val, ids) in zip(ITEMS, reference)]
+
+
+def apply_file_scope(observation, documents, scope):
+    """For questions about a particular file revision, keep model and verified readings."""
+    if not scope or observation["rows"] is None:
+        return observation
+    file_versions = [d for d in documents if d["key"] == scope["path"]]
+    eligible = {eid for d in file_versions if d["revision"] == scope["revision"] for eid in d["evidence_ids"]}
+    rows, checks = [], []
+    for row in observation["rows"]:
+        missing_reference = row["value"] != "U" and eligible.isdisjoint(row["sources"])
+        if row["id"] in scope["statements"] and (not eligible or missing_reference):
+            checks.append({"statement": row["id"], "file": scope["path"], "requested_revision": scope["revision"],
+                           "supplied_file_revisions": sorted({d["revision"] for d in file_versions}),
+                           "finding": "缺少对指定修订文件的可核对引用，此项待查。"})
+            rows.append({"id": row["id"], "value": "U", "sources": []})
+        else:
+            rows.append(row)
+    return {**observation, "model_rows": observation["rows"], "rows": rows, "file_scope_checks": checks}
+
+
+class RepositoryBriefAssembler(LLMAssembler):
+    """Read both observed forms of a maintenance note's list of outstanding checks."""
+
+    def _validate(self, data, pack):
+        if isinstance(data, dict) and isinstance(data.get("gaps"), list):
+            gaps = []
+            for gap in data["gaps"]:
+                if (isinstance(gap, dict) and set(gap) == {"gap_id", "text"}
+                        and isinstance(gap["gap_id"], str) and gap["gap_id"].strip()
+                        and isinstance(gap["text"], str) and gap["text"].strip()):
+                    gap = gap["text"]
+                gaps.append(gap)
+            data = {**data, "gaps": gaps}
+        return super()._validate(data, pack)
 
 
 def grade_reader(rows, reference):
@@ -105,11 +141,11 @@ def restore_checkpoint(path, expected):
     return snapshot
 
 
-def write_product(assembler, task, docs, brief, stage_key):
+def write_product(assembler, task, docs, brief, stage_key, protocol_version):
     notes = [json.dumps(brief, ensure_ascii=False)] if brief is not None else []
     key = stable_hash({"documents": docs, "notes": notes, "task_id": task.task_id})
     pack = EvidencePack("pack_" + key[:16], task.task_id, docs, notes=notes)
-    candidate = assembler.assemble_from_pack(task, pack, stage_policy_ref="document-handoff.v1")[0]
+    candidate = assembler.assemble_from_pack(task, pack, stage_policy_ref="document-handoff." + protocol_version)[0]
     call_ids = list(assembler.last_call_ids)
     sent = [e for e in assembler.gateway.store.events if e.type == "request_sent" and e.call_id in call_ids]
     if len(sent) > 1:
@@ -167,6 +203,8 @@ def summarize(out, review=None):
 
 def run(args):
     fixture = read(FIXTURE)
+    protocol_version = args.protocol
+    scopes = read(SCOPES) if protocol_version == "v2" else {}
     cases = fixture["cases"]
     out = Path(args.out or "results/document-handoffs-" + uuid4().hex[:10])
     out.mkdir(parents=True, exist_ok=False)
@@ -179,8 +217,10 @@ def run(args):
     writer.default_params = {**wp, "max_tokens": 1536}
     rt = load_template(rs, "controller", "plan.repository-reading.zh.v1")
     wt = load_template(ws, "assembler", "assemble.repository-brief.zh.v1")
-    assembler = LLMAssembler(writer, wt, max_format_retries=0, stage_id=ws, phase=Phase.ANALYSIS)
-    write_json({"version": fixture["version"], "fixture": fixture, "fixture_sha256": stable_hash(fixture),
+    writer_type = RepositoryBriefAssembler if protocol_version == "v2" else LLMAssembler
+    assembler = writer_type(writer, wt, max_format_retries=0, stage_id=ws, phase=Phase.ANALYSIS)
+    write_json({"version": fixture["version"], "protocol_version": protocol_version, "file_scopes": scopes,
+                "fixture": fixture, "fixture_sha256": stable_hash(fixture),
                 "roles": {"controller": [reader_model, reader._merge_params(rp), rt.ref(), rt.text],
                           "assembler": [writer_model, writer._merge_params({}), wt.ref(), wt.text]},
                 "arms": ARMS, "rotation": "case position modulo three", "budget": guard.limits.to_dict(),
@@ -195,6 +235,7 @@ def run(args):
         task = task_for(case)
         first_doc = document(fixture["documents"], case["prefix"], "D1")
         first = read_documents(reader, rs, rt, rp, store, task, [first_doc], None, case["id"] + ".prefix")
+        first = apply_file_scope(first, [first_doc], scopes.get(case["id"]))
         snapshot = {"case": case["id"], "documents": [first_doc], "reader": first}
         checkpoint = folder / "checkpoint.json"
         write_json(snapshot, str(checkpoint))
@@ -204,6 +245,7 @@ def run(args):
             docs = restored["documents"] + [document(fixture["documents"], case[version], "D2")]
             observation = read_documents(reader, rs, rt, rp, store, task, docs, restored["reader"]["rows"],
                                          case["id"] + "." + version)
+            observation = apply_file_scope(observation, docs, scopes.get(case["id"]))
             reference = case["reference"][version]
             write_json({"checkpoint_sha256": checkpoint_hash, "documents": docs, "reader": observation},
                        str(folder / f"{version}.json"))
@@ -217,7 +259,9 @@ def run(args):
                 if arm == "controller" and brief is None:
                     row["products"][arm] = {"status": "unavailable_handoff", "judgments": 0}
                     continue
-                product = write_product(assembler, task, docs, brief, key)
+                if arm == "controller" and observation.get("file_scope_checks"):
+                    brief = {"rows": brief, "file_scope_checks": observation["file_scope_checks"]}
+                product = write_product(assembler, task, docs, brief, key, protocol_version)
                 write_json(product, str(folder / f"{version}.{arm}.json"))
                 labels = product["labels"]
                 correct = sum(a == b[0] for a, b in zip(labels or [], reference))
@@ -249,6 +293,8 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--out", help="New result directory")
+    parser.add_argument("--protocol", choices=("v1", "v2"), default="v2",
+                        help="Public document protocol. v2 also reads labelled gaps and checks file revisions.")
     parser.add_argument("--summarize", type=Path, help="Read an existing experiment without calling models")
     parser.add_argument("--review", type=Path, help="Completed blind reading for --summarize")
     args = parser.parse_args()

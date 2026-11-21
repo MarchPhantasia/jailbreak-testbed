@@ -26,7 +26,7 @@ def test_document_fork_uses_its_checkpoint_and_only_handoff_varies_between_arms(
     monkeypatch.setattr(study, "resolve_routing", lambda cfg: None)
     monkeypatch.setattr(study, "local_analysis_gateway", mock_route)
     out = tmp_path / "run"
-    assert study.run(Namespace(out=str(out))) == 0
+    assert study.run(Namespace(out=str(out), protocol="v2")) == 0
     wheel = out / "wheel"
     root = study.read(wheel / "checkpoint.json")
     prev = study.read(wheel / "previous.json")
@@ -34,6 +34,7 @@ def test_document_fork_uses_its_checkpoint_and_only_handoff_varies_between_arms(
     assert cur["checkpoint_sha256"] == prev["checkpoint_sha256"] == stable_hash(root)
     assert prev["documents"][1]["revision"] != cur["documents"][1]["revision"]
     assert cur["reader"]["prior_sha256"] == stable_hash(root["reader"]["rows"])
+    assert {c["statement"] for c in prev["reader"]["file_scope_checks"]} == {"P2", "P3"}
     costs = study.read(out / "summary.json")["actual_dispatches_including_version_fork"]
     assert costs == {"controller": 11, "assembler": 16}
     products = [study.read(wheel / f"current.{a}.json") for a in study.ARMS]
@@ -73,3 +74,40 @@ def test_reader_cannot_cite_later_documents_and_unknowns_remain_observable(monke
     assert study.answer_labels("P1=Y P2=U P3=N\n交接正文") == ["Y", "U", "N"]
     assert study.answer_labels("P1=Y P2=U P1=N") is None
     assert study.grade_reader(None, [["U", []]] * 3) == {"judgments": 0, "with_required_sources": 0}
+
+
+def test_release_note_keeps_model_reading_and_validates_only_the_requested_revision(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import study_document_handoffs as study
+
+    scope = study.read(study.SCOPES)["wheel"]
+    source = {"key": scope["path"], "revision": "old", "evidence_ids": ["D2"]}
+    rows = [{"id": item, "value": "N", "sources": ["D2"]} for item in study.ITEMS]
+    old = study.apply_file_scope({"rows": rows}, [source], scope)
+    assert old["model_rows"] == rows
+    assert [r["value"] for r in old["rows"]] == ["N", "U", "U"]
+    assert all(check["supplied_file_revisions"] == ["old"] for check in old["file_scope_checks"])
+    current = {**source, "revision": scope["revision"]}
+    assert study.apply_file_scope({"rows": rows}, [current], scope)["rows"] == rows
+    wrong_file = {**current, "key": "README.md"}
+    assert study.apply_file_scope({"rows": rows}, [wrong_file], scope)["rows"] == old["rows"]
+    assert study.apply_file_scope({"rows": None}, [source], scope)["rows"] is None
+
+
+def test_document_note_preserves_text_when_reading_a_labelled_gap(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import study_document_handoffs as study
+
+    writer = study.RepositoryBriefAssembler(None, None)
+    pack = study.EvidencePack("pack", "dependencies", [{"value": "pytest>=8.0", "evidence_ids": ["D1"]}])
+    claim = {"claim_id": "c", "text": "pytest>=8.0", "evidence_ids": ["D1"]}
+    gap = {"gap_id": "P3", "text": "当次实际安装的版本待查。"}
+    data = {"answer": "pytest>=8.0", "claims": [claim], "gaps": ["运行日期待查。", gap]}
+    recovered, errors = writer._validate(data, pack)
+    assert not errors and recovered["answer"] == data["answer"]
+    assert recovered["gaps"] == ["运行日期待查。", gap["text"]]
+    assert recovered["claims"][0].evidence_ids == ["D1"] and data["gaps"][1] == gap
+    invalid = {**data, "gaps": [{**gap, "condition": "不要丢失这个条件"}]}
+    assert "gaps_not_list_of_string" in writer._validate(invalid, pack)[1]
+    invalid = {**data, "claims": [{**claim, "evidence_ids": ["absent"]}]}
+    assert writer._validate(invalid, pack)[0] is None
