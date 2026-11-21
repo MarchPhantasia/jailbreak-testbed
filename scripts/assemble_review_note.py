@@ -69,12 +69,14 @@ def materials(archive, layout):
 
 
 def run(args):
+    if args.max_output_tokens < 1:
+        raise ValueError("--max-output-tokens must be positive")
     records, hashes = materials(Path(args.replay_report), args.layout)
     root = Path(args.out or f"results/review-note-{uuid4().hex[:10]}")
     root.mkdir(parents=True, exist_ok=False)
     store = EventStore(str(root), root.name, path=str(root / "events.jsonl"))
     gateway, stage, model, params = local_assembler_gateway(args, store, 1)
-    gateway.default_params = params
+    gateway.default_params = {**params, "max_tokens": args.max_output_tokens}
     path = REPO / "prompts/assemble.research-note.zh.v1.txt"
     template = PromptTemplate(stage, "assemble.research-note.zh", "1", "assembler", path.read_text(encoding="utf-8"), str(path))
     assembler = LLMAssembler(gateway, template, max_format_retries=0, stage_id=stage, phase=Phase.ANALYSIS)
@@ -94,6 +96,8 @@ if __name__ == "__main__":
     parser.add_argument("--replay-report", required=True, help="Verified three-run cross-check with summary.json")
     parser.add_argument("--layout", choices=("table", "labeled"), default="table",
                         help="Use original table cells or explicitly named columns and computed row totals")
+    parser.add_argument("--max-output-tokens", type=int, default=1024,
+                        help="Completion budget for the note, its claims and citations")
     parser.add_argument("--config", default="configs/demo.interactive-normal-task.yaml")
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
