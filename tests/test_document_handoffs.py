@@ -61,6 +61,23 @@ def test_document_fork_uses_its_checkpoint_and_only_handoff_varies_between_arms(
     path.write_text(json.dumps(ratings))
     with pytest.raises(ValueError, match="Incomplete"):
         study.summarize(out, path)
+    import compare_repository_handoff_size as compact
+
+    monkeypatch.setattr(compact, "_load_config", lambda args: {})
+    monkeypatch.setattr(compact, "resolve_routing", lambda cfg: None)
+    monkeypatch.setattr(compact, "local_analysis_gateway", mock_route)
+    short = tmp_path / "short"
+    compact.generate(Namespace(parent=out, out=short))
+    new = study.read(short / "wheel.json")
+    assert new["pack"]["notes"] == products[1]["pack"]["notes"]
+    assert [m["value"] for m in new["pack"]["materials"]] == ["", ""]
+    assert [m["revision"] for m in new["pack"]["materials"]] == [d["revision"] for d in cur["documents"]]
+    assert len(compact.usage_by_call(short)) == 5
+    short_packet = study.read(short / "notes-to-read.json")
+    short_review = {"packet_sha256": stable_hash(short_packet),
+                    "notes": {r["blind_id"]: {"rating": "usable"} for r in short_packet}}
+    path.write_text(json.dumps(short_review))
+    assert compact.summary(short, path)["locations"]["planned"] == 5
     (wheel / "checkpoint.json").write_text("{}")
     with pytest.raises(ValueError, match="changed"):
         study.restore_checkpoint(wheel / "checkpoint.json", cur["checkpoint_sha256"])
