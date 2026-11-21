@@ -67,7 +67,7 @@ def test_document_fork_uses_its_checkpoint_and_only_handoff_varies_between_arms(
     monkeypatch.setattr(compact, "resolve_routing", lambda cfg: None)
     monkeypatch.setattr(compact, "local_analysis_gateway", mock_route)
     short = tmp_path / "short"
-    compact.generate(Namespace(parent=out, out=short))
+    compact.generate(Namespace(parent=out, out=short, representation="locations"))
     new = study.read(short / "wheel.json")
     assert new["pack"]["notes"] == products[1]["pack"]["notes"]
     assert [m["value"] for m in new["pack"]["materials"]] == ["", ""]
@@ -78,6 +78,12 @@ def test_document_fork_uses_its_checkpoint_and_only_handoff_varies_between_arms(
                     "notes": {r["blind_id"]: {"rating": "usable"} for r in short_packet}}
     path.write_text(json.dumps(short_review))
     assert compact.summary(short, path)["locations"]["planned"] == 5
+    excerpts = tmp_path / "excerpts"
+    compact.generate(Namespace(parent=out, out=excerpts, representation="excerpts"))
+    wheels = study.read(excerpts / "wheel.json")["pack"]["materials"]
+    assert wheels[0] == cur["documents"][0]
+    assert wheels[1]["first_line"] == 26 and wheels[1]["last_line"] == 27
+    assert wheels[1]["value"] == "\n".join(cur["documents"][1]["value"].splitlines()[9:11])
     (wheel / "checkpoint.json").write_text("{}")
     with pytest.raises(ValueError, match="changed"):
         study.restore_checkpoint(wheel / "checkpoint.json", cur["checkpoint_sha256"])

@@ -1,4 +1,4 @@
-"""Compare a public repository note with and without the text of its cited files."""
+"""Compare full sources, file locations, and pinned line ranges for public repository notes."""
 import argparse
 import json
 import random
@@ -21,6 +21,17 @@ def file_locations(documents):
     return [{**d, "kind": "repository_file_location", "value": "", "fidelity": "unknown"} for d in documents]
 
 
+def file_excerpts(documents, source_keys, ranges):
+    excerpts = []
+    for doc, key in zip(documents, source_keys, strict=True):
+        first, last = ranges[key]
+        if not doc["first_line"] <= first <= last <= doc["last_line"]:
+            raise ValueError(f"Excerpt outside the frozen source for {key}")
+        lines = doc["value"].splitlines()[first - doc["first_line"]:last - doc["first_line"] + 1]
+        excerpts.append({**doc, "first_line": first, "last_line": last, "value": "\n".join(lines)})
+    return excerpts
+
+
 def usage_by_call(root):
     with (root / "events.jsonl").open(encoding="utf-8") as f:
         return {e["call_id"]: e["cost"] for e in map(json.loads, f)
@@ -32,7 +43,9 @@ def generate(args):
     protocol = read(parent / "protocol.json")
     if protocol.get("protocol_version") != "v2" or protocol["fixture_sha256"] != stable_hash(fixture):
         raise ValueError("Supply a v2 repository-document study with the same five tasks")
-    out = args.out or Path("results") / ("repository-file-locations-" + uuid4().hex[:12])
+    variant = args.representation
+    ranges = read(FIXTURE.with_name("repository-handoff-excerpts.json")) if variant == "excerpts" else {}
+    out = args.out or Path("results") / (f"repository-file-{variant}-" + uuid4().hex[:12])
     out.mkdir(parents=True, exist_ok=False)
     store = EventStore(str(out), out.name, path=str(out / "events.jsonl"))
     guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=len(fixture["cases"])), store, out.name)
@@ -47,7 +60,8 @@ def generate(args):
     rows, blind = [], []
     write_json({"parent": str(parent.resolve()), "fixture_sha256": stable_hash(fixture),
                 "model": model, "params": frozen[1], "prompt_sha256": template.sha256,
-                "planned": len(fixture["cases"]), "primary": protocol["primary"]}, str(out / "protocol.json"))
+                "planned": len(fixture["cases"]), "primary": protocol["primary"],
+                "variant": variant, "git_line_ranges": ranges}, str(out / "protocol.json"))
     for case in fixture["cases"]:
         key = case["id"]
         folder = parent / key
@@ -59,11 +73,13 @@ def generate(args):
         if (reading["documents"] != docs or full["pack"]["materials"] != docs or handoff is None
                 or stable_hash(handoff) != full["handoff_sha256"]):
             raise ValueError(f"Could not bind original documents and the plain reader handoff for {key}")
-        short = write_product(writer, task_for(case), file_locations(docs), handoff, key, "v2")
+        small_docs = (file_excerpts(docs, (case["prefix"], case["current"]), ranges)
+                      if variant == "excerpts" else file_locations(docs))
+        short = write_product(writer, task_for(case), small_docs, handoff, key, "v2")
         if short["pack"]["notes"] != full["pack"]["notes"]:
             raise ValueError(f"Handoff changed for {key}")
         write_json(short, str(out / (key + ".json")))
-        for condition, product, ledger in (("full", full, costs), ("locations", short, usage_by_call(out))):
+        for condition, product, ledger in (("full", full, costs), (variant, short, usage_by_call(out))):
             judgments = sum(a == b[0] for a, b in zip(product["labels"] or [], case["reference"]["current"]))
             call = product["calls"][0] if product["calls"] else None
             rows.append({"task": key, "condition": condition, "call_id": call, "cost": ledger.get(call, {}),
@@ -74,7 +90,7 @@ def generate(args):
                 body = "\n".join(answer.strip().splitlines()[1:]).strip() if product["labels"] else answer
                 blind.append((key, condition, {"task": case["request"], "statements": case["statements"],
                                                "documents": docs, "body": body}))
-    random.Random(792367).shuffle(blind)
+    random.Random(845113 if variant == "excerpts" else 792367).shuffle(blind)
     packet, bindings = [], []
     for i, (key, condition, item) in enumerate(blind, 1):
         bid = f"T{i:02d}"
@@ -95,7 +111,8 @@ def summary(out, review):
               if ratings["notes"][r["blind_id"]]["rating"] == "usable"}
     result = {}
     rows = read(out / "measurements.json")
-    for condition in ("full", "locations"):
+    variant = read(out / "protocol.json").get("variant", "locations")
+    for condition in ("full", variant):
         group = [r for r in rows if r["condition"] == condition]
         good = [r for r in group if (r["task"], condition) in usable]
         data = {"planned": len(group), "correct_decisions": sum(r["decisions"] for r in group),
@@ -115,6 +132,8 @@ if __name__ == "__main__":
     mode.add_argument("--summarize", type=Path)
     parser.add_argument("--review", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--representation", choices=("locations", "excerpts"), default="locations",
+                        help="Keep file locations only or include the specified Git line ranges.")
     parser.add_argument("--config", default="configs/demo.interactive-normal-task.yaml")
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")

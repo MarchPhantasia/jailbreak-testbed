@@ -1,0 +1,11 @@
+{
+  "python": [10, 10],
+  "deps": [10, 15],
+  "ci": [13, 21],
+  "env_select": [78, 84],
+  "env_values": [53, 61],
+  "paths": [137, 139],
+  "path_base": [126, 132],
+  "wheel_test": [29, 29],
+  "wheel_current": [26, 27]
+}
