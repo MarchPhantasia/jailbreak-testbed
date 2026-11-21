@@ -25,6 +25,10 @@ from study_document_handoffs import (
 
 FIXTURE = REPO / "data/samples/python-release-notes-v1.json"
 ARMS = ("full", "automatic")
+WRITER_TEMPLATES = {
+    "repository": "assemble.repository-brief.zh.v1",
+    "python-examples": "assemble.python-release-examples.zh.v1",
+}
 
 
 def save(path, value):
@@ -150,12 +154,13 @@ def run(args, fixture, sources):
     reader.default_params = {**reader_params, "max_tokens": 1024}
     creator.default_params = {**writer_params, "max_tokens": 1536}
     rt = load_template(stage, "controller", "plan.python-release-note.zh.v1")
-    wt = load_template(wstage, "assembler", "assemble.repository-brief.zh.v1")
+    wt = load_template(wstage, "assembler", WRITER_TEMPLATES[args.writer_style])
     writer = RepositoryBriefAssembler(creator, wt, preserve_gap_details=True, stage_id=wstage,
                                       max_format_retries=0, phase=Phase.ANALYSIS)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, text=True, capture_output=True)
     save(out / "protocol.json", {"fixture": fixture, "fixture_sha256": stable_hash(fixture), "budget": guard.limits.to_dict(),
                                  "commit": commit.stdout.strip() if commit.returncode == 0 else None,
+                                 "writer_style": args.writer_style,
                                  "roles": {"controller": [reader_model, reader._merge_params({}), rt.text, rt.sha256],
                                            "assembler": [writer_model, creator._merge_params({}), wt.text, wt.sha256]}})
     measurements, blind = [], []
@@ -182,29 +187,35 @@ def write_blind_packet(out, blind, seed):
     save(out / "bindings.json", bindings)
 
 
-def compare_old_handoff(args, fixture, sources):
-    """For all three genuine rule changes, hold the documents fixed and replay the first draft."""
-    parent = args.compare_old_handoff
+def compare_products(args, fixture, sources):
+    """Vary one part of the written product, reusing its frozen automatic-selection input."""
+    writer_trial = args.compare_writer is not None
+    parent = args.compare_writer if writer_trial else args.compare_old_handoff
     base = read(parent / "protocol.json")
     if base["fixture_sha256"] != stable_hash(fixture):
         raise ValueError("The parent must use the frozen CPython migration cases")
     policy = fixture["protocol"]
     old, tag = policy["initial"], policy["upgrade"]
-    cases = [c for c in fixture["cases"] if c["reference"][old] != c["reference"][tag]]
-    out = args.out or Path("results") / ("python-release-old-handoff-" + uuid4().hex[:10])
+    cases = [c for c in fixture["cases"] if writer_trial or c["reference"][old] != c["reference"][tag]]
+    design = "writer_examples" if writer_trial else "old_handoff"
+    variant = "examples" if writer_trial else "old"
+    out = args.out or Path("results") / (f"python-release-{design}-" + uuid4().hex[:10])
     out.mkdir(parents=True, exist_ok=False)
     store = EventStore(str(out), out.name, path=str(out / "events.jsonl"))
     guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=len(cases)), store, out.name)
     gateway, stage, model, params = local_analysis_gateway(resolve_routing(_load_config(args)), "assembler", guard, store)
     gateway.default_params = {**params, "max_tokens": 1536}
-    template = load_template(stage, "assembler", "assemble.repository-brief.zh.v1")
+    template = load_template(stage, "assembler", WRITER_TEMPLATES["repository"])
     if [model, gateway._merge_params({}), template.text, template.sha256] != base["roles"]["assembler"]:
         raise ValueError("Assembler identity, settings or template changed")
+    if writer_trial:
+        template = load_template(stage, "assembler", WRITER_TEMPLATES["python-examples"])
     writer = RepositoryBriefAssembler(gateway, template, preserve_gap_details=True, stage_id=stage,
                                       max_format_retries=0, phase=Phase.ANALYSIS)
-    save(out / "protocol.json", {"design": "old_handoff", "parent": str(parent.resolve()),
+    save(out / "protocol.json", {"design": design, "variant": variant, "parent": str(parent.resolve()),
                                  "parent_sha256": stable_hash(base), "tasks": [c["id"] for c in cases],
-                                 "target_release": tag, "selection": "automatic", "rubric": policy["primary"]})
+                                 "target_release": tag, "selection": "automatic", "rubric": policy["primary"],
+                                 "template_sha256": template.sha256, "template": template.text})
     blind, measurements = [], []
     for case in cases:
         key, folder = case["id"], parent / case["id"]
@@ -214,17 +225,18 @@ def compare_old_handoff(args, fixture, sources):
         current = read(folder / "automatic.json")
         chapters, windows = case_documents(case, fixture, sources)
         docs, _ = select_documentation(case["request"], [chapters[old], chapters[tag]], windows[old] + windows[tag])
-        if (docs != current["pack"]["materials"]
-                or stable_hash(read(folder / "selected-handoff.json")) != current["handoff_sha256"]):
+        handoff = read(folder / "selected-handoff.json")
+        if docs != current["pack"]["materials"] or stable_hash(handoff) != current["handoff_sha256"]:
             raise ValueError("Could not bind the selected documents and updated handoff")
-        initial = read(folder / "initial" / "after_P3.json")
-        if initial != [read(folder / "initial" / (item + "-reading.json"))["rows"][0] for item in ITEMS]:
-            raise ValueError("First draft does not match the three original readings")
-        first = write_product(writer, task_at(case, tag), docs, {"current_release": tag, "rows": initial},
-                              key + ".old", "python-release.v1")
-        save(out / (key + ".old.json"), first)
+        if not writer_trial:
+            initial = read(folder / "initial" / "after_P3.json")
+            if initial != [read(folder / "initial" / (item + "-reading.json"))["rows"][0] for item in ITEMS]:
+                raise ValueError("First draft does not match the three original readings")
+            handoff = {"current_release": tag, "rows": initial}
+        changed = write_product(writer, task_at(case, tag), docs, handoff, key + "." + variant, "python-release.v1")
+        save(out / (key + "." + variant + ".json"), changed)
         stats = {}
-        for name, product in (("updated", current), ("old", first)):
+        for name, product in (("updated", current), (variant, changed)):
             stats[name] = {"labels": product["labels"], "correct": product["labels"] == case["reference"][tag],
                            "candidate_id": product["candidate"]["candidate_id"], "calls": product["calls"]}
             if not product["fallback"]:
@@ -233,9 +245,9 @@ def compare_old_handoff(args, fixture, sources):
                 blind.append((key, name, {"request": case["request"], "requirements": case["prose_requirements"],
                                           "source": docs, "body": body}))
         measurements.append({"id": key, "products": stats, "identical_messages":
-                             current["messages_sha256"] == first["messages_sha256"]})
+                             current["messages_sha256"] == changed["messages_sha256"]})
     save(out / "measurements.json", measurements)
-    write_blind_packet(out, blind, 286713)
+    write_blind_packet(out, blind, 613209 if writer_trial else 286713)
     save(out / "summary.json", summarize(out))
     print(out)
 
@@ -254,10 +266,10 @@ def review_map(out, path):
 def summarize(out, review=None):
     protocol = read(out / "protocol.json")
     ratings = review_map(out, review) if review else {}
-    if protocol.get("design") == "old_handoff":
+    if protocol.get("design") in {"old_handoff", "writer_examples"}:
         rows = read(out / "measurements.json")
         results = {}
-        for arm in ("old", "updated"):
+        for arm in (protocol.get("variant", "old"), "updated"):
             correct = [r["id"] for r in rows if r["products"].get(arm, {}).get("correct")]
             results[arm] = {"planned": len(protocol["tasks"]), "all_three": len(correct),
                             "usable_product": sum(ratings.get((k, arm), False) for k in correct) if review else None}
@@ -320,6 +332,8 @@ def main():
     action.add_argument("--fetch-sources", action="store_true")
     action.add_argument("--summarize", type=Path)
     action.add_argument("--compare-old-handoff", type=Path, help="Replay each changed task with its initial handoff")
+    action.add_argument("--compare-writer", type=Path, help="Replay the five automatic-input cases using the Python example writer")
+    parser.add_argument("--writer-style", choices=tuple(WRITER_TEMPLATES), default="repository")
     parser.add_argument("--cache", type=Path, default=Path("results/cpython-docs-310-311"))
     parser.add_argument("--review", type=Path)
     parser.add_argument("--out", type=Path)
@@ -334,8 +348,8 @@ def main():
         parser.error("--review requires --summarize")
     fixture = read(FIXTURE)
     sources = chapter_sources(fixture, args.cache, fetch=args.fetch_sources)
-    if args.compare_old_handoff:
-        compare_old_handoff(args, fixture, sources)
+    if args.compare_old_handoff or args.compare_writer:
+        compare_products(args, fixture, sources)
     elif args.run:
         run(args, fixture, sources)
     else:

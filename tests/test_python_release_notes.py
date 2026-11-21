@@ -81,7 +81,7 @@ def test_closed_document_run_binds_each_notice_and_keeps_gold_offline(tmp_path, 
     monkeypatch.setattr(study, "resolve_routing", lambda cfg: {})
     monkeypatch.setattr(study, "local_analysis_gateway", route)
     out = tmp_path / "batch"
-    study.run(Namespace(out=out), fixture, sources)
+    study.run(Namespace(out=out, writer_style="repository"), fixture, sources)
     result = study.summarize(out)
     assert result["transitions"] == {"action_correct": 3, "anchor_correct": 3, "applied_three_correct": 3}
     assert result["usage"]["controller"]["calls"] == 9 and result["usage"]["assembler"]["calls"] == 4
@@ -95,9 +95,14 @@ def test_closed_document_run_binds_each_notice_and_keeps_gold_offline(tmp_path, 
     study.save(review, {"packet_sha256": stable_hash(cards), "notes": {c["blind_id"]: {"rating": "usable"} for c in cards}})
     assert study.summarize(out, review)["products"]["automatic"]["usable_product"] == 2
     follow = tmp_path / "old-handoff"
-    study.compare_old_handoff(Namespace(out=follow, compare_old_handoff=out), fixture, sources)
+    study.compare_products(Namespace(out=follow, compare_old_handoff=out, compare_writer=None), fixture, sources)
     pair = study.read(follow / "weighted-mean.old.json")
     current = study.read(out / "weighted-mean" / "automatic.json")
     assert pair["pack"]["materials"] == current["pack"]["materials"]
     assert pair["handoff_sha256"] != current["handoff_sha256"]
     assert study.summarize(follow)["new_usage"]["assembler"]["calls"] == 1
+    edited = tmp_path / "writer"
+    study.compare_products(Namespace(out=edited, compare_writer=out, compare_old_handoff=None), fixture, sources)
+    examples = study.read(edited / "weighted-mean.examples.json")
+    assert examples["pack"] == current["pack"] and examples["messages_sha256"] != current["messages_sha256"]
+    assert study.summarize(edited)["new_usage"]["assembler"]["calls"] == 2
