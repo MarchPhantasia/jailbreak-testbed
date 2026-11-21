@@ -41,23 +41,23 @@ def document(sources, name, ident):
             "evidence_ids": [ident], "origin": "input", "fidelity": "verbatim"}
 
 
-def canonical_brief(output, visible_ids):
+def canonical_brief(output, visible_ids, items=ITEMS):
     rows = output.get("rows") if isinstance(output, dict) else None
-    if not isinstance(rows, list) or len(rows) != len(ITEMS):
+    if not isinstance(rows, list) or len(rows) != len(items):
         return None
     decisions = {}
     for row in rows:
         if not isinstance(row, dict):
             return None
         item, value, refs = row.get("id"), row.get("value"), row.get("sources")
-        if item not in ITEMS or item in decisions or value not in ("Y", "N", "U"):
+        if item not in items or item in decisions or value not in ("Y", "N", "U"):
             return None
         if not isinstance(refs, list) or any(not isinstance(r, str) or r not in visible_ids for r in refs):
             return None
         if len(set(refs)) != len(refs) or (value != "U" and not refs):
             return None
         decisions[item] = {"id": item, "value": value, "sources": sorted(refs)}
-    return [decisions[item] for item in ITEMS]
+    return [decisions[item] for item in items]
 
 
 def reference_brief(reference):

@@ -1,0 +1,77 @@
+{
+  "schema": "python-api-release-notes.v1",
+  "repository": "https://github.com/python/cpython",
+  "releases": {
+    "3.10.0": {
+      "revision": "b494f5935c92951e75597bfe1c8b1f3112fec270",
+      "sha256": {
+        "statistics": "63d70a5cae3c47a3dcfbacfe76bfa0fc9e778b29a4ecb26fd9bc085793503f08",
+        "random": "c6fcbd48ba5ece262d93a108c2ace8f46f217596780877dd2b07b1168a235665",
+        "datetime": "f2965c2c5eecbb7cf6e71722fcc17fe0c8810fea6a83805461b40332818032d1",
+        "time": "b8dbc3846396b00fe3be12f353c7cad1000b75e23669d28e1613a2129b269ecb",
+        "pathlib": "0f1ebced565c87765e2b49f758f9e6ae249a569b78f5c3a3415cb897d7d63efa"
+      }
+    },
+    "3.11.0": {
+      "revision": "deaf509e8fc6e0363bd6f26d52ad42f976ec42f2",
+      "sha256": {
+        "statistics": "3a6a4fe05c99b2b7cf651d08a1a16399ea23e09a47ff3884ce10c22e5aca7d1c",
+        "random": "58d3f7cb8d11f0bc887bacabe17a6f05c6de6be08ced4bf3f5cec9a80daefca5",
+        "datetime": "f5f8af078b3835f1615411d74c67e9164915e8bbd6c221dddc472b550788a3dc",
+        "time": "e68fc1e476ae2fec8f0e40b942f877895fa0a75922f300999f9dbdc291914f86",
+        "pathlib": "304a1698a161bd29c399a12165dfa734c59d27a8dd562bc005db7dd52aa55213"
+      }
+    }
+  },
+  "protocol": {
+    "initial": "3.10.0",
+    "upgrade": "3.11.0",
+    "duplicate_notice_case": "weighted-mean",
+    "old_checkpoints": ["start", "after_P1", "after_P2", "after_P3"],
+    "decision": "keep at after_P3 or revise from the last still-valid prefix; compare against the first differing committed judgment",
+    "selection": "look up dotted API names in backticks in the maintenance request; keep the matching reStructuredText entry from each release. If missing or ambiguous, record it and send the full window.",
+    "full_window": "target API entry plus the immediately preceding and following API entries in the chapter",
+    "primary": "all three frozen current-version judgments correct AND all three concrete requirements present in the Chinese prose, without a material unsupported assertion",
+    "other_measures": ["rollback decision and anchor", "direction of each changed judgment in final note", "selector hit or full-window fallback", "stage calls, tokens and elapsed time"],
+    "missing": "incomplete stages, template fallback and invalid products remain in the planned denominator",
+    "reading": "blind to condition and answer header; read the original note against the primary source and the three task requirements",
+    "order": "alternate full and automatic first by task position"
+  },
+  "cases": [
+    {
+      "id": "weighted-mean", "module": "statistics", "baseline_topic": "statistics.fmean",
+      "request": "给出在当前 Python 环境用 `statistics.fmean` 汇总成绩的维护建议，交代权重、返回类型和空输入。",
+      "statements": ["调用时可以显式传入 weights 给各观测值加权。", "正常计算时总是返回 float。", "传入空数据时返回数值 0。"],
+      "reference": {"3.10.0": ["N", "Y", "N"], "3.11.0": ["Y", "Y", "N"]},
+      "prose_requirements": ["可在 3.11 传 weights，权重数与观测数相同", "返回 float", "空输入抛 StatisticsError"]
+    },
+    {
+      "id": "shuffle-callback", "module": "random", "baseline_topic": "random.shuffle",
+      "request": "维护者正在整理 `random.shuffle` 的调用说明。写明原序列的变化、能否传自定义随机回调，以及元组要得到一份新乱序列表时的办法。",
+      "statements": ["对可变序列执行 shuffle 会原地改变顺序。", "在该运行版本中 shuffle 接受第二个可选的随机回调。", "直接 shuffle 一个不可变的元组会返回新的乱序列表。"],
+      "reference": {"3.10.0": ["Y", "Y", "N"], "3.11.0": ["Y", "N", "N"]},
+      "prose_requirements": ["可变序列原地打乱", "3.11 不再接受旧的第二个回调", "元组使用 sample(x, k=len(x)) 或等价的可运行做法产生新列表"]
+    },
+    {
+      "id": "compact-date", "module": "datetime", "baseline_topic": "datetime.date.fromisoformat",
+      "request": "为日期导入表写一条 `datetime.date.fromisoformat` 的维护说明。分别举出带连字符和不带连字符的输入，交代返回值。",
+      "statements": ["文本 2019-12-04 可作为输入。", "结果是整数时间戳。", "文本 20191204 可直接解析。"],
+      "reference": {"3.10.0": ["Y", "N", "N"], "3.11.0": ["Y", "N", "Y"]},
+      "prose_requirements": ["带连字符的 2019-12-04 可用", "紧凑的 20191204 在 3.11 可用", "两个输入得到同一天的 date 对象"]
+    },
+    {
+      "id": "poll-interval", "module": "time", "baseline_topic": "time.sleep",
+      "request": "轮询器在普通工作线程调用 `time.sleep`。说明能否等 0.25 秒、影响哪个线程，以及唤醒时间能否当成精确截止时刻。",
+      "statements": ["可以用浮点数 0.25 指定等待时间。", "调度器保证恰好在 0.25 秒时唤醒。", "休眠的是调用线程。"],
+      "reference": {"3.10.0": ["Y", "N", "Y"], "3.11.0": ["Y", "N", "Y"]},
+      "prose_requirements": ["可传 0.25 秒", "暂停调用线程", "系统调度可能延长等待，没有准点保证"]
+    },
+    {
+      "id": "recursive-files", "module": "pathlib", "baseline_topic": "pathlib.Path.glob",
+      "request": "给维护者说明 `pathlib.Path.glob` 使用 **/*.py 扫描目录时的范围、返回条目类型，以及目录树很大时的代价。",
+      "statements": ["**/*.py 可以涵盖当前目录及其子目录。", "产出的是普通文件名字符串。", "在很大的目录树中使用 ** 可能格外耗时。"],
+      "reference": {"3.10.0": ["Y", "N", "Y"], "3.11.0": ["Y", "N", "Y"]},
+      "prose_requirements": ["说明 **/*.py 的递归匹配范围", "返回路径对象", "大目录树的递归扫描可能很耗时"]
+    }
+  ]
+}
