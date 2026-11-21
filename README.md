@@ -128,6 +128,8 @@ $PY -m framework.webapp --port 8765    # → http://127.0.0.1:8765（仅本机�
 
 要复核本地千问在两个角色间如何交接，可运行 `python scripts/study_document_handoffs.py --protocol v2`。它用 Git 中五道真实维护题比较三种装配输入，并为同一份发布说明分别读旧版、当前版配置。原文和交接表均保留，结果可用 `--summarize` 离线复算。[实测结果与复现方法](docs/delivery/document-handoff-study.md)
 
+CPython 版本迁移实验用另外五道题自动保存草稿、按 Controller 的决定回退，并比较 Assembler 读上下文或只读目标接口原文时交付的中文维护说明。入口为 `python scripts/study_python_releases.py --run`。[逐题结果、真实调用和复现命令](docs/delivery/python-release-rollback-study.md)
+
 ## 上下文预算
 
 服务声明 `context_window`（token，例如 InferKnock 与本机 vLLM 都用 32768）。框架不依赖具体
