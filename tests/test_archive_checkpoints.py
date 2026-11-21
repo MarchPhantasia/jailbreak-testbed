@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -129,3 +130,26 @@ def test_end_requires_a_unique_termination_and_a_readable_archive(tmp_path):
         f.write("{")
     row = replay_run(tmp_path, at=["end"])["episodes"][0]
     assert (row["task_id"], row["archive_status"], row["checkpoints"]["end"]) == ("T", "multiple_terminations", None)
+
+
+def test_archive_comparison_only_passes_the_same_dispatches_and_grades_ties(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    import compare_archive_contexts as study
+
+    save(tmp_path / "plan.json", {"episodes": [{"episode_id": "ep", "task_id": "t"},
+                                               {"episode_id": "missing", "task_id": "x"}]})
+    store = EventStore(str(tmp_path), "ep")
+    for role in ("target", "controller", "reviewer", "assembler", "target", "controller"):
+        store.append("request_sent", role=role, call_id=f"c{len(store.events)}",
+                     payload={"messages": [{"role": "user", "content": "original body stays on disk"}]})
+    store.append("terminate", payload={"final_candidate_id": None})
+    complete, missing = study.load_cases(tmp_path)
+    assert "dispatches" not in missing and missing["archive_status"] == "missing_archive"
+    assert complete["counts"] == {"target": 2, "controller": 2, "assembler": 1}
+    packets = [study.render(complete["dispatches"], arm)[0]["content"] for arm in study.ARMS]
+    ledgers = [p[len(study.INSTRUCTION):].splitlines() for p in packets]
+    assert ledgers[0] != ledgers[1] and sorted(ledgers[0]) == sorted(ledgers[1])
+    assert len(ledgers[2]) == 3 and all("original body" not in p for p in packets)
+    correct = {"counts": complete["counts"], "total": 5, "leaders": ["target", "controller"], "margin": 0}
+    assert study.grade(correct, complete["counts"])["all_four"]
+    assert not study.grade({**correct, "margin": False}, complete["counts"])["all_four"]
