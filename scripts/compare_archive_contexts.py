@@ -80,19 +80,22 @@ def load_cases(source):
     return cases
 
 
-def local_assembler_gateway(args, store, planned_calls):
-    routing = resolve_routing(_load_config(args))
-    route = routing.route("assembler")
+def local_analysis_gateway(routing, role, guard, store):
+    route = routing.route(role)
     if not route or not route.enabled:
-        raise ValueError("Assembler route unavailable")
+        raise ValueError(f"Local analysis route unavailable: {role}")
     service = routing.service(route)
     if (service.type == "mock" or service.parameter_profile != "qwen38_vllm"
             or urlsplit(service.base_url).hostname not in {"127.0.0.1", "localhost", "::1"}):
         raise ValueError("Expected the local Qwen vLLM service")
-    guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=planned_calls), store, store.episode_id)
-    gateway = build_gateway(routing, "assembler", guard, store)
+    gateway = build_gateway(routing, role, guard, store)
     gateway.default_params = {}
     return gateway, route.stage_id, service.model, parameters(service.parameter_profile)
+
+
+def local_assembler_gateway(args, store, planned_calls):
+    guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=planned_calls), store, store.episode_id)
+    return local_analysis_gateway(resolve_routing(_load_config(args)), "assembler", guard, store)
 
 
 def run(args):

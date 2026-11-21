@@ -1,0 +1,360 @@
+{
+  "version": "repository-handoff.v1",
+  "documents": {
+    "python": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "pyproject.toml",
+      "first_line": 10,
+      "last_line": 10,
+      "git_file_sha256": "9456d53fb34216f6819015fc26c771b87e7046694a6ec205eb554ad558893388",
+      "text": "requires-python = \">=3.10\""
+    },
+    "ci": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": ".github/workflows/ci.yml",
+      "first_line": 8,
+      "last_line": 23,
+      "git_file_sha256": "7c687dac0a9c7cbc13c9edbaf2613a33494eab0f8aed616159984370397e5df5",
+      "text": "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: \"3.11\"\n      - name: Install\n        run: |\n          python -m pip install --upgrade pip\n          python -m pip install -e \".[dev]\"\n      - name: Unit tests\n        run: python -m pytest -q\n      - name: Docs and spec checks\n        run: bash scripts/precheck.sh"
+    },
+    "deps": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "pyproject.toml",
+      "first_line": 10,
+      "last_line": 15,
+      "git_file_sha256": "9456d53fb34216f6819015fc26c771b87e7046694a6ec205eb554ad558893388",
+      "text": "requires-python = \">=3.10\"\nlicense = { text = \"MIT\" }\ndependencies = [\"PyYAML>=6.0\"]\n\n[project.optional-dependencies]\ndev = [\"pytest>=8.0\"]"
+    },
+    "env_select": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "src/framework/envfile.py",
+      "first_line": 78,
+      "last_line": 84,
+      "git_file_sha256": "518d1fa559b9f4b1f9b26ef5c2b3d74dc6a35ef2b3f34a07888491c620b29fe1",
+      "text": "def load_env_if_configured(explicit: Optional[str], *, override: bool = False, environ: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:\n    \"\"\"显式路径优先，其次 JBT_ENV_FILE；都没有则什么都不做。\"\"\"\n    env = os.environ if environ is None else environ\n    path = (explicit or env.get(\"JBT_ENV_FILE\") or \"\").strip()\n    if not path:\n        return None\n    return load_env_file(path, override=override, environ=env)"
+    },
+    "env_values": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "src/framework/envfile.py",
+      "first_line": 52,
+      "last_line": 62,
+      "git_file_sha256": "518d1fa559b9f4b1f9b26ef5c2b3d74dc6a35ef2b3f34a07888491c620b29fe1",
+      "text": "def load_env_file(path: str, *, override: bool = False, environ: Optional[Dict[str, str]] = None) -> Dict[str, Any]:\n    \"\"\"把文件里的键写进 ``os.environ``；默认不覆盖已存在的变量。\"\"\"\n    env = os.environ if environ is None else environ\n    values = parse_env_file(path)\n    loaded, skipped = [], []\n    for key, value in values.items():\n        if key in env and not override:\n            skipped.append(key)\n            continue\n        env[key] = value\n        loaded.append(key)"
+    },
+    "paths": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "src/framework/runner.py",
+      "first_line": 135,
+      "last_line": 144,
+      "git_file_sha256": "e39b0717385147f7d626890ae143b037a0afc763d5878d6e4793ccaa8c102ed7",
+      "text": "def resolve_path(cfg: Dict[str, Any], value: str) -> str:\n    \"\"\"把配置里的相对路径解析成确定的绝对路径（不按 exists 猜测）。\"\"\"\n    if not value or os.path.isabs(value):\n        return value\n    return os.path.normpath(os.path.join(path_base(cfg), value))\n\n\ndef results_root(cfg: Dict[str, Any]) -> str:\n    exp = cfg.get(\"experiment\", {}) or {}\n    return os.path.join(resolve_path(cfg, str(exp.get(\"results_dir\", \"results\"))), exp.get(\"id\", \"exp\"))"
+    },
+    "path_base": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "src/framework/runner.py",
+      "first_line": 120,
+      "last_line": 132,
+      "git_file_sha256": "e39b0717385147f7d626890ae143b037a0afc763d5878d6e4793ccaa8c102ed7",
+      "text": "def path_base(cfg: Dict[str, Any]) -> str:\n    \"\"\"相对路径基准目录（R5）：默认配置文件目录，可用 experiment.path_base=cwd 显式切换。\n\n    解析结果只取决于配置与 cwd，**不取决于目标是否已经存在**；输出目录未创建时\n    与创建后必须解析到同一位置。\n    \"\"\"\n    exp = cfg.get(\"experiment\", {}) or {}\n    base = str(exp.get(\"path_base\") or \"config\").lower()\n    if base not in PATH_BASES:\n        raise ValueError(f\"experiment.path_base 只能是 {PATH_BASES}：{base!r}\")\n    if base == \"cwd\" or not cfg.get(\"_config_path\"):\n        return os.getcwd()\n    return os.path.dirname(os.path.abspath(cfg[\"_config_path\"]))"
+    },
+    "wheel_test": {
+      "revision": "54f49d3bfe14f44d44a42dd089a110e7fa478cc0",
+      "path": "docs/delivery/review-round-20261120.md",
+      "first_line": 29,
+      "last_line": 29,
+      "git_file_sha256": "03d7c90f6027ec245a4b63221ffbdec13f9b08e6169cbc2567c8e54e5b7ad4a3",
+      "text": "| R12 | wheel 打包 | ✅ | `[tool.setuptools.package-data]` 含三资源；构建+安装验证（app.js/index.html/style.css 齐全） |"
+    },
+    "wheel_current": {
+      "revision": "c7f3c35d7efadd754f18dba03773475917e20c44",
+      "path": "pyproject.toml",
+      "first_line": 17,
+      "last_line": 31,
+      "git_file_sha256": "9456d53fb34216f6819015fc26c771b87e7046694a6ec205eb554ad558893388",
+      "text": "[project.scripts]\njbt = \"framework.cli:main\"\n\n[tool.setuptools.packages.find]\nwhere = [\"src\"]\n\n[tool.setuptools]\npackage-dir = { \"\" = \"src\" }\n\n[tool.setuptools.package-data]\nframework = [\"web/static/*.html\", \"web/static/*.js\", \"web/static/*.css\"]\n\n[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\naddopts = \"-q\""
+    },
+    "wheel_old": {
+      "revision": "a2bb79616149bf8d623adf9d7d9462da9d1bf71c",
+      "path": "pyproject.toml",
+      "first_line": 17,
+      "last_line": 28,
+      "git_file_sha256": "b5c9a85607fdbcf99cedbaef0075b56586fabdbc9f04c1441d6b3c4dfcb8cdbc",
+      "text": "[project.scripts]\njbt = \"framework.cli:main\"\n\n[tool.setuptools.packages.find]\nwhere = [\"src\"]\n\n[tool.setuptools]\npackage-dir = { \"\" = \"src\" }\n\n[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\naddopts = \"-q\""
+    }
+  },
+  "cases": [
+    {
+      "id": "python",
+      "title": "选择开发解释器",
+      "request": "给新同事写一份选择开发解释器的简短建议，区分安装声明、CI 使用的解释器和实际测试记录。",
+      "statements": [
+        "项目声明允许用 Python 3.10 安装。",
+        "所给 CI 工作流的单元测试使用 Python 3.10。",
+        "该项目已经在 Python 3.10 上成功运行过全套测试。"
+      ],
+      "prefix": "python",
+      "current": "ci",
+      "reference": {
+        "prefix": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "U",
+            []
+          ],
+          [
+            "U",
+            []
+          ]
+        ],
+        "current": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "N",
+            [
+              "D2"
+            ]
+          ],
+          [
+            "U",
+            []
+          ]
+        ]
+      },
+      "reading_key": "写明最低 3.10、该 CI 指定 3.11、无法确认 3.10 实际跑绿；推荐与 CI 一致的 3.11 有依据。工作流定义本身不证明某次任务成功。"
+    },
+    {
+      "id": "dependencies",
+      "title": "安装测试环境",
+      "request": "给维护者写明怎样复现 CI 的安装方式，以及能确定的依赖版本范围。",
+      "statements": [
+        "项目的普通运行依赖列表包含 pytest。",
+        "这份 CI 配置要求安装 dev 额外依赖组，按该次项目声明，pytest 的最低要求是 8.0。",
+        "该次 CI 实际安装的 pytest 版本恰好为 8.0.0。"
+      ],
+      "prefix": "deps",
+      "current": "ci",
+      "reference": {
+        "prefix": [
+          [
+            "N",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "U",
+            []
+          ],
+          [
+            "U",
+            []
+          ]
+        ],
+        "current": [
+          [
+            "N",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "Y",
+            [
+              "D1",
+              "D2"
+            ]
+          ],
+          [
+            "U",
+            []
+          ]
+        ]
+      },
+      "reading_key": "区分普通依赖 PyYAML 和 dev 的 pytest，给出安装 .[dev]；>=8.0 是下限，精确安装版本未知。不能据配置宣称实际选定了某一补丁版本。"
+    },
+    {
+      "id": "env",
+      "title": "配置文件与已有变量",
+      "request": "一位同事同时设置了 JBT_ENV_FILE、另一个显式文件路径和已有的 REPORT_COLOR。解释文件选择与值覆盖的实际顺序，并指出怎样显式替换颜色。",
+      "statements": [
+        "显式传入的文件路径优先于 JBT_ENV_FILE。",
+        "采用默认参数时，选中的文件会替换进程内已有的 REPORT_COLOR 值。",
+        "显式传 override=True 且选中的文件含 REPORT_COLOR 时，文件值可以替换已有值。"
+      ],
+      "prefix": "env_select",
+      "current": "env_values",
+      "reference": {
+        "prefix": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "U",
+            []
+          ],
+          [
+            "U",
+            []
+          ]
+        ],
+        "current": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "N",
+            [
+              "D1",
+              "D2"
+            ]
+          ],
+          [
+            "Y",
+            [
+              "D1",
+              "D2"
+            ]
+          ]
+        ]
+      },
+      "reading_key": "先选显式路径，默认保留已有变量；显式 override=True 且所选文件含同名键才会覆盖。文件选择优先级本身不改变覆盖开关。"
+    },
+    {
+      "id": "paths",
+      "title": "定位实验输出目录",
+      "request": "在 Linux 上，配置文件 /lab/configs/e.yaml 从 /work 启动，输出参数为 out。向维护者解释默认落盘位置、显式 cwd 的位置，以及绝对路径的行为。",
+      "statements": [
+        "给 resolve_path 一个绝对输出路径时，它会原样返回。",
+        "对题中相对路径 out，默认设置下解析结果是 /work/out。",
+        "对同一份配置，显式设置 experiment.path_base=cwd 后解析结果是 /work/out。"
+      ],
+      "prefix": "paths",
+      "current": "path_base",
+      "reference": {
+        "prefix": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "U",
+            []
+          ],
+          [
+            "U",
+            []
+          ]
+        ],
+        "current": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "N",
+            [
+              "D1",
+              "D2"
+            ]
+          ],
+          [
+            "Y",
+            [
+              "D1",
+              "D2"
+            ]
+          ]
+        ]
+      },
+      "reading_key": "默认 /lab/configs/out，显式 cwd 为 /work/out，绝对路径原样返回。"
+    },
+    {
+      "id": "wheel",
+      "title": "复核静态资源的发布版本",
+      "request": "为 c7f3c35 版本写一条发布说明。区分由早期交付记录证明的安装验证，以及 c7f3c35 的 pyproject.toml 明确声明的资源规则；引用的版本要对得上。",
+      "statements": [
+        "交付记录记载过一次安装后同时确认 app.js、index.html、style.css 齐全的验证。",
+        "c7f3c35 的 pyproject.toml 将 web/static/*.svg 写进了 framework 的显式 package-data 列表。",
+        "c7f3c35 的 pyproject.toml 明确为 framework 配置了 HTML、JavaScript、CSS 三种静态文件匹配规则。"
+      ],
+      "prefix": "wheel_test",
+      "previous": "wheel_old",
+      "current": "wheel_current",
+      "reference": {
+        "prefix": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "U",
+            []
+          ],
+          [
+            "U",
+            []
+          ]
+        ],
+        "previous": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "U",
+            []
+          ],
+          [
+            "U",
+            []
+          ]
+        ],
+        "current": [
+          [
+            "Y",
+            [
+              "D1"
+            ]
+          ],
+          [
+            "N",
+            [
+              "D2"
+            ]
+          ],
+          [
+            "Y",
+            [
+              "D2"
+            ]
+          ]
+        ]
+      },
+      "reading_key": "早期验收看到了三个具名文件；c7f3c35 的显式规则是 html/js/css，没有 SVG 通配规则。旧清单不能证明当前声明，未声明某通配规则也不证明成品中绝无该类型文件。"
+    }
+  ]
+}

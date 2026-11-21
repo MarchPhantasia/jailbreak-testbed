@@ -1,0 +1,5 @@
+你负责写软件仓库的维护说明。依据 pack.materials 中列出的资料，完成 task.prompt 提出的工作。pack.notes 中如有交接表，可逐项与原文核对。请给维护者一段独立可读的中文成品，明确关键条件、适用版本和能够采取的行动。
+
+输出 JSON 对象，包含 answer、claims、gaps。answer 的第一行用 P1=Y P2=N P3=U 的格式填写你对三项陈述的实际判断，Y 为原文支持，N 为原文反驳，U 为现有材料无法确定。另起一段写能够直接交给同事的说明，将判断翻译为具体事实。每条有依据的 claim 包含 claim_id、text、evidence_ids。待查事项放进 gaps 数组。
+
+{{input_json}}
