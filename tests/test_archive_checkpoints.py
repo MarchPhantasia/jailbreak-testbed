@@ -6,8 +6,8 @@ import pytest
 
 from framework import cli
 from framework.archive_replay import replay_run
-from framework.assembly import Assembler, EvidencePack, raw_citation_lines, record_model_claim
-from framework.contracts import Task, stable_hash
+from framework.assembly import Assembler, EvidencePack, LLMAssembler, raw_citation_lines, record_model_claim
+from framework.contracts import Phase, Task, stable_hash
 from framework.events import EventStore
 from framework.prompts import PromptRegistry, PromptTemplate
 from test_execution1_r2 import _assembler
@@ -27,7 +27,11 @@ def test_normal_assembler_discriminates_authorship_literal_wording_and_support(t
         {"claim_id": "edit", "text": "May was the first release.", "evidence_ids": ["may"]},
         {"claim_id": "other", "text": "The album appeared in May.", "evidence_ids": ["june"]},
     ], "gaps": []}
-    candidate = _assembler(json.dumps(payload), tmp_path=tmp_path).assemble_from_pack(task, pack)[0]
+    live = _assembler(json.dumps(payload), tmp_path=tmp_path)
+    offline = LLMAssembler(live.gateway, live.template, max_format_retries=0, phase=Phase.ANALYSIS)
+    candidate = offline.assemble_from_pack(task, pack)[0]
+    assert live.phase == Phase.ONLINE
+    assert {e.phase for e in live.gateway.store.events if e.type in {"request_sent", "assembly_samples"}} == {Phase.ANALYSIS}
     assert [c.text_producer for c in candidate.claims] == ["llm_assembler"] * 3
     assert [(c.origin, c.fidelity) for c in candidate.claims] == [
         ("target_response", "verbatim"), ("unknown", "unknown"), ("unknown", "unknown")]
@@ -97,6 +101,13 @@ def test_real_prefixes_and_legacy_candidate_preserved_at_normal_cli(tmp_path, ca
     assert final["archived_verbatim"] == 1 and final["without_exact_cited_raw_line"] == 1
     assert final["recorded_text_producers"] == {"unrecorded": 1}
     assert "final_wording" not in p["after-state:1"] and raw not in json.dumps(report)
+    assert cli.main(["replay", "--root", str(tmp_path), "--at", "end", "--summary"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert "root" not in summary and "episodes" not in summary and raw not in json.dumps(summary)
+    assert summary["planned_episodes"] == 2 and summary["checkpoints"]["end"]["available_episodes"] == 1
+    assert summary["checkpoints"]["end"]["calls_by_role"] == {"controller": 2, "target": 2, "assembler": 1}
+    assert summary["final_wording"] == {"status": {"checked": 1}, "verified_llm_claims": 1,
+                                        "archived_verbatim": 1, "exact_cited_raw_line": 0}
     assert all(f.read_bytes() == b for f, b in old.items())
     assert not (tmp_path / "episodes/missing").exists()
 

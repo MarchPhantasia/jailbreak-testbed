@@ -10,6 +10,7 @@ from . import runner
 from .assembly import raw_citation_lines, record_model_claim
 from .context_audit import frozen_templates, recorded_material_view
 from .contracts import stable_hash
+from .datasets import sha256_file
 
 
 DEFAULT_POINTS = ("before-send:1", "after-reply:1", "after-state:1", "before-assembly:1", "end")
@@ -214,3 +215,31 @@ def replay_run(root, *, at=None, episodes=None, watch=None):
     return {"root": str(root), "points": points, "planned_episodes": len(entries), "selected_episodes": len(rows),
             "available_by_point": {p: sum(r["checkpoints"][p] is not None for r in rows) for p in points},
             "episodes": rows}
+
+
+def summarize_run(report):
+    """Aggregate available prefixes. The summary carries no per-case IDs, paths or message bodies."""
+    rows = report["episodes"]
+    summary = {
+        "plan_sha256": sha256_file(str(Path(report["root"]) / "plan.json")),
+        "planned_episodes": report["planned_episodes"], "selected_episodes": len(rows),
+        "distinct_exact_tasks": len({r["exact_task_id"] for r in rows if r["exact_task_id"]}),
+        "episodes_without_exact_task_id": sum(not r["exact_task_id"] for r in rows),
+        "archive_status": dict(Counter(r["archive_status"] for r in rows)), "checkpoints": {},
+    }
+    for point in report["points"]:
+        available = [r["checkpoints"][point] for r in rows if r["checkpoints"][point] is not None]
+        dispatches = Counter()
+        for checkpoint in available:
+            dispatches.update(checkpoint["calls_by_role"])
+        summary["checkpoints"][point] = {"available_episodes": len(available), "calls_by_role": dict(dispatches)}
+        if point == "end":
+            audits = [c["final_wording"] for c in available]
+            verified = [a for a in audits if a["status"] == "checked"]
+            summary["final_wording"] = {
+                "status": dict(Counter(a["status"] for a in audits)),
+                "verified_llm_claims": sum(a["claim_count"] for a in verified),
+                "archived_verbatim": sum(a["archived_verbatim"] for a in verified),
+                "exact_cited_raw_line": sum(a["exact_cited_raw_line"] for a in verified),
+            }
+    return summary

@@ -184,10 +184,12 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
 
 def cmd_replay(args: argparse.Namespace) -> int:
-    from .archive_replay import replay_run
+    from .archive_replay import replay_run, summarize_run
 
     try:
         out = replay_run(args.root, at=args.at, episodes=args.episode, watch=args.evidence_id)
+        if args.summary:
+            out = summarize_run(out)
     except (OSError, ValueError, KeyError) as exc:
         _print({"command": "replay", "calls_model": False, "error": str(exc)})
         return 1
@@ -326,6 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--at", action="append",
                     help="before-send:N / after-reply:N / after-state:N / before-assembly:N / end，可重复")
     sp.add_argument("--evidence-id", action="append", help="在各时点追踪指定证据编号，可重复")
+    sp.add_argument("--summary", action="store_true", help="仅输出冻结计划指纹、分母和跨题计数")
     sp.set_defaults(func=cmd_replay)
 
     for name, fn, help_text in (

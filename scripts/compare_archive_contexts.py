@@ -80,9 +80,7 @@ def load_cases(source):
     return cases
 
 
-def run(args):
-    source = Path(args.root)
-    cases = load_cases(source)
+def local_assembler_gateway(args, store, planned_calls):
     routing = resolve_routing(_load_config(args))
     route = routing.route("assembler")
     if not route or not route.enabled:
@@ -91,14 +89,20 @@ def run(args):
     if (service.type == "mock" or service.parameter_profile != "qwen38_vllm"
             or urlsplit(service.base_url).hostname not in {"127.0.0.1", "localhost", "::1"}):
         raise ValueError("Expected the local Qwen vLLM service")
+    guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=planned_calls), store, store.episode_id)
+    gateway = build_gateway(routing, "assembler", guard, store)
+    gateway.default_params = {}
+    return gateway, route.stage_id, service.model, parameters(service.parameter_profile)
+
+
+def run(args):
+    source = Path(args.root)
+    cases = load_cases(source)
     root = Path(args.out or f"results/archive-context-comparison-{uuid4().hex[:10]}")
     root.mkdir(parents=True, exist_ok=False)
     store = EventStore(str(root), root.name, path=str(root / "events.jsonl"))
-    guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=len(ARMS) * len(cases)), store, root.name)
-    gateway = build_gateway(routing, "assembler", guard, store)
-    gateway.default_params = {}
-    params = parameters(service.parameter_profile)
-    protocol = {"source": str(source), "model": service.model, "prompt": INSTRUCTION,
+    gateway, stage, model, params = local_assembler_gateway(args, store, len(ARMS) * len(cases))
+    protocol = {"source": str(source), "model": model, "prompt": INSTRUCTION,
                 "sent_params": gateway._merge_params(params), "arms": ARMS, "cases": cases,
                 "order": "start at cohort position modulo 3 and cycle through arms",
                 "endpoints": ["counts", "total", "leaders", "margin"], "planned_per_arm": len(cases)}
@@ -110,7 +114,7 @@ def run(args):
             row = {"episode_id": case["episode_id"], "arm": arm, "status": case["archive_status"]}
             if "dispatches" in case:
                 packet = render(case["dispatches"], arm)
-                result = gateway.call("assembler", route.stage_id, packet, params, phase=Phase.ANALYSIS,
+                result = gateway.call("assembler", stage, packet, params, phase=Phase.ANALYSIS,
                                       attempt_id=f"{case['episode_id']}.{arm}", cache_bypass=True)
                 events = [e for e in store.events if e.call_id == result.call_id]
                 sent = next((e for e in events if e.type == "request_sent"), None)

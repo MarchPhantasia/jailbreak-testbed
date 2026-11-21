@@ -21,6 +21,7 @@ from .contracts import (
     Claim,
     Fidelity,
     Origin,
+    Phase,
     Role,
     Status,
     SupportStatus,
@@ -435,9 +436,11 @@ class LLMAssembler(Assembler):
         lexical_policy: str = DEFAULT_LEXICAL_POLICY,
         relocate_meta_rows: bool = True,
         row_text_by_id=None,
+        phase: Phase = Phase.ONLINE,
     ):
         self.gateway = gateway
         self.template = template
+        self.phase = Phase(phase)
         # 引用定位修复（citation-relocate@v1）：元行引用扩宽为材料完整跨度。
         # row_text_by_id 由正式入口注入 evidence.jsonl 的行级文本；缺省时跳过。
         self.relocate_meta_rows = bool(relocate_meta_rows)
@@ -629,6 +632,7 @@ class LLMAssembler(Assembler):
                     node_id=node_id,
                     view_id=view_id,
                     attempt_id=f"assemble_s{sample_index}_{attempt + 1}",
+                    phase=self.phase,
                     template_ref=template_ref,
                     input_evidence_ids=pack.evidence_ids(),
                     cache_bypass=cache_bypass,
@@ -757,6 +761,7 @@ class LLMAssembler(Assembler):
             return
         store.append(
             "assembly_samples",
+            phase=self.phase,
             role="assembler",
             stage_id=self.stage_id,
             node_id=node_id,
