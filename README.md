@@ -130,6 +130,8 @@ $PY -m framework.webapp --port 8765    # → http://127.0.0.1:8765（仅本机�
 
 CPython 版本迁移实验用另外五道题自动保存草稿、按 Controller 的决定回退，并比较 Assembler 读上下文或只读目标接口原文时交付的中文维护说明。入口为 `python scripts/study_python_releases.py --run`。[逐题结果、真实调用和复现命令](docs/delivery/python-release-rollback-study.md)
 
+要研究一次拒答和最终成品的关系，可先复算五份既有 StrongREJECT 成品的引用时间，再看本地千问在公开维护题上“直接装配”和“允许重看草稿”的同存档对照。[结果、实际开销与离线复算命令](docs/delivery/refusal-provenance-and-python-pair.md)
+
 ## 上下文预算
 
 服务声明 `context_window`（token，例如 InferKnock 与本机 vLLM 都用 32768）。框架不依赖具体
