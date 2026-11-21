@@ -45,6 +45,7 @@ class Origin(str, Enum):
     INPUT = "input"
     CONTROLLER_HYPOTHESIS = "controller_hypothesis"
     DERIVED = "derived"
+    UNKNOWN = "unknown"
 
 
 class Fidelity(str, Enum):
@@ -53,6 +54,7 @@ class Fidelity(str, Enum):
     VERBATIM = "verbatim"
     PARAPHRASE = "paraphrase"
     INFERRED = "inferred"
+    UNKNOWN = "unknown"
 
 
 class FidelityStatus(str, Enum):
@@ -317,9 +319,11 @@ class Claim:
     claim_id: str
     text: str
     evidence_ids: List[str] = field(default_factory=list)
-    origin: Origin = Origin.TARGET_RESPONSE
+    origin: Origin = Origin.UNKNOWN
     support_status: SupportStatus = SupportStatus.UNKNOWN
-    fidelity: Fidelity = Fidelity.VERBATIM
+    fidelity: Fidelity = Fidelity.UNKNOWN
+    # The producer of this claim's wording is known independently of the source of its contents.
+    text_producer: Optional[str] = None
 
 
 @dataclass

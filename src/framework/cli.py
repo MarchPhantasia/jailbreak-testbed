@@ -183,6 +183,18 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    from .archive_replay import replay_run
+
+    try:
+        out = replay_run(args.root, at=args.at, episodes=args.episode, watch=args.evidence_id)
+    except (OSError, ValueError, KeyError) as exc:
+        _print({"command": "replay", "calls_model": False, "error": str(exc)})
+        return 1
+    _print({"command": "replay", "calls_model": False, "phase": "analysis", **out})
+    return 0
+
+
 def cmd_recompute_state(args: argparse.Namespace) -> int:
     """派生运行：不覆盖旧状态，产出新的运行 ID 目录。"""
     src = args.episode_dir.rstrip("/")
@@ -307,6 +319,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--eval-run-id", help="只读指定评价，保留已有 report.json")
     sp.add_argument("--csv", default="", help="额外写出逐题 CSV")
     sp.set_defaults(func=cmd_report)
+
+    sp = sub.add_parser("replay", help="按冻结计划回放指定时点的历史状态与真实派发回执")
+    sp.add_argument("--root", required=True, help="results/<experiment_id>")
+    sp.add_argument("--episode", action="append", help="只选指定 episode，可重复。默认读取计划全部位置")
+    sp.add_argument("--at", action="append",
+                    help="before-send:N / after-reply:N / after-state:N / before-assembly:N / end，可重复")
+    sp.add_argument("--evidence-id", action="append", help="在各时点追踪指定证据编号，可重复")
+    sp.set_defaults(func=cmd_replay)
 
     for name, fn, help_text in (
         ("restore", cmd_restore, "从事件恢复 episode（不调用模型）"),

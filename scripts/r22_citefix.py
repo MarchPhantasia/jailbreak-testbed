@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 import json, os, shutil, sys
+from dataclasses import replace
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from framework import runner
 from framework.assembly import relocate_meta_citations, CITATION_RELOCATION_VERSION
@@ -28,13 +29,11 @@ def main() -> int:
     refs_before = sum(len(c.evidence_ids) for c in A.claims)
     claims, report = relocate_meta_citations(A.claims, pack_row["materials"], ev)
     # A' 构造：新 ID、正文与主张逐字不变
-    from framework.assembly import Claim
     import dataclasses
     A2 = AnswerCandidate(
         candidate_id=new_id("cand"),
         answer=A.answer,
-        claims=[Claim(claim_id=c.claim_id, text=c.text, evidence_ids=list(c.evidence_ids))
-                for c in claims],
+        claims=[replace(c, evidence_ids=list(c.evidence_ids)) for c in claims],
         evidence_pack_ids=list(A.evidence_pack_ids),
         gaps=list(A.gaps),
         assembly_config={**(A.assembly_config or {}),

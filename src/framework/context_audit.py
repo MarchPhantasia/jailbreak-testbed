@@ -14,7 +14,7 @@ def message_chars(messages):
     return None
 
 
-def _frozen_templates(root, manifest):
+def frozen_templates(root, manifest):
     templates = {}
     for entry in manifest:
         if entry.get("role") not in {"controller", "assembler"} or not entry.get("sha256"):
@@ -28,9 +28,9 @@ def _frozen_templates(root, manifest):
     return templates
 
 
-def _input_sections(messages, template, role):
-    """Only unpack a recorded message that matches its frozen template on both sides."""
-    if not template or len(messages) != 1 or messages[0].get("role") != "user":
+def recorded_material_view(messages, template, role):
+    """Decode only the actual request rendered with the archived template for this role."""
+    if not template or message_chars(messages) is None or len(messages) != 1 or messages[0].get("role") != "user":
         return None
     content = messages[0]["content"]
     before, _, after = template.partition(PLACEHOLDER)
@@ -46,12 +46,19 @@ def _input_sections(messages, template, role):
     state = data.get("state" if role == "controller" else "pack")
     if not isinstance(state, dict) or not isinstance(state.get("materials"), list):
         return None
+    return state
+
+
+def _input_sections(messages, template, role):
+    state = recorded_material_view(messages, template, role)
+    if state is None:
+        return None
     materials = state["materials"]
     values = [m.get("value", m.get("text")) if isinstance(m, dict) else None for m in materials]
     text_chars = sum(map(len, values)) if all(isinstance(v, str) for v in values) else None
     sections = {
-        "template_chars": len(before) + len(after),
-        "payload_json_chars": len(body),
+        "template_chars": len(template) - len(PLACEHOLDER),
+        "payload_json_chars": len(messages[0]["content"]) - len(template) + len(PLACEHOLDER),
         "material_count": len(materials),
         "material_text_chars": text_chars,
         "repeated_material_text_chars": text_chars - sum(map(len, set(values))) if text_chars is not None else None,
@@ -64,7 +71,7 @@ def _input_sections(messages, template, role):
 
 def context_profile(events, run_root: Path, manifest=()):
     """Summarize one episode. No role is re-run and no message text is returned."""
-    templates = _frozen_templates(run_root, manifest)
+    templates = frozen_templates(run_root, manifest)
     dispatches = Counter()
     settlements = defaultdict(list)
     cache_hits = Counter()

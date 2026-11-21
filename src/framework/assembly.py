@@ -53,6 +53,40 @@ class EvidencePack:
         return asdict(self)
 
 
+def raw_citation_lines(materials: List[Dict[str, Any]]) -> Dict[str, Optional[Tuple[str, Origin]]]:
+    """Index the visible lines of raw replies whose nonblank lines align with their IDs."""
+    lines = {}
+    for material in materials:
+        if material.get("kind") != "raw_response":
+            continue
+        value = material.get("value", material.get("text"))
+        ids = material.get("evidence_ids") or []
+        if not isinstance(value, str) or not isinstance(ids, list):
+            continue
+        visible = [line for line in value.splitlines() if line.strip()]
+        if len(visible) != len(ids):
+            continue
+        declared = material.get("origin", Origin.TARGET_RESPONSE)
+        origin = _as_enum(Origin, declared, Origin.UNKNOWN)
+        for eid, line in zip(ids, visible):
+            if not isinstance(eid, str):
+                continue
+            source = (line, origin)
+            lines[eid] = source if lines.get(eid, source) == source else None
+    return lines
+
+
+def record_model_claim(claim_id: str, text: str, ids: List[str],
+                       raw_lines: Dict[str, Optional[Tuple[str, Origin]]]) -> Claim:
+    """A matching cited line establishes literal wording. Semantic support is judged separately."""
+    origins = {source[1] for eid in ids if (source := raw_lines.get(eid)) and source[0] == text}
+    return Claim(
+        claim_id=claim_id, text=text, evidence_ids=list(ids), text_producer="llm_assembler",
+        origin=next(iter(origins)) if len(origins) == 1 else Origin.UNKNOWN,
+        fidelity=Fidelity.VERBATIM if origins else Fidelity.UNKNOWN,
+    )
+
+
 class Assembler:
     name = "material_template"
 
@@ -85,9 +119,10 @@ class Assembler:
             value = str(m.get("value", m.get("text", "")) or "")
             if not value:
                 continue
+            raw = m.get("kind") == "raw_response"
             if key:
                 lines.append(f"- {key}：{value}")
-            elif str(m.get("kind", "")) == "raw_response":
+            elif raw:
                 lines.append(value)  # 原文块保留段落与限定句，不强行压成一行
             else:
                 lines.append(f"- {value}")
@@ -96,9 +131,10 @@ class Assembler:
                     claim_id=new_id("cl"),
                     text=value,
                     evidence_ids=list(m.get("evidence_ids") or []),
-                    origin=_as_enum(Origin, m.get("origin"), Origin.TARGET_RESPONSE),
+                    origin=_as_enum(Origin, m.get("origin"), Origin.TARGET_RESPONSE if raw else Origin.UNKNOWN),
                     support_status=_as_enum(SupportStatus, m.get("support_status"), SupportStatus.UNKNOWN),
-                    fidelity=_as_enum(Fidelity, m.get("fidelity"), Fidelity.VERBATIM),
+                    fidelity=_as_enum(Fidelity, m.get("fidelity"), Fidelity.VERBATIM if raw else Fidelity.UNKNOWN),
+                    text_producer="material_template",
                 )
             )
         if pack.gaps:
@@ -476,6 +512,7 @@ class LLMAssembler(Assembler):
             gaps_raw = []
 
         valid_ids = set(pack.evidence_ids())
+        raw_lines = raw_citation_lines(pack.materials)
         claims: List[Claim] = []
         seen_claim_ids: set = set()
         for i, raw in enumerate(claims_raw):
@@ -506,7 +543,7 @@ class LLMAssembler(Assembler):
                 problems.append(f"claim_{i}_unknown_evidence:{','.join(unknown[:4])}")
                 continue
             seen_claim_ids.add(cid)
-            claims.append(Claim(claim_id=cid, text=text, evidence_ids=list(ids), origin=Origin.TARGET_RESPONSE))
+            claims.append(record_model_claim(cid, text, ids, raw_lines))
 
         if not problems and not claims:
             problems.append("no_valid_claims")
