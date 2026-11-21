@@ -2,11 +2,13 @@
 import argparse
 import json
 import random
+from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
 from compare_archive_contexts import local_analysis_gateway
 from framework.budget import BudgetGuard
+from framework.assembly import EvidencePack
 from framework.cli import _load_config
 from framework.contracts import BudgetLimits, Phase, stable_hash
 from framework.datasets import write_json
@@ -41,8 +43,9 @@ def usage_by_call(root):
 def generate(args):
     parent, fixture = args.parent, read(FIXTURE)
     protocol = read(parent / "protocol.json")
-    if protocol.get("protocol_version") != "v2" or protocol["fixture_sha256"] != stable_hash(fixture):
-        raise ValueError("Supply a v2 repository-document study with the same five tasks")
+    version = protocol.get("protocol_version")
+    if version not in {"v2", "v3"} or protocol["fixture_sha256"] != stable_hash(fixture):
+        raise ValueError("Supply a v2/v3 repository-document study with the same five tasks")
     variant = args.representation
     ranges = read(FIXTURE.with_name("repository-handoff-excerpts.json")) if variant == "excerpts" else {}
     out = args.out or Path("results") / (f"repository-file-{variant}-" + uuid4().hex[:12])
@@ -55,13 +58,15 @@ def generate(args):
     frozen = protocol["roles"]["assembler"]
     if [model, gateway._merge_params({}), template.sha256] != [frozen[0], frozen[1], frozen[2]["sha256"]]:
         raise ValueError("Assembler model, parameters or maintenance-note template differ from the parent")
-    writer = RepositoryBriefAssembler(gateway, template, max_format_retries=0, stage_id=stage, phase=Phase.ANALYSIS)
+    writer = RepositoryBriefAssembler(gateway, template, preserve_gap_details=version == "v3",
+                                      max_format_retries=0, stage_id=stage, phase=Phase.ANALYSIS)
     costs = usage_by_call(parent)
     rows, blind = [], []
     write_json({"parent": str(parent.resolve()), "fixture_sha256": stable_hash(fixture),
                 "model": model, "params": frozen[1], "prompt_sha256": template.sha256,
                 "planned": len(fixture["cases"]), "primary": protocol["primary"],
-                "variant": variant, "git_line_ranges": ranges}, str(out / "protocol.json"))
+                "variant": variant, "git_line_ranges": ranges, "parent_protocol_version": version},
+               str(out / "protocol.json"))
     for case in fixture["cases"]:
         key = case["id"]
         folder = parent / key
@@ -75,7 +80,7 @@ def generate(args):
             raise ValueError(f"Could not bind original documents and the plain reader handoff for {key}")
         small_docs = (file_excerpts(docs, (case["prefix"], case["current"]), ranges)
                       if variant == "excerpts" else file_locations(docs))
-        short = write_product(writer, task_for(case), small_docs, handoff, key, "v2")
+        short = write_product(writer, task_for(case), small_docs, handoff, key, version)
         if short["pack"]["notes"] != full["pack"]["notes"]:
             raise ValueError(f"Handoff changed for {key}")
         write_json(short, str(out / (key + ".json")))
@@ -125,11 +130,50 @@ def summary(out, review):
     return result
 
 
+def recover_gap_drafts(root, dest):
+    """Apply the document v3 reader to previously paid responses, without changing the original run."""
+    if not dest or dest.exists():
+        raise ValueError("Supply a new --out directory for the recovered drafts")
+    if read(root / "protocol.json")["fixture_sha256"] != stable_hash(read(FIXTURE)):
+        raise ValueError("Not the frozen public repository-document study")
+    with (root / "events.jsonl").open(encoding="utf-8") as f:
+        events = [json.loads(line) for line in f]
+    requests = {e["call_id"]: e["payload"]["messages"] for e in events if e["type"] == "request_sent"}
+    responses = {e["call_id"]: e["payload"]["text"] for e in events if e["type"] == "response_received"}
+    writer = RepositoryBriefAssembler(None, None, preserve_gap_details=True)
+    drafts = []
+    for row in read(root / "measurements.json"):
+        if row["condition"] == "full" or not row["fallback"]:
+            continue
+        item = read(root / (row["task"] + ".json"))
+        call = row["call_id"]
+        attempts = item["candidate"]["assembly_config"].get("attempts", [])
+        if not any(a.get("call_id") == call and a.get("status") == "OK"
+                   and a.get("problems") == ["gaps_not_list_of_string"] for a in attempts):
+            continue
+        if not call or call not in responses:
+            continue
+        if stable_hash(requests[call]) != item["messages_sha256"] or item["calls"] != [call]:
+            raise ValueError("Archived response belongs to a different request")
+        raw = writer._extract_json(responses[call])
+        received, errors = writer._validate(raw, EvidencePack(**item["pack"]))
+        draft = {"task": row["task"], "condition": row["condition"], "call_id": call,
+                 "response_sha256": stable_hash(responses[call]), "problems": errors}
+        if received is not None:
+            draft.update(answer=received["answer"], claims=[asdict(c) for c in received["claims"]],
+                         gaps=received["gaps"], original_gaps=raw["gaps"])
+        drafts.append(draft)
+    dest.mkdir(parents=True)
+    write_json(drafts, str(dest / "drafts.json"))
+    return {"reviewed": len(drafts), "recoverable": sum(not d["problems"] for d in drafts), "model_calls": 0}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--parent", type=Path)
     mode.add_argument("--summarize", type=Path)
+    mode.add_argument("--recover-gaps", type=Path, help="Read archived model outputs using document protocol v3")
     parser.add_argument("--review", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--representation", choices=("locations", "excerpts"), default="locations",
@@ -138,7 +182,9 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     args = parser.parse_args()
-    if args.summarize and args.review:
+    if args.recover_gaps:
+        print(json.dumps(recover_gap_drafts(args.recover_gaps, args.out), ensure_ascii=False, indent=2))
+    elif args.summarize and args.review:
         print(json.dumps(summary(args.summarize, args.review), ensure_ascii=False, indent=2))
     elif args.parent and not args.review:
         generate(args)

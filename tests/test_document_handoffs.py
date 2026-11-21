@@ -136,5 +136,12 @@ def test_document_note_preserves_text_when_reading_a_labelled_gap(monkeypatch):
     assert recovered["claims"][0].evidence_ids == ["D1"] and data["gaps"][1] == gap
     invalid = {**data, "gaps": [{**gap, "condition": "不要丢失这个条件"}]}
     assert "gaps_not_list_of_string" in writer._validate(invalid, pack)[1]
+    newer = study.RepositoryBriefAssembler(None, None, preserve_gap_details=True)
+    value = {**gap, "condition": "不要丢失这个条件", "evidence_ids": ["D1"]}
+    kept, errors = newer._validate({**data, "gaps": [value]}, pack)
+    assert not errors and kept["answer"] == data["answer"]
+    wording, metadata = kept["gaps"][0].rsplit("\n", 1)
+    assert {"text": wording, **json.loads(metadata)} == value
     invalid = {**data, "claims": [{**claim, "evidence_ids": ["absent"]}]}
     assert writer._validate(invalid, pack)[0] is None
+    assert newer._validate(invalid, pack)[0] is None

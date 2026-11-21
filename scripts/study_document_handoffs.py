@@ -86,14 +86,21 @@ def apply_file_scope(observation, documents, scope):
 class RepositoryBriefAssembler(LLMAssembler):
     """Read both observed forms of a maintenance note's list of outstanding checks."""
 
+    def __init__(self, *args, preserve_gap_details=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.preserve_gap_details = preserve_gap_details
+
     def _validate(self, data, pack):
         if isinstance(data, dict) and isinstance(data.get("gaps"), list):
             gaps = []
             for gap in data["gaps"]:
-                if (isinstance(gap, dict) and set(gap) == {"gap_id", "text"}
-                        and isinstance(gap["gap_id"], str) and gap["gap_id"].strip()
-                        and isinstance(gap["text"], str) and gap["text"].strip()):
-                    gap = gap["text"]
+                if (isinstance(gap, dict) and isinstance(gap.get("gap_id"), str) and gap["gap_id"].strip()
+                        and isinstance(gap.get("text"), str) and gap["text"].strip()):
+                    if set(gap) == {"gap_id", "text"}:
+                        gap = gap["text"]
+                    elif self.preserve_gap_details:
+                        metadata = {k: v for k, v in gap.items() if k != "text"}
+                        gap = gap["text"] + "\n" + json.dumps(metadata, ensure_ascii=False, sort_keys=True)
                 gaps.append(gap)
             data = {**data, "gaps": gaps}
         return super()._validate(data, pack)
@@ -242,7 +249,7 @@ def summarize(out, review=None):
 def run(args):
     fixture = read(FIXTURE)
     protocol_version = args.protocol
-    scopes = read(SCOPES) if protocol_version == "v2" else {}
+    scopes = read(SCOPES) if protocol_version in {"v2", "v3"} else {}
     cases = fixture["cases"]
     out = Path(args.out or "results/document-handoffs-" + uuid4().hex[:10])
     out.mkdir(parents=True, exist_ok=False)
@@ -255,8 +262,11 @@ def run(args):
     writer.default_params = {**wp, "max_tokens": 1536}
     rt = load_template(rs, "controller", "plan.repository-reading.zh.v1")
     wt = load_template(ws, "assembler", "assemble.repository-brief.zh.v1")
-    writer_type = RepositoryBriefAssembler if protocol_version == "v2" else LLMAssembler
-    assembler = writer_type(writer, wt, max_format_retries=0, stage_id=ws, phase=Phase.ANALYSIS)
+    options = {"max_format_retries": 0, "stage_id": ws, "phase": Phase.ANALYSIS}
+    if protocol_version == "v1":
+        assembler = LLMAssembler(writer, wt, **options)
+    else:
+        assembler = RepositoryBriefAssembler(writer, wt, preserve_gap_details=protocol_version == "v3", **options)
     write_json({"version": fixture["version"], "protocol_version": protocol_version, "file_scopes": scopes,
                 "fixture": fixture, "fixture_sha256": stable_hash(fixture),
                 "roles": {"controller": [reader_model, reader._merge_params(rp), rt.ref(), rt.text],
@@ -331,8 +341,8 @@ if __name__ == "__main__":
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--out", help="New result directory")
-    parser.add_argument("--protocol", choices=("v1", "v2"), default="v2",
-                        help="Public document protocol. v2 also reads labelled gaps and checks file revisions.")
+    parser.add_argument("--protocol", choices=("v1", "v2", "v3"), default="v3",
+                        help="Public docs. v2 reads labelled gaps and checks revisions; v3 retains extra gap fields.")
     parser.add_argument("--summarize", type=Path, help="Read an existing experiment without calling models")
     parser.add_argument("--review", type=Path, help="Completed blind reading for --summarize")
     args = parser.parse_args()
