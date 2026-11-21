@@ -406,6 +406,13 @@ def run_episode(
             pending_retry = False
         else:
             _declared_this_step = None
+            # requery-policy@v1 接线（配置 method.query_policy.type=requery_policy 启用；
+            # 默认 none：不计算指令、prompt 与 payload 逐字节不变——A/B 臂不受影响）
+            _policy_directive = None
+            if str(((config.get("method") or {}).get("query_policy") or {}).get("type")
+                   or "none") == "requery_policy":
+                from ..requery_policy import directive_from_engine
+                _policy_directive = directive_from_engine(engine, node_id, guard.snapshot())
             try:
                 action = controller.propose(
                     task,
@@ -417,6 +424,7 @@ def run_episode(
                     can_assemble=True,
                     query_history=engine.query_history(node_id),
                     candidate_feedback=engine.latest_candidate_feedback(),
+                    policy_directive=_policy_directive,
                 )
                 # plan.v6：控制器随动作声明的组件清单 → 状态持久（缺失时沿用上一份）
                 _declared_this_step = getattr(action, "components", None) if action is not None else None
@@ -507,6 +515,11 @@ def run_episode(
                     parse_status="parsed",
                     rationale=action.rationale,
                     transform_chain=[str(controller_cfg.get("strategy") or "scripted")],
+                    # requery-policy@v1：策略指令与搭车抽取随权威事件落盘（可选）
+                    policy_directive=(
+                        _policy_directive.to_dict() if _policy_directive is not None
+                        and hasattr(_policy_directive, "to_dict") else None),
+                    delivered=getattr(controller, "last_delivered", None),
                 )
                 action.params["request_id"] = artifact.request_id
                 last_request_id = artifact.request_id

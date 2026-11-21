@@ -85,6 +85,22 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
 
 ## 6. 变更日志
 
+- 2026-11-22 05:25：**requery-policy@v1 接线完成（代码已接入主流程，配置门控，未跑实验）**
+  ——操作者指令：接线但先不开始实验，待 review。范围：① `src/framework/requery_policy.py`
+  补引擎适配器 `directive_from_engine`（从 Engine 活状态构建 PolicyState：组件/查询史/
+  拒答归属/预算，0 模型调用）与 `directive_block` 指令块渲染；② `LLMController.propose`
+  接受 `policy_directive`：prompt 前缀指令块 + payload 带 `policy_directive` 键；响应可选
+  `delivered` 字段搭车落盘（解 41>34 预算问题）；③ 批处理（methods/independent.py）与
+  交互（interactive.py）两路径接线，配置 `method.query_policy.type`（默认 none——
+  prompt 与 payload 逐字节不变，A/B 臂零影响）；④ `request_generated` 权威事件落盘
+  `policy_directive`/`delivered`；⑤ plan.json `method_policy.query_policy` 冻结版本。
+  测试：`tests/test_policy_wiring.py` 7 项（关=逐字节不变；开=指令块+事件落盘+组件声明后
+  ask 指令+delivered 搭车+plan 冻结；适配器拒答/轮转两路；指令块渲染）+ 原有
+  `tests/test_requery_policy.py` 21 项；全仓 406 passed。**状态：代码存在+已接入+配置可启用+
+  离线验证；真实运行验证与研究结论未做**（等 review 后按 v1.1 §6 三臂协议）。
+  已知设计点待 review 定夺：指令为"强提示非强制"——LLM 若违反 stop/assemble 指令仍会执行
+  其动作（强制模式 vs 建议模式是 C 臂冻结前的决策项）。
+
 - 2026-11-17 02:20：建档；修复 F1-F6；设计 Arm E 桥查询目录（见 last-mile-attack-catalog.md）。
 - 2026-11-17 03:00：**Arm E r1 事故与修复**——r1 跑到 6/12 查询被 `recovery_cap_reached` 提前终止（4 TIMEOUT/2 OK）；
   **根因一（框架 bug，已修）**：收尾闸门 `has_materials` 只看当前节点材料，merge=all 下兄弟分支已采集材料被丢弃（每个查询在独立分支节点，终止节点恰为 TIMEOUT 分支 0 材料 → 不装配，final_candidate_id=None）——修为 `_build_pack_for` 合并视图 + 回归测试（提交 b643b96）；

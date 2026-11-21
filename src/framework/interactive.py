@@ -212,6 +212,13 @@ class InteractiveSession:
             return {"status": "pending_approval", "action": self._action_view(self.pending)}
         node_id = self._current()
         state = self.engine.states[node_id]
+        # requery-policy@v1 接线（method.query_policy.type=requery_policy 启用；
+        # 默认 none：交互路径与批处理路径行为一致，A/B 臂不受影响）
+        _policy_directive = None
+        if str((((self.cfg.get("method") or {}).get("query_policy")) or {}).get("type")
+               or "none") == "requery_policy":
+            from .requery_policy import directive_from_engine
+            _policy_directive = directive_from_engine(self.engine, node_id, self.guard.snapshot())
         try:
             action = self.controller.propose(
                 self.task, state,
@@ -222,6 +229,7 @@ class InteractiveSession:
                 can_assemble=True,
                 query_history=self.engine.query_history(node_id),
                 candidate_feedback=self.engine.latest_candidate_feedback(),
+                policy_directive=_policy_directive,
             )
         except Exception as exc:  # noqa: BLE001 - 控制器失败按事件记录，交上层决定
             self.store.append("action_rejected", role="controller", node_id=node_id,

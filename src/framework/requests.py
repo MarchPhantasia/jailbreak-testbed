@@ -93,6 +93,8 @@ class RequestLedger:
         parse_status: str = "parsed",
         rationale: str = "",
         transform_chain: Optional[List[str]] = None,
+        policy_directive: Optional[Dict[str, Any]] = None,
+        delivered: Optional[List[Dict[str, Any]]] = None,
         request_id: Optional[str] = None,
     ) -> RequestArtifact:
         artifact = RequestArtifact(
@@ -134,6 +136,9 @@ class RequestLedger:
                 "transform_chain": artifact.transform_chain,
                 "valid": artifact.valid,
                 "original_task_frozen": True,
+                # requery-policy@v1：策略指令与搭车抽取（可选；配置关闭时不存在）
+                **({"policy_directive": policy_directive} if policy_directive else {}),
+                **({"delivered": delivered} if delivered else {}),
             },
         )
         artifact.generated_event_id = event.event_id

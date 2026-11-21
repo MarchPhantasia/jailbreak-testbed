@@ -166,6 +166,19 @@ class Directive:
     def identity(self) -> str:
         return f"{self.action}:{self.template_id}:{self.component}:{self.context_family}:{self.shape}"
 
+    def to_dict(self) -> dict:
+        return {
+            "version": POLICY_VERSION,
+            "action": self.action,
+            "template_id": self.template_id,
+            "component": self.component,
+            "context_family": self.context_family,
+            "shape": self.shape,
+            "rule": self.rule,
+            "basis": self.basis,
+            "constraints": list(self.constraints),
+        }
+
 
 # ---------------------------------------------------------------- 分类器
 
@@ -489,3 +502,95 @@ def _unused_family_order(comp: ComponentState) -> List[str]:
     order = AFFINITY.get(comp.ctype, []) + [f for f in ALL_FAMILIES
                                             if f not in AFFINITY.get(comp.ctype, [])]
     return [f for f in order if f != "generic"]
+
+
+# ---------------------------------------------------------------- 引擎接线
+
+
+def directive_block(d: "Directive") -> str:
+    """指令 → 规划输入前缀块（版本化；C 臂启用时追加在冻结模板渲染结果之前）。"""
+    if d.action != "ask":
+        head = (f"【策略指令 {POLICY_VERSION}】规则 {d.rule}：本轮动作 {d.action.upper()}。"
+                f"依据：{d.basis}")
+        return head + "\n\n"
+    lines = [f"【策略指令 {POLICY_VERSION}】规则 {d.rule}：本轮动作 ASK_TARGET。"]
+    lines.append(f"目标组件：{d.component}；模板：{d.template_id}；"
+                 f"语境族：{d.context_family}；请求形状：{d.shape}")
+    if d.basis:
+        lines.append(f"依据：{d.basis}")
+    for c in d.constraints:
+        lines.append(f"约束：{c}")
+    lines.append("按以上指令生成 query（自包含、只问构成事实、不暴露原题终点）。")
+    lines.append('响应 JSON 可选附加 "delivered": '
+                 '[{"component_hint": "C1", "fact": "本次回复交付的构成事实"}]——'
+                 "把你对材料进展的判断结构化（可选字段，不改变动作格式）。")
+    return "\n".join(lines) + "\n\n"
+
+
+def directive_from_engine(engine, node_id: str, budget: Dict[str, Any],
+                          *, target_budget: int = 20, plan_budget: int = 28):
+    """引擎适配器：从 Engine 活状态构建 PolicyState 并决策（0 模型调用）。
+
+    - 组件：states[node].components（含 status）；
+    - 查询：engine.query_history(node_id)（当前分支完整记录）；
+      组件锚定从 store 的 request_generated（rationale）按 request_id 补齐；
+      拒答分型用该次回复正文（store response_received 按 call_id）；
+    - 预算：guard.snapshot()（target_calls_left / stage_calls_left.plan）。
+    """
+    st = engine.states.get(node_id)
+    components: Dict[str, ComponentState] = {}
+    for c in (getattr(st, "components", None) or []):
+        cid = str(c.get("id") or "")
+        if cid:
+            components[cid] = ComponentState(
+                cid=cid, text=str(c.get("text") or ""),
+                ctype=classify_component_type(cid, str(c.get("text") or "")),
+                status=str(c.get("status") or "missing"))
+    gen_rationale: Dict[str, str] = {}
+    for ev in engine.store.events:
+        if ev.type == "request_generated":
+            gen_rationale[str((ev.payload or {}).get("request_id") or "")] = \
+                str((ev.payload or {}).get("rationale") or "")
+    responses = {ev.call_id: ev for ev in engine.store.events
+                 if ev.type == "response_received"}
+    queries: List[QueryRecord] = []
+    pending = None
+    for entry in (engine.query_history(node_id).get("current_branch") or []):
+        oc = entry.get("outcome") or {}
+        refused = bool(oc.get("refusal"))
+        q = QueryRecord(
+            seq=int(entry.get("order") or 0),
+            call_id=str(entry.get("call_id") or ""),
+            component=component_of_rationale(
+                gen_rationale.get(str(entry.get("request_id") or ""), "")),
+            context_family=classify_context_family(entry.get("query") or ""),
+            reply_label=("refusal" if refused else "substantive"),
+        )
+        if refused:
+            resp = responses.get(q.call_id)
+            q.refusal_type = classify_refusal_type(
+                ((resp.payload or {}).get("text") if resp else "") or "")
+        queries.append(q)
+        if q.component and q.component in components:
+            cs = components[q.component]
+            cs.family_attempts[q.context_family] = cs.family_attempts.get(q.context_family, 0) + 1
+    for q in reversed(queries):
+        if q.reply_label == "refusal":
+            resp = responses.get(q.call_id)
+            pending = {"component": q.component, "type": q.refusal_type,
+                       "reason_head": (((resp.payload or {}).get("text") if resp else "") or "")[:200],
+                       "family": q.context_family, "seq": q.seq}
+            break
+    target_used = sum(1 for q in queries)
+    plan_used = sum(1 for ev in engine.store.events
+                    if ev.type == "request_sent" and (getattr(ev, "role", "") or "") == "controller")
+    stage_left = ((budget or {}).get("stage_calls_left") or {}).get("plan")
+    pstate = PolicyState(
+        components=components, queries=queries,
+        target_left=(target_budget - target_used),
+        plan_left=(plan_budget - plan_used) if stage_left is None else int(stage_left),
+        assemble_left=6,
+        has_materials=bool(getattr(st, "materials", None)),
+        pending_refusal=pending,
+    )
+    return decide(pstate)

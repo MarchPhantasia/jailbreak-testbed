@@ -486,6 +486,17 @@ def _freeze_routing(plan: Dict[str, Any], ctx: RunContext, root: str, cfg: Optio
             "cross_branch_merge": str(_as.get("cross_branch_merge", "none") or "none").lower(),
         },
         "controller": {"type": str((_m.get("controller") or {}).get("type", "element"))},
+        # requery-policy@v1：拒答后改问策略随计划冻结（默认 none=既有行为；
+        # requery_policy=指令前缀+事件落盘，属方法身份，供 C 臂冻结记录）
+        "query_policy": {
+            "type": str(((_m.get("query_policy") or {}).get("type", "none")) or "none"),
+            "version": (
+                "requery-policy@v1"
+                if str(((_m.get("query_policy") or {}).get("type", "none")) or "none")
+                == "requery_policy"
+                else None
+            ),
+        },
     }
     plan["budget"] = ctx.limits.to_dict()
     if ctx.prompts is not None:

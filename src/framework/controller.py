@@ -68,7 +68,7 @@ class ScriptedController(Controller):
         self._i = 0
         self._assembled = False
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None, policy_directive=None):
         if self._i < len(self.queries):
             q = self.queries[self._i]
             self._i += 1
@@ -91,7 +91,7 @@ class ElementController(Controller):
         self._asked: set[str] = set()
         self._assembled = False
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None, policy_directive=None):
         # U04：只读活跃视图（归档不算已知），并把"已问过"与"已满足"分开
         open_goals = {o["goal"] for o in compute_open(state, self.elements)}
         for el in self.elements:
@@ -233,18 +233,39 @@ class LLMController(Controller):
             },
         }
 
-    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None):
+    def propose(self, task, state, *, elements=None, node_id="", view_id="", budget=None, can_assemble=True, query_history=None, candidate_feedback=None, policy_directive=None):
+        # requery-policy@v1 接线：指令块前缀 + payload 键（配置关闭时 policy_directive
+        # 为 None，prompt 与 payload 与既有行为逐字节一致——A/B 臂不受影响）
+        self.last_policy_directive = policy_directive
+        self.last_delivered = None
+        _block = ""
+        if policy_directive is not None and hasattr(policy_directive, "action"):
+            from .requery_policy import directive_block
+            _block = directive_block(policy_directive)
         input_evidence_ids: List[str] = []
         if self.template is not None:
             payload = self.build_input(task, state, budget=budget, can_assemble=can_assemble, query_history=query_history, candidate_feedback=candidate_feedback)
+            if policy_directive is not None:
+                payload["policy_directive"] = {
+                    "version": "requery-policy@v1",
+                    "action": policy_directive.action,
+                    "template_id": policy_directive.template_id,
+                    "component": policy_directive.component,
+                    "context_family": policy_directive.context_family,
+                    "shape": policy_directive.shape,
+                    "rule": policy_directive.rule,
+                    "basis": policy_directive.basis,
+                    "constraints": list(policy_directive.constraints),
+                }
             for m in payload["state"]["materials"]:
                 input_evidence_ids.extend(m.get("evidence_ids") or [])
-            prompt = self.template.render(payload)
+            prompt = _block + self.template.render(payload)
             params: Dict[str, Any] = {}
             template_ref = self.template.ref() if hasattr(self.template, "ref") else {}
         else:
             prompt = (
-                f"原始请求：{task.prompt}\n"
+                _block
+                + f"原始请求：{task.prompt}\n"
                 + (f"必要背景：{task.necessary_context}\n" if task.necessary_context else "")
                 + f"\n当前状态：\n{self.renderer(task, state) if self.renderer else ''}\n\n"
                 + f"剩余预算：{json.dumps(budget or {}, ensure_ascii=False)}\n\n"
@@ -287,6 +308,10 @@ class LLMController(Controller):
                 self.last_failure = Status.INVALID_OUTPUT
                 return None
         self.last_failure = None
+        # delivered 为策略搭车字段（可选）：Controller 对材料进展的结构化判断，
+        # 与动作格式解耦——旧运行无此字段不受影响
+        dv = data.get("delivered")
+        self.last_delivered = dv if isinstance(dv, list) else None
         t = ActionType(data["type"])
         action = self._mk(
             t,
