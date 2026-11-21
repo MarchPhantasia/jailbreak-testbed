@@ -157,6 +157,48 @@ def write_product(assembler, task, docs, brief, stage_key, protocol_version):
     return {**receipts, "key": stage_key, "labels": labels, "fallback": candidate.fallback_render}
 
 
+def reader_scores(out, cases):
+    by_stage = {}
+    for case in cases:
+        for stage, reference in case["reference"].items():
+            stats = by_stage.setdefault(stage, {"planned_decisions": 0, "model_correct": 0,
+                                                "handoff_correct": 0, "handoff_with_required_sources": 0})
+            stats["planned_decisions"] += len(reference)
+            name = "checkpoint" if stage == "prefix" else stage
+            path = out / case["id"] / (name + ".json")
+            observation = read(path)["reader"] if path.is_file() else {}
+            rows = observation.get("rows")
+            raw = observation.get("model_rows", rows)
+            stats["model_correct"] += grade_reader(raw, reference)["judgments"]
+            handoff = grade_reader(rows, reference)
+            stats["handoff_correct"] += handoff["judgments"]
+            stats["handoff_with_required_sources"] += handoff["with_required_sources"]
+    return by_stage
+
+
+def role_usage(out):
+    sent, settled = {}, {}
+    with (out / "events.jsonl").open(encoding="utf-8") as log:
+        for line in log:
+            e = json.loads(line)
+            if e["type"] == "request_sent":
+                sent[e["call_id"]] = e["role"]
+            elif e["type"] == "budget_settled" and e.get("call_id"):
+                settled[e["call_id"]] = e.get("cost") or {}
+    usage = {}
+    for call, role in sent.items():
+        stats = usage.setdefault(role, {"calls": 0, "tokens_in": 0, "tokens_out": 0,
+                                        "tokens_in_unknown_calls": 0, "tokens_out_unknown_calls": 0})
+        stats["calls"] += 1
+        for field in ("tokens_in", "tokens_out"):
+            count = settled.get(call, {}).get(field)
+            if count is None:
+                stats[field + "_unknown_calls"] += 1
+            else:
+                stats[field] += count
+    return usage
+
+
 def summarize(out, review=None):
     rows = read(out / "measurements.json")
     cases = read(out / "protocol.json")["fixture"]["cases"]
@@ -189,16 +231,12 @@ def summarize(out, review=None):
         comparison[arm] = {"planned": len(cases), "statuses": dict(statuses), "correct_decisions": judgments,
                            "all_three": triplets, "prose_usable": texts if review else None,
                            "usable_product": usable if review else None}
-    sent = Counter()
-    with (out / "events.jsonl").open(encoding="utf-8") as log:
-        for line in log:
-            e = json.loads(line)
-            if e["type"] == "request_sent":
-                sent[e["role"]] += 1
+    usage = role_usage(out)
     return {"current": comparison, "planned_reader_judgments_per_stage": len(cases) * len(ITEMS),
             "prefix_reader_correct": sum(r["prefix"]["judgments"] for r in current.values()),
             "current_reader_correct": sum(r["reader"]["judgments"] for r in current.values()),
-            "actual_dispatches_including_version_fork": dict(sent)}
+            "reader_by_stage": reader_scores(out, cases), "usage_including_version_fork": usage,
+            "actual_dispatches_including_version_fork": {role: stats["calls"] for role, stats in usage.items()}}
 
 
 def run(args):

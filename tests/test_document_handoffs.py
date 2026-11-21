@@ -35,8 +35,12 @@ def test_document_fork_uses_its_checkpoint_and_only_handoff_varies_between_arms(
     assert prev["documents"][1]["revision"] != cur["documents"][1]["revision"]
     assert cur["reader"]["prior_sha256"] == stable_hash(root["reader"]["rows"])
     assert {c["statement"] for c in prev["reader"]["file_scope_checks"]} == {"P2", "P3"}
-    costs = study.read(out / "summary.json")["actual_dispatches_including_version_fork"]
+    summary = study.read(out / "summary.json")
+    costs = summary["actual_dispatches_including_version_fork"]
     assert costs == {"controller": 11, "assembler": 16}
+    assert summary["usage_including_version_fork"]["controller"]["calls"] == 11
+    assert summary["reader_by_stage"]["current"]["planned_decisions"] == 15
+    assert summary["reader_by_stage"]["previous"]["planned_decisions"] == 3
     products = [study.read(wheel / f"current.{a}.json") for a in study.ARMS]
     assert len({a["document_sha256"] for a in products}) == 1
     assert len({a["handoff_sha256"] for a in products}) == 3
