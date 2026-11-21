@@ -94,3 +94,10 @@ def test_closed_document_run_binds_each_notice_and_keeps_gold_offline(tmp_path, 
     review = tmp_path / "review.json"
     study.save(review, {"packet_sha256": stable_hash(cards), "notes": {c["blind_id"]: {"rating": "usable"} for c in cards}})
     assert study.summarize(out, review)["products"]["automatic"]["usable_product"] == 2
+    follow = tmp_path / "old-handoff"
+    study.compare_old_handoff(Namespace(out=follow, compare_old_handoff=out), fixture, sources)
+    pair = study.read(follow / "weighted-mean.old.json")
+    current = study.read(out / "weighted-mean" / "automatic.json")
+    assert pair["pack"]["materials"] == current["pack"]["materials"]
+    assert pair["handoff_sha256"] != current["handoff_sha256"]
+    assert study.summarize(follow)["new_usage"]["assembler"]["calls"] == 1

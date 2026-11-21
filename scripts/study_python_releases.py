@@ -167,7 +167,12 @@ def run(args, fixture, sources):
         save(out / case["id"] / "episode.json", row)
         save(out / "measurements.json", measurements)
         print(case["id"], flush=True)
-    random.Random(173106).shuffle(blind)
+    write_blind_packet(out, blind, 173106)
+    save(out / "summary.json", summarize(out))
+
+
+def write_blind_packet(out, blind, seed):
+    random.Random(seed).shuffle(blind)
     cards, bindings = [], []
     for i, (key, arm, card) in enumerate(blind, 1):
         bid = f"M{i:02d}"
@@ -175,7 +180,64 @@ def run(args, fixture, sources):
         bindings.append({"blind_id": bid, "case": key, "arm": arm})
     save(out / "notes-to-read.json", cards)
     save(out / "bindings.json", bindings)
+
+
+def compare_old_handoff(args, fixture, sources):
+    """For all three genuine rule changes, hold the documents fixed and replay the first draft."""
+    parent = args.compare_old_handoff
+    base = read(parent / "protocol.json")
+    if base["fixture_sha256"] != stable_hash(fixture):
+        raise ValueError("The parent must use the frozen CPython migration cases")
+    policy = fixture["protocol"]
+    old, tag = policy["initial"], policy["upgrade"]
+    cases = [c for c in fixture["cases"] if c["reference"][old] != c["reference"][tag]]
+    out = args.out or Path("results") / ("python-release-old-handoff-" + uuid4().hex[:10])
+    out.mkdir(parents=True, exist_ok=False)
+    store = EventStore(str(out), out.name, path=str(out / "events.jsonl"))
+    guard = BudgetGuard(BudgetLimits(target_calls=0, non_target_calls=len(cases)), store, out.name)
+    gateway, stage, model, params = local_analysis_gateway(resolve_routing(_load_config(args)), "assembler", guard, store)
+    gateway.default_params = {**params, "max_tokens": 1536}
+    template = load_template(stage, "assembler", "assemble.repository-brief.zh.v1")
+    if [model, gateway._merge_params({}), template.text, template.sha256] != base["roles"]["assembler"]:
+        raise ValueError("Assembler identity, settings or template changed")
+    writer = RepositoryBriefAssembler(gateway, template, preserve_gap_details=True, stage_id=stage,
+                                      max_format_retries=0, phase=Phase.ANALYSIS)
+    save(out / "protocol.json", {"design": "old_handoff", "parent": str(parent.resolve()),
+                                 "parent_sha256": stable_hash(base), "tasks": [c["id"] for c in cases],
+                                 "target_release": tag, "selection": "automatic", "rubric": policy["primary"]})
+    blind, measurements = [], []
+    for case in cases:
+        key, folder = case["id"], parent / case["id"]
+        if not (folder / "automatic.json").is_file():
+            measurements.append({"id": key, "products": {}})
+            continue
+        current = read(folder / "automatic.json")
+        chapters, windows = case_documents(case, fixture, sources)
+        docs, _ = select_documentation(case["request"], [chapters[old], chapters[tag]], windows[old] + windows[tag])
+        if (docs != current["pack"]["materials"]
+                or stable_hash(read(folder / "selected-handoff.json")) != current["handoff_sha256"]):
+            raise ValueError("Could not bind the selected documents and updated handoff")
+        initial = read(folder / "initial" / "after_P3.json")
+        if initial != [read(folder / "initial" / (item + "-reading.json"))["rows"][0] for item in ITEMS]:
+            raise ValueError("First draft does not match the three original readings")
+        first = write_product(writer, task_at(case, tag), docs, {"current_release": tag, "rows": initial},
+                              key + ".old", "python-release.v1")
+        save(out / (key + ".old.json"), first)
+        stats = {}
+        for name, product in (("updated", current), ("old", first)):
+            stats[name] = {"labels": product["labels"], "correct": product["labels"] == case["reference"][tag],
+                           "candidate_id": product["candidate"]["candidate_id"], "calls": product["calls"]}
+            if not product["fallback"]:
+                answer = product["candidate"]["answer"]
+                body = "\n".join(answer.strip().splitlines()[1:]).strip() if product["labels"] else answer
+                blind.append((key, name, {"request": case["request"], "requirements": case["prose_requirements"],
+                                          "source": docs, "body": body}))
+        measurements.append({"id": key, "products": stats, "identical_messages":
+                             current["messages_sha256"] == first["messages_sha256"]})
+    save(out / "measurements.json", measurements)
+    write_blind_packet(out, blind, 286713)
     save(out / "summary.json", summarize(out))
+    print(out)
 
 
 def review_map(out, path):
@@ -190,9 +252,18 @@ def review_map(out, path):
 
 
 def summarize(out, review=None):
-    fixture = read(out / "protocol.json")["fixture"]
-    policy = fixture["protocol"]
+    protocol = read(out / "protocol.json")
     ratings = review_map(out, review) if review else {}
+    if protocol.get("design") == "old_handoff":
+        rows = read(out / "measurements.json")
+        results = {}
+        for arm in ("old", "updated"):
+            correct = [r["id"] for r in rows if r["products"].get(arm, {}).get("correct")]
+            results[arm] = {"planned": len(protocol["tasks"]), "all_three": len(correct),
+                            "usable_product": sum(ratings.get((k, arm), False) for k in correct) if review else None}
+        return {"products": results, "cases": rows, "new_usage": role_usage(out)}
+    fixture = protocol["fixture"]
+    policy = fixture["protocol"]
     measured = {r["id"]: r for r in read(out / "measurements.json")}
     costs = usage_by_call(out)
     product_stats = {arm: Counter() for arm in ARMS}
@@ -223,6 +294,9 @@ def summarize(out, review=None):
             st["planned"] += 1
             st["correct_judgments"] += sum(x == y for x, y in zip(labels, current))
             st["all_three"] += all_right
+            changed = [i for i, orig in enumerate(case["reference"][policy["initial"]]) if orig != current[i]]
+            st["expected_changed_judgments"] += len(changed)
+            st["current_value_on_changed_judgments"] += sum(i < len(labels) and labels[i] == current[i] for i in changed)
             st["delivered"] += bool(prod) and not prod.get("fallback", True)
             if review:
                 st["prose_usable"] += usable
@@ -245,6 +319,7 @@ def main():
     action.add_argument("--run", action="store_true")
     action.add_argument("--fetch-sources", action="store_true")
     action.add_argument("--summarize", type=Path)
+    action.add_argument("--compare-old-handoff", type=Path, help="Replay each changed task with its initial handoff")
     parser.add_argument("--cache", type=Path, default=Path("results/cpython-docs-310-311"))
     parser.add_argument("--review", type=Path)
     parser.add_argument("--out", type=Path)
@@ -259,7 +334,9 @@ def main():
         parser.error("--review requires --summarize")
     fixture = read(FIXTURE)
     sources = chapter_sources(fixture, args.cache, fetch=args.fetch_sources)
-    if args.run:
+    if args.compare_old_handoff:
+        compare_old_handoff(args, fixture, sources)
+    elif args.run:
         run(args, fixture, sources)
     else:
         print(f"Verified {len(sources)} upstream chapters in {args.cache}")
