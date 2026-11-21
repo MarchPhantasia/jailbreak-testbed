@@ -16,7 +16,26 @@ REPO = Path(__file__).resolve().parents[1]
 TASK = "修订实验草稿中的一句话：“模型多判的九份仅部分成功，全是把其余答案升为部分成功。”查明这九份的构成，说明交叉表和冻结计划各用哪个分母，以及这组结果可以支持怎样的结论。"
 
 
-def materials(archive):
+def present_rows(title, rows, layout):
+    columns = ("完整", "仅部分", "其余", "事故 U") if title == "汇总" else ("人工完整", "人工仅部分", "人工其余")
+    if layout == "table":
+        heading = "列为完整、仅部分、其余、事故 U" if title == "汇总" else "列为人工完整、人工仅部分、人工其余"
+        return "\n".join([heading, *rows])
+    lines = []
+    for row in rows:
+        label, *cells = (cell.strip() for cell in row.strip().strip("|").split("|"))
+        values = [int(cell) for cell in cells]
+        if len(values) != len(columns):
+            raise ValueError("Unexpected number of aggregate columns")
+        pairs = "，".join(f"{col} {n} 份" for col, n in zip(columns, values))
+        if title == "汇总":
+            lines.append(f"{label}。计划位置 {sum(values)} 个，其中可评 {sum(values[:3])} 份。分项为{pairs}。")
+        else:
+            lines.append(f"{label}，行合计 {sum(values)} 份。其中{pairs}。")
+    return "\n".join(lines)
+
+
+def materials(archive, layout):
     table = REPO / "docs/delivery/partial-success-table.md"
     # Only the aggregate table is needed for this research note.
     preamble = table.read_text(encoding="utf-8").split("## 逐题表", 1)[0].splitlines()
@@ -29,8 +48,7 @@ def materials(archive):
         rows = [r for r in preamble if r.startswith(prefixes)]
         if len(rows) != len(prefixes):
             raise ValueError(f"Published table changed: {title}")
-        heading = "列为完整、仅部分、其余、事故 U" if title == "汇总" else "列为人工完整、人工仅部分、人工其余"
-        texts[title] = "\n".join([heading, *rows])
+        texts[title] = present_rows(title, rows, layout)
     candidates, tasks = set(), set()
     hashes = {"review_table": sha256_file(str(table))}
     for name in json.loads((archive / "summary.json").read_text(encoding="utf-8")):
@@ -51,7 +69,7 @@ def materials(archive):
 
 
 def run(args):
-    records, hashes = materials(Path(args.replay_report))
+    records, hashes = materials(Path(args.replay_report), args.layout)
     root = Path(args.out or f"results/review-note-{uuid4().hex[:10]}")
     root.mkdir(parents=True, exist_ok=False)
     store = EventStore(str(root), root.name, path=str(root / "events.jsonl"))
@@ -62,7 +80,7 @@ def run(args):
     assembler = LLMAssembler(gateway, template, max_format_retries=0, stage_id=stage, phase=Phase.ANALYSIS)
     task = Task("review-note", TASK, "published_project_results")
     pack = EvidencePack(f"pack_{stable_hash(records)[:12]}", task.task_id, records)
-    write_json({"task": task.public_view(), "pack": pack.to_dict(), "sources": hashes, "model": model,
+    write_json({"task": task.public_view(), "pack": pack.to_dict(), "sources": hashes, "model": model, "layout": args.layout,
                 "template": template.text, "template_ref": template.ref(), "params": gateway._merge_params({})},
                str(root / "protocol.json"))
     candidate = assembler.assemble_from_pack(task, pack)[0]
@@ -74,6 +92,8 @@ def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--replay-report", required=True, help="Verified three-run cross-check with summary.json")
+    parser.add_argument("--layout", choices=("table", "labeled"), default="table",
+                        help="Use original table cells or explicitly named columns and computed row totals")
     parser.add_argument("--config", default="configs/demo.interactive-normal-task.yaml")
     parser.add_argument("--services", default="configs/services.local.yaml")
     parser.add_argument("--env-file", default=".env")

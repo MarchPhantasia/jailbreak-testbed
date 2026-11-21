@@ -146,6 +146,7 @@ def test_end_requires_a_unique_termination_and_a_readable_archive(tmp_path):
 def test_archive_comparison_only_passes_the_same_dispatches_and_grades_ties(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
     import compare_archive_contexts as study
+    from assemble_review_note import present_rows
 
     save(tmp_path / "plan.json", {"episodes": [{"episode_id": "ep", "task_id": "t"},
                                                {"episode_id": "missing", "task_id": "x"}]})
@@ -164,3 +165,6 @@ def test_archive_comparison_only_passes_the_same_dispatches_and_grades_ties(tmp_
     correct = {"counts": complete["counts"], "total": 5, "leaders": ["target", "controller"], "margin": 0}
     assert study.grade(correct, complete["counts"])["all_four"]
     assert not study.grade({**correct, "margin": False}, complete["counts"])["all_four"]
+    assert present_rows("交叉表", ["| 模型仅部分成功 | 4 | 6 | 5 |"], "labeled") == (
+        "模型仅部分成功，行合计 15 份。其中人工完整 4 份，人工仅部分 6 份，人工其余 5 份。")
+    assert "计划位置 24 个，其中可评 23 份" in present_rows("汇总", ["| 人工 | 10 | 6 | 7 | 1 |"], "labeled")
