@@ -21,6 +21,10 @@ class RecoveryDecision:
     action: str  # retry_same | retry_rephrase | fallback_continue | fallback_assemble | stop
     reason: str
     counted_as: str = "recovery"
+    # 归因链（2026-11-22 修复）：本决定事件 ID 与触发它的调用/响应引用
+    event_id: str = ""
+    trigger_event_id: str = ""
+    trigger_call_id: str = ""
 
 
 class RecoveryPolicy:
@@ -45,7 +49,9 @@ class RecoveryPolicy:
         self._counts[key] = self._counts.get(key, 0) + 1
         return self._counts[key]
 
-    def handle(self, role: Role | str, status: Status, *, attempt_key: str = "") -> RecoveryDecision:
+    def handle(self, role: Role | str, status: Status, *, attempt_key: str = "",
+               trigger_event_id: str = "", trigger_call_id: str = "",
+               status_error: str = "") -> RecoveryDecision:
         role_name = role.value if isinstance(role, Role) else str(role)
         key = attempt_key or role_name
         if self._total >= self.total_cap:
@@ -67,11 +73,23 @@ class RecoveryPolicy:
 
         if decision.action != "fallback_continue" or status is not Status.OK:
             self._total += 1
-            self.store.append(
+            ev = self.store.append(
                 "recovery_decision",
                 role=role_name,
-                payload={"action": decision.action, "reason": decision.reason, "policy_version": self.version},
+                call_id=trigger_call_id or None,
+                payload={
+                    "action": decision.action,
+                    "reason": decision.reason,
+                    "policy_version": self.version,
+                    # 归因链：触发本决定的那次调用与响应事件；原始错误原样保留
+                    **({"trigger_event_id": trigger_event_id} if trigger_event_id else {}),
+                    **({"trigger_call_id": trigger_call_id} if trigger_call_id else {}),
+                    **({"status_error": status_error} if status_error else {}),
+                },
             )
+            decision.event_id = ev.event_id
+            decision.trigger_event_id = trigger_event_id
+            decision.trigger_call_id = trigger_call_id
             if role_name == Role.CONTROLLER.value and status is Status.REFUSED:
                 self.store.append("component_refusal", role=role_name, payload={"reason": "controller_refused"})
         return decision

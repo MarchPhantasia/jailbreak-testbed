@@ -331,7 +331,18 @@ def run_episode(
         engine.execute(act)
         steps += 1
 
-    def _finalize(reason: str) -> None:
+    def _last_response_event_id(call_id: str) -> str:
+        """按 call_id 找最近一条 response_received 的事件 ID（归因链用）。"""
+        if not call_id:
+            return ""
+        for ev in reversed(store.events):
+            if ev.type == "response_received" and ev.call_id == call_id:
+                return ev.event_id
+        return ""
+
+    final_trigger_event_id = ""
+
+    def _finalize(reason: str, *, trigger_event_id: str = "") -> None:
         """统一收尾：所有停止路径共用；装配判断后写唯一终止记录。
 
         判定顺序：
@@ -394,7 +405,8 @@ def run_episode(
                 node_id=node_id,
                 payload={"reason": "materials_changed_after_candidate", "note": "非 online 模式保留旧候选"},
             )
-        engine.terminate(reason)
+        # 归因链：由恢复决定触发的收尾，terminate 记录指向该决定事件
+        engine.terminate(reason, trigger_event_id=trigger_event_id)
 
     final_reason = ""
     while not engine.terminated and steps < max_steps:
@@ -463,7 +475,11 @@ def run_episode(
                     generation_call_id=str(getattr(controller, "last_call_id", "") or ""),
                     template_ref=getattr(controller, "last_template_ref", {}) or {},
                 )
-            decision = recovery.handle("controller", status, attempt_key="controller")
+            decision = recovery.handle(
+                "controller", status, attempt_key="controller",
+                trigger_event_id=_last_response_event_id(getattr(controller, "last_call_id", "") or ""),
+                trigger_call_id=getattr(controller, "last_call_id", "") or "",
+            )
             steps += 1
             if decision.action in ("retry_same", "retry_rephrase"):
                 continue
@@ -478,7 +494,11 @@ def run_episode(
             q = action.params.get("query")
             if not isinstance(q, str) or not q.strip():
                 # U03：空/非字符串查询属于格式失败，必须走有限恢复而不是反复执行
-                decision = recovery.handle("controller", Status.INVALID_OUTPUT, attempt_key="controller")
+                decision = recovery.handle(
+                    "controller", Status.INVALID_OUTPUT, attempt_key="controller",
+                    trigger_event_id=_last_response_event_id(getattr(controller, "last_call_id", "") or ""),
+                    trigger_call_id=getattr(controller, "last_call_id", "") or "",
+                )
                 store.append(
                     "action_rejected",
                     role="controller",
@@ -550,16 +570,22 @@ def run_episode(
             break
 
         if result.retryable and not result.rejected:
-            decision = recovery.handle("target", result.status, attempt_key="target")
+            decision = recovery.handle(
+                "target", result.status, attempt_key="target",
+                trigger_event_id=getattr(result, "response_event_id", "") or "",
+                trigger_call_id=getattr(result, "call_id", "") or "",
+            )
             if decision.action in ("retry_same", "retry_rephrase") and guard.can_spend_target():
                 pending_retry = True
                 continue
             if decision.action == "fallback_assemble":
                 _assemble_now(decision.reason)
                 final_reason = "fallback_assembled"
+                final_trigger_event_id = decision.event_id
                 break
             if decision.action == "stop":
                 final_reason = decision.reason
+                final_trigger_event_id = decision.event_id
                 break
 
         if getattr(engine, "stop_action_requested", False):
@@ -584,7 +610,7 @@ def run_episode(
     if not engine.terminated:
         # 统一收尾：五个停止路径（STOP / max_steps / Target 额度耗尽 / Controller 阶段额度耗尽 /
         # 恢复策略停止）都汇到这里；V01 的 online 新证据重装配语义包含在 _finalize 内。
-        _finalize(final_reason or "max_steps")
+        _finalize(final_reason or "max_steps", trigger_event_id=final_trigger_event_id)
 
     return EpisodeArtifacts(
         episode_id=eid,

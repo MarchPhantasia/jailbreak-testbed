@@ -161,6 +161,33 @@ def cmd_judge(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
+    # 三题对账导出模式：任一新目录参数出现即进入（只读，不调用模型）
+    new_dir_args = [getattr(args, k, "") for k in
+                    ("judge_root", "direct_root", "behavior_notes", "audit_out")]
+    if any(new_dir_args):
+        from . import reporting
+        audit = reporting.build_direct3_audit(
+            args.root,
+            judge_root=getattr(args, "judge_root", "") or "",
+            direct_root=getattr(args, "direct_root", "") or "",
+            behavior_notes_path=getattr(args, "behavior_notes", "") or "",
+            eval_run_id=getattr(args, "eval_run_id", "") or "")
+        out_dir = getattr(args, "audit_out", "") or ""
+        result = {"command": "report-audit", "calls_model": False, "phase": "analysis",
+                  "audit": {k: audit[k] for k in ("run_root", "judge_root", "direct_root",
+                                                  "main_eval_id", "eval_rounds",
+                                                  "target_calls_total")}}
+        if out_dir:
+            import json as _json
+            import os as _os
+            _os.makedirs(out_dir, exist_ok=True)
+            with open(_os.path.join(out_dir, "audit.json"), "w", encoding="utf-8") as f:
+                _json.dump(audit, f, ensure_ascii=False, indent=1)
+            with open(_os.path.join(out_dir, "audit.md"), "w", encoding="utf-8") as f:
+                f.write(reporting.render_audit_markdown(audit))
+            result["audit"]["out_dir"] = out_dir
+        _print(result)
+        return 0
     out = runner.report_run(args.root, eval_run_id=getattr(args, "eval_run_id", None))
     if args.csv:
         import csv
@@ -320,6 +347,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--root", required=True, help="results/<experiment_id>")
     sp.add_argument("--eval-run-id", help="只读指定评价，保留已有 report.json")
     sp.add_argument("--csv", default="", help="额外写出逐题 CSV")
+    sp.add_argument("--judge-root", dest="judge_root", default="",
+                    help="独立 Judge 输出根目录（对账导出模式）")
+    sp.add_argument("--direct-root", dest="direct_root", default="",
+                    help="直问观测目录（对账导出模式）")
+    sp.add_argument("--behavior-notes", dest="behavior_notes", default="",
+                    help="离线行为标注 JSON（报告文本判读等）")
+    sp.add_argument("--audit-out", dest="audit_out", default="",
+                    help="对账导出目录（写 audit.json + audit.md）")
     sp.set_defaults(func=cmd_report)
 
     sp = sub.add_parser("replay", help="按冻结计划回放指定时点的历史状态与真实派发回执")

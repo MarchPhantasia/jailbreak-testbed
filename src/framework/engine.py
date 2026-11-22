@@ -57,6 +57,10 @@ class StepResult:
     node_id: str = ""
     rejected: bool = False
     retryable: bool = False
+    # 归因链（2026-11-22 修复）：实际调用的 call_id 与其 response_received 事件 ID，
+    # 供编排层把恢复决定/终止记录绑定到触发它们的那次调用
+    call_id: str = ""
+    response_event_id: str = ""
 
 
 class Engine:
@@ -340,7 +344,16 @@ class Engine:
             role="engine",
             node_id=child_id,
             view_id=child_view.view_id,
-            payload={"parent": node_id, "query": query, "status": res.status.value, "label": label.value},
+            call_id=res.call_id,
+            payload={
+                "parent": node_id,
+                "query": query,
+                "status": res.status.value,
+                "label": label.value,
+                # 归因链：本观察子节点由哪次调用产生、其响应事件是哪条
+                "call_id": res.call_id,
+                "response_event_id": response_ev.event_id if response_ev else None,
+            },
         )
 
         score = self.scorer.score(
@@ -373,7 +386,8 @@ class Engine:
 
         status = res.status
         retryable = res.status in (Status.TIMEOUT, Status.TRANSPORT_ERROR, Status.INVALID_OUTPUT)
-        return StepResult(action.action_id, status, f"target 调用完成：{label.value}", node_id=child_id, retryable=retryable)
+        return StepResult(action.action_id, status, f"target 调用完成：{label.value}", node_id=child_id, retryable=retryable,
+                           call_id=res.call_id, response_event_id=(response_ev.event_id if response_ev else ""))
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
@@ -859,7 +873,7 @@ class Engine:
             return "uct:exploit+探索项最大"
         return f"{name}:策略选择"
 
-    def terminate(self, reason: str) -> None:
+    def terminate(self, reason: str, *, trigger_event_id: str = "") -> None:
         if self.terminated:
             return
         self.terminated = True
@@ -872,6 +886,8 @@ class Engine:
                 "reason": reason,
                 "final_candidate_id": self.final_candidate.candidate_id if self.final_candidate else None,
                 "stop_reason": self.stop_reason,
+                # 归因链：由某条恢复决定触发收尾时，指向该决定的事件 ID
+                **({"trigger_event_id": trigger_event_id} if trigger_event_id else {}),
             },
             budget_after=self.guard.snapshot(),
         )
