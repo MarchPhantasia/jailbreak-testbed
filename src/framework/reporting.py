@@ -175,11 +175,13 @@ def judge_send_accounting(judge_root: str, main_eval_id: str) -> dict:
                                          str(pl.get("error") or ""))
                     d["class"] = cls
                     rec[cls if cls in ("valid", "explicit_504", "no_receipt") else "other_error"] += 1
-        # 本轮结束时仍无回执的发送 → 未见回执（如超时中断的轮次）
+        # 本轮结束时仍无回执的发送 → 未见回执（如超时中断的轮次）。
+        # 状态改写为 NO_RECEIPT 防止后续轮次的清扫重复计数。
         for rec in per_task.values():
             for d in rec["send_details"]:
                 if d["status"] in ("PENDING", "", None):
                     d["class"] = "no_receipt"
+                    d["status"] = "NO_RECEIPT"
                     rec["no_receipt"] += 1
         eval_rounds.append(meta["eval_id"])
     return {"per_task": per_task, "eval_rounds": eval_rounds}

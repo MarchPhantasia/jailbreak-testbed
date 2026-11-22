@@ -33,7 +33,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from . import runner
 from .contracts import AnswerCandidate, BudgetLimits, Task, Verdict, new_id, stable_hash
 from .budget import BudgetGuard
-from .evaluation import EVIDENCE_POLICY, SemanticJudge, partial_success_from_rule, success_from_rule
+from .evaluation import (EVIDENCE_POLICY, JUDGE_RETRY_RULE_VERSION, SemanticJudge,
+                         partial_success_from_rule, success_from_rule)
 from .events import EventStore
 from .prompts import PromptTemplate
 from .routing import build_gateway, resolve_routing
@@ -581,6 +582,8 @@ def run(
             "note": "服务与参数来自当前配置（router 解析结果），非运行目录冻结快照",
         },
         "protocol": protocol,
+        # judge-retry@v2：重试规则版本随协议冻结（暂时性错误同消息重发）
+        "judge_retry_rule": JUDGE_RETRY_RULE_VERSION,
         "artifacts": [a.provenance() for a, _ in pending],
         "roots": list(roots),
         "evidence_scope": scopes[0] if len(scopes) == 1 else "mixed",

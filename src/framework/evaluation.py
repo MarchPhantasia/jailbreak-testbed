@@ -136,6 +136,51 @@ def plan_evidence(
     return included, plan
 
 
+#: Judge 重试规则版本（2026-11-22 修复：暂时性传输错误同消息重发，不再误加格式修复）
+JUDGE_RETRY_RULE_VERSION = "judge-retry@v2"
+#: 暂时性服务错误：超时 + 已识别的临时连接中断（HTTP 408/429/500/502/503/504 及连接类）
+import re as _re_retry
+_TRANSIENT_HTTP = _re_retry.compile(r"HTTP (408|429|500|502|503|504)\b")
+_TRANSIENT_CONN = _re_retry.compile(
+    r"connection (reset|refused|aborted)|timed? ?out|temporar|unreachable|"
+    r"goaway|bad gateway|service unavailable|econnreset|econnrefused", _re_retry.I)
+
+
+def classify_judge_failure(status: str, error: str, has_text: bool):
+    """Judge 单次失败分流（judge-retry@v2）。
+
+    返回 (kind, retry, repair)：
+    - transient：暂时性服务错误/超时 → 同消息重发（不加格式修复）；
+    - parse：有可见正文但不可解析 → 允许时附加格式修复提示（消息会变）；
+    - empty：无可见正文（仅推理/空响应/畸形回包）→ 同消息重试；
+    - truncated：截断 → 同消息重试；
+    - terminal：鉴权/请求错误、REFUSED、预算或预检未通过、未识别错误 → 不重试。
+    """
+    st = str(status or "")
+    err = str(error or "")
+    if st == "TIMEOUT" or _TRANSIENT_CONN.search(err) or (st == "TRANSPORT_ERROR" and _TRANSIENT_HTTP.search(err)):
+        return "transient", True, False
+    if st == "TRANSPORT_ERROR":
+        return "terminal", False, False
+    if st == "REFUSED" or st == "BUDGET_EXHAUSTED":
+        return "terminal", False, False
+    if st == "TRUNCATED":
+        return "truncated", True, False
+    if st in ("INVALID_OUTPUT", "INSUFFICIENT_EVIDENCE", "PARTIAL") or not st:
+        if has_text:
+            return "parse", True, True
+        return "empty", True, False
+    if st == "OK":
+        return "parse", True, True  # OK 但正文不可解析
+    return "terminal", False, False
+
+
+def _stable_hash_msgs(messages) -> str:
+    from .contracts import stable_hash
+    return stable_hash([{"role": m.get("role", ""), "content": m.get("content", "")}
+                        for m in (messages or [])])
+
+
 REPAIR_INSTRUCTION = (
     "上一次输出不能被解析为规定 JSON。只输出一个 JSON 对象，不要附加解释、代码块或前后缀；"
     "字段必须取规定枚举值。"
@@ -569,6 +614,8 @@ class SemanticJudge:
                     node_id=node_id,
                     attempt_id=f"judge_{attempt + 1}",
                     template_ref=template_ref,
+                    # 重试走真实派发：失败后缓存里可能存着上一次的错误
+                    cache_bypass=(attempt > 0),
                 )
             except BudgetExhausted:
                 self.last_status = Status.BUDGET_EXHAUSTED.value
@@ -582,6 +629,9 @@ class SemanticJudge:
                 parsed = JudgeParse(False, problems=problems)
             else:
                 parsed = parse_judge_output(res.text)
+            # judge-retry@v2：失败先分流，再决定重发什么
+            kind, retry, repair = classify_judge_failure(
+                res.status.value, res.error or "", bool((res.text or "").strip()))
             attempts.append(
                 {
                     "attempt": attempt + 1,
@@ -594,16 +644,29 @@ class SemanticJudge:
                     "final_content": getattr(parsed, "meta", None) or {"adapter_version": THINK_ADAPTER_VERSION},
                     "evidence_plan": plan,
                     "context": attempt_budget,
+                    # 同输入核对：本次实际发送的完整有序消息哈希
+                    "messages_hash": _stable_hash_msgs(messages),
+                    "n_messages": len(messages),
+                    "failure_kind": kind if not parsed.ok else "",
+                    "retry_rule": JUDGE_RETRY_RULE_VERSION,
                 }
             )
             if parsed.ok:
                 self.last_failure = ""
                 break
+            if not retry:
+                # terminal：鉴权/请求错误、REFUSED、预算/预检未通过、未识别错误
+                # —— 结束本次评价并保留原始原因
+                self.last_failure = res.status.value if not res.ok else "invalid_output"
+                break
             self.last_failure = res.status.value if not res.ok else "invalid_output"
-            messages = messages + [
-                {"role": "assistant", "content": (res.text or "")[:2000]},
-                {"role": "user", "content": REPAIR_INSTRUCTION},
-            ]
+            if repair:
+                # 仅"有可见正文但不可解析"附加格式修复提示（消息改变，哈希随之不同）
+                messages = messages + [
+                    {"role": "assistant", "content": (res.text or "")[:2000]},
+                    {"role": "user", "content": REPAIR_INSTRUCTION},
+                ]
+            # transient / empty / truncated：同消息重发（消息与哈希不变）
 
         if parsed is None or not parsed.ok:
             return Verdict(

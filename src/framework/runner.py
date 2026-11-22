@@ -958,6 +958,7 @@ def _build_eval_judge(
         phase=Phase.ANALYSIS,
         role="judge_eval",
         payload={
+            "judge_retry_rule": "judge-retry@v2",
             "eval_run_id": eval_run_id,
             "stage_id": stage_id,
             "service_id": service.get("service_id", ""),
