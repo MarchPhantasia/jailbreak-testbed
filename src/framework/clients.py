@@ -21,6 +21,7 @@ from .budget import BudgetGuard, BudgetExhausted
 from .context import request_budget
 from .contracts import Phase, Role, Status, new_id
 from .events import EventStore
+from .judge_transport import call_with_deadline, read_completion_json, read_judge_stream
 
 #: 旧配置（无 parameter_profile）仍走这个五字段白名单，保持历史序列化不变。
 LEGACY_PARAM_KEYS = ("temperature", "top_p", "max_tokens", "stop", "seed")
@@ -136,8 +137,13 @@ class ModelGateway:
         template_ref: Optional[Dict[str, Any]] = None,
         input_evidence_ids: Optional[List[str]] = None,
         cache_bypass: bool = False,
+        judge_subject: Optional[Dict[str, str]] = None,
+        deadline_at: Optional[float] = None,
+        judge_stream: bool = False,
     ) -> CallResult:
         role_name = role.value if isinstance(role, Role) else str(role)
+        if (judge_stream or deadline_at is not None) and role_name != Role.JUDGE_EVAL.value:
+            raise ValueError("Judge transport options require judge_eval")
         params = self._merge_params(params)
         budget = request_budget(
             context_window=self.context_window,
@@ -203,6 +209,8 @@ class ModelGateway:
                 source_call_id=cached.call_id,
             )
 
+        if deadline_at is not None and time.monotonic() >= deadline_at:
+            return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded", served=False)
         ticket = self.guard.reserve(role_name, stage_id=stage_id)
         call_id = new_id("call")
         self.store.append(
@@ -232,16 +240,21 @@ class ModelGateway:
                 "context": budget,
                 "served": True,
                 "ticket": ticket,
+                **({"judge_subject": judge_subject, "transport": "stream" if judge_stream else "json"}
+                   if judge_subject else {}),
             },
         )
         self.guard.dispatch(ticket)
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
-            res = self._invoke(role_name, stage_id, messages, params)
+            if deadline_at is not None or judge_stream:
+                res = self._timed_judge_call(role_name, stage_id, messages, params, deadline_at, judge_stream)
+            else:
+                res = self._invoke(role_name, stage_id, messages, params)
             res.call_id = call_id
         except Exception as exc:  # noqa: BLE001
             res = CallResult(call_id=call_id, status=Status.TRANSPORT_ERROR, error=str(exc))
-        wall_ms = int((time.time() - t0) * 1000)
+        wall_ms = int((time.monotonic() - t0) * 1000)
         cost = {
             "tokens_in": usage_field(res.usage, "prompt_tokens", "input_tokens"),
             "tokens_out": usage_field(res.usage, "completion_tokens", "output_tokens"),
@@ -271,7 +284,7 @@ class ModelGateway:
         )
         self.guard.settle(ticket, cost, call_id=call_id)
         res.response_event_id = response_ev.event_id if response_ev is not None else ""
-        if not cache_bypass:
+        if not cache_bypass and (not judge_subject or res.ok):
             self.cache.put(key, res)
         self.calls.append(
             {
@@ -286,6 +299,32 @@ class ModelGateway:
             }
         )
         return res
+
+    def _timed_judge_call(self, role, stage, messages, params, deadline_at, stream):
+        if deadline_at is None:
+            return self._judge_exchange(role, stage, messages, params, None, stream)
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
+
+        def exchange():
+            if time.monotonic() >= deadline_at:
+                return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
+            return self._judge_exchange(role, stage, messages, params, deadline_at, stream)
+
+        # Only transport I/O can outlive the deadline. The caller alone settles
+        # the ticket and owns retries, even if the provider sends a late response.
+        result, failure = call_with_deadline(exchange, remaining)
+        if failure == "hard_deadline_exceeded" or time.monotonic() >= deadline_at:
+            return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
+        if failure:
+            return CallResult("", Status.TRANSPORT_ERROR, error=failure)
+        return result
+
+    def _judge_exchange(self, role, stage, messages, params, deadline_at, stream):
+        if stream:
+            raise ValueError("Judge streaming requires an OpenAI-compatible service")
+        return self._invoke(role, stage, messages, params)
 
     def _invoke(self, role: str, stage: str, messages: List[Dict[str, str]], params: Dict[str, Any]) -> CallResult:  # pragma: no cover
         raise NotImplementedError
@@ -389,7 +428,15 @@ class OpenAICompatGateway(ModelGateway):
 
     def _invoke(self, role: str, stage: str, messages: List[Dict[str, str]], params: Dict[str, Any]) -> CallResult:
         # params 已由 profile 序列化器展开并校验过；这里不再做静默丢弃
-        body: Dict[str, Any] = {"model": self.model_name, "messages": messages, "stream": False}
+        return self._http_completion(messages, params)
+
+    def _judge_exchange(self, role, stage, messages, params, deadline_at, stream):
+        return self._http_completion(messages, params, deadline_at=deadline_at, stream=stream)
+
+    def _http_completion(self, messages, params, *, deadline_at=None, stream=False):
+        body: Dict[str, Any] = {"model": self.model_name, "messages": messages, "stream": stream}
+        if stream:
+            body["stream_options"] = {"include_usage": True}
         for key, value in params.items():
             if key in TRANSPORT_ONLY_KEYS:
                 continue
@@ -400,17 +447,35 @@ class OpenAICompatGateway(ModelGateway):
             headers=self._headers(),
             method="POST",
         )
+        timeout = self.timeout
+        if deadline_at is not None:
+            timeout = min(timeout, deadline_at - time.monotonic())
+            if timeout <= 0:
+                return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if stream and "application/json" not in resp.headers.get("Content-Type", "").lower():
+                    data = read_judge_stream(resp, deadline_at)
+                    wire_format = "sse"
+                else:
+                    data = read_completion_json(resp, deadline_at)
+                    wire_format = "json"
         except urllib.error.HTTPError as exc:
+            exc.close()
             return CallResult(call_id="", status=Status.TRANSPORT_ERROR, error=f"HTTP {exc.code}")
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                return CallResult("", Status.TIMEOUT, error="timeout")
+            return CallResult("", Status.TRANSPORT_ERROR, error=str(exc))
         except TimeoutError:
             return CallResult(call_id="", status=Status.TIMEOUT, error="timeout")
         except Exception as exc:  # noqa: BLE001
             return CallResult(call_id="", status=Status.TRANSPORT_ERROR, error=str(exc))
 
-        return self._parse_completion(data)
+        result = self._parse_completion(data)
+        if stream:
+            result.raw["wire_format"] = wire_format
+        return result
 
     @staticmethod
     def _parse_completion(data: Any) -> CallResult:

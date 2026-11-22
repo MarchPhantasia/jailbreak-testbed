@@ -47,10 +47,10 @@ def overlap_bounds(n: int, left: int, right: int, *, left_only: int | None = Non
 # ---------------------------------------------------------------------------
 # 三题对账导出（2026-11-22 归因修复）：直问 vs 完整流程 vs 独立 Judge
 
-import glob as _glob
 import json as _json
 import os as _os
 import re as _re
+from pathlib import Path
 # 只读聚合：不改运行产物；旧档案缺关联字段时按事件序/父子关系重建并标注。
 # ---------------------------------------------------------------------------
 
@@ -111,80 +111,108 @@ def reconstruct_episode_attribution(events) -> dict:
     return {"rounds": rounds, "any_rebuilt": any(r["attribution_rebuilt"] for r in rounds)}
 
 
-def _classify_send(status: str, text: str, error: str = "") -> str:
-    """单次 Judge 发送的四分类：valid / explicit_504 / no_receipt / other_error。"""
-    if status == "OK" and text:
-        return "valid"
-    if "504" in str(status) or "504" in str(error):
+def _classify_send(status: str, text: str, error: str = "", finish_reason: str = "") -> str:
+    from .evaluation import classify_judge_failure, parse_judge_output
+
+    if status in ("OK", "PARTIAL") and isinstance(text, str):
+        result = parse_judge_output(text)
+        if result.ok:
+            return "valid" if result.assessment == "scored" else "judge_unscored"
+    if status == "TRANSPORT_ERROR" and _re.search(r"\bHTTP(?: Error)? 504\b", error, _re.I):
         return "explicit_504"
-    if status in ("", None, "PENDING"):
-        return "no_receipt"
+    if status == "TIMEOUT":
+        return "local_timeout"
+    if classify_judge_failure(status, error, bool(text), finish_reason=finish_reason)[0] == "reasoning_output_limit":
+        return "reasoning_output_limit"
     return "other_error"
 
 
-def judge_send_accounting(judge_root: str, main_eval_id: str) -> dict:
-    """逐题统计各评价轮次的 Judge 发送（发送/有效/明确504/未见回执）。
+def _audit_rows(path):
+    if path.is_file():
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    yield _json.loads(line)
+                except _json.JSONDecodeError:
+                    if not line.endswith("\n"):  # interrupted append at EOF
+                        return
+                    raise
 
-    覆盖主评（平铺或 runs/<id>/）与 runs/ 下所有补充轮；每次发送记录
-    stable_hash(messages) 供"同输入"核对。
-    """
+
+def _archived_judge_task(messages):
+    # Older Judge requests had no envelope identity. Read the rendered input's
+    # task object; task IDs in a candidate or in quoted evidence are not identities.
+    for msg in messages:
+        content = str(msg.get("content", ""))
+        match = _re.search(r'(?m)^\s*\{\s*"evaluation_subject"\s*:', content)
+        if match:
+            try:
+                payload, _ = _json.JSONDecoder().raw_decode(content[match.start():].lstrip())
+                return str(payload["task"]["task_id"])
+            except (ValueError, TypeError, KeyError):
+                pass
+    return "unknown"
+
+
+def judge_send_accounting(judge_root: str, main_eval_id: str) -> dict:
+    """Match each physical Judge dispatch to its own receipt within an evaluation."""
+    from .evaluation import REPAIR_INSTRUCTION
+
     per_task = {}
-    eval_rounds = []
-    roots = []
-    flat = _os.path.join(judge_root, "verdicts.jsonl")
-    if _os.path.exists(flat):
-        roots.append({"eval_id": main_eval_id, "dir": judge_root, "is_main": True})
-    for d in sorted(_glob.glob(_os.path.join(judge_root, "runs", "eval_*"))):
-        roots.append({"eval_id": _os.path.basename(d), "dir": d, "is_main": False})
-    for meta in roots:
-        ev_path = _os.path.join(meta["dir"], "eval", "events.jsonl")
-        if not _os.path.exists(ev_path):
+    rounds = {}
+    flat_id = ""
+    root = Path(judge_root)
+    for directory in (root, *sorted(root.glob("runs/eval_*"))):
+        path = directory / "eval" / "events.jsonl"
+        verdict_path = directory / "verdicts.jsonl"
+        if not path.is_file() and not verdict_path.is_file():
             continue
-        evs = [_json.loads(l) for l in open(ev_path, encoding="utf-8")]
-        # 按题分组：request_sent(JUDGE_EVAL) 内提取 task/episode 标识
-        cur_task, cur_ep = None, None
-        for e in evs:
-            t = e.get("type")
+        sends = []
+        receipts, costs = {}, {}
+        journal_id = ""
+        for e in _audit_rows(path):
             pl = e.get("payload") or {}
-            if t == "request_sent":
-                msgs = pl.get("messages") or [{}]
-                all_c = "\n".join(str(m.get("content", "")) for m in msgs)
-                if "JBT_STAGE=JUDGE_EVAL" in all_c:
-                    m = _re.search(r"task_id[\"'\s:]+(sr_\d{4})", all_c)
-                    m2 = _re.search(r"(ep_[0-9a-f]{10})", all_c)
-                    cur_task = m.group(1) if m else (cur_task or "unknown")
-                    cur_ep = m2.group(1) if m2 else cur_ep
-                    is_repair = len(msgs) > 1
-                    rec = per_task.setdefault(cur_task, {
-                        "sends": 0, "valid": 0, "explicit_504": 0,
-                        "no_receipt": 0, "other_error": 0, "send_details": []})
-                    rec["sends"] += 1
-                    rec["send_details"].append({
-                        "eval_id": meta["eval_id"], "call_id": e.get("call_id", ""),
-                        "messages_hash": _stable_hash_messages(msgs),
-                        "n_messages": len(msgs), "status": "PENDING",
-                        "is_format_repair": is_repair,
-                    })
-            elif t == "response_received" and cur_task:
-                rec = per_task.get(cur_task)
-                if rec and rec["send_details"] and rec["send_details"][-1]["status"] == "PENDING":
-                    d = rec["send_details"][-1]
-                    d["status"] = pl.get("status") or ""
-                    d["error"] = str(pl.get("error") or "")[:60]
-                    cls = _classify_send(pl.get("status") or "", pl.get("text") or "",
-                                         str(pl.get("error") or ""))
-                    d["class"] = cls
-                    rec[cls if cls in ("valid", "explicit_504", "no_receipt") else "other_error"] += 1
-        # 本轮结束时仍无回执的发送 → 未见回执（如超时中断的轮次）。
-        # 状态改写为 NO_RECEIPT 防止后续轮次的清扫重复计数。
-        for rec in per_task.values():
-            for d in rec["send_details"]:
-                if d["status"] in ("PENDING", "", None):
-                    d["class"] = "no_receipt"
-                    d["status"] = "NO_RECEIPT"
-                    rec["no_receipt"] += 1
-        eval_rounds.append(meta["eval_id"])
-    return {"per_task": per_task, "eval_rounds": eval_rounds}
+            call = e.get("call_id")
+            journal_id = journal_id or e.get("episode_id", "")
+            if e.get("role") and e["role"] != "judge_eval":
+                continue
+            if e.get("type") == "request_sent":
+                msgs = pl.get("messages") or []
+                if not e.get("role") and e.get("stage_id") != "judge_eval":
+                    if not msgs or not str(msgs[0].get("content", "")).startswith("JBT_STAGE=JUDGE_EVAL"):
+                        continue
+                task = (pl.get("judge_subject") or {}).get("task_id") or _archived_judge_task(msgs)
+                sends.append((task, {"call_id": call, "messages_hash": _stable_hash_messages(msgs),
+                                     "n_messages": len(msgs), "is_format_repair": len(msgs) > 1 and
+                                     msgs[-1].get("role") == "user" and msgs[-1].get("content") == REPAIR_INSTRUCTION}))
+            elif e.get("type") == "response_received" and call:
+                status, error = pl.get("status") or "", str(pl.get("error") or "")
+                kind = _classify_send(status, pl.get("text") or "", error, pl.get("finish_reason") or "")
+                receipts[call] = (status, error[:100], kind)
+            elif e.get("type") == "budget_settled" and call:
+                costs[call] = (e.get("cost") or {}).get("wall_ms")
+        first_row = next(_audit_rows(verdict_path), {}) if not journal_id else {}
+        eval_id = journal_id or first_row.get("eval_run_id") or directory.name
+        if directory == root:
+            flat_id = eval_id
+        rounds[eval_id] = directory
+        for task, d in sends:
+            status, error, kind = receipts.get(d["call_id"], ("NO_RECEIPT", "", "no_receipt"))
+            rec = per_task.setdefault(task, {"sends": 0, "valid": 0, "explicit_504": 0, "no_receipt": 0,
+                                              "local_timeout": 0, "judge_unscored": 0, "reasoning_output_limit": 0,
+                                              "other_error": 0,
+                                              "send_details": []})
+            rec["sends"] += 1
+            rec[kind] += 1
+            rec["send_details"].append({**d, "eval_id": eval_id, "status": status, "error": error,
+                                        "class": kind, "wall_ms": costs.get(d["call_id"])})
+    selected = main_eval_id or flat_id
+    if main_eval_id and selected not in rounds:
+        raise ValueError(f"找不到指定的 Judge 评价轮次 {main_eval_id}")
+    return {"per_task": per_task, "eval_rounds": list(rounds), "main_eval_id": selected,
+            "verdicts_path": str(rounds[selected] / "verdicts.jsonl") if selected in rounds else ""}
 
 
 def build_direct3_audit(run_root: str, *, judge_root: str = "",
@@ -201,11 +229,11 @@ def build_direct3_audit(run_root: str, *, judge_root: str = "",
             open(_os.path.join(direct_root, "receipts.json"), encoding="utf-8"))}
     acct = judge_send_accounting(judge_root, eval_run_id) if judge_root else {"per_task": {}, "eval_rounds": []}
     verdicts = {}
-    vpath = _os.path.join(judge_root, "verdicts.jsonl")
-    if _os.path.exists(vpath):
-        for l in open(vpath, encoding="utf-8"):
-            v = _json.loads(l)
-            verdicts[v.get("task_id")] = v
+    if acct.get("verdicts_path"):
+        for v in _audit_rows(Path(acct["verdicts_path"])):
+            if v.get("eval_run_id") == acct["main_eval_id"]:
+                key = (v.get("task_id"), v.get("episode_id"), v.get("candidate_id"))
+                verdicts[key] = v
     tasks = []
     for ep in plan.get("episodes", []):
         tid = ep["task_id"]
@@ -260,7 +288,7 @@ def build_direct3_audit(run_root: str, *, judge_root: str = "",
                       "sr_0002": "sr_direct3_C"}.get(tid, "")
         dr = direct.get(direct_key) or {}
         # Judge
-        v = verdicts.get(tid) or {}
+        v = verdicts.get((tid, epid, final.get("final_candidate_id"))) or {}
         ja = (acct.get("per_task") or {}).get(tid) or {}
         # 实质贡献例证：首选引用数最多的主张 + 答案章节结构（装配的组织痕迹）
         claims = fc.get("claims") or []
@@ -301,12 +329,15 @@ def build_direct3_audit(run_root: str, *, judge_root: str = "",
                 "explicit_504": ja.get("explicit_504", 0),
                 "no_receipt": ja.get("no_receipt", 0),
                 "other_error": ja.get("other_error", 0),
+                "local_timeout": ja.get("local_timeout", 0),
+                "judge_unscored": ja.get("judge_unscored", 0),
+                "reasoning_output_limit": ja.get("reasoning_output_limit", 0),
                 "send_details": ja.get("send_details", []),
             },
         })
     return {"run_root": run_root, "judge_root": judge_root,
             "direct_root": direct_root, "behavior_notes": behavior_notes_path,
-            "main_eval_id": eval_run_id, "eval_rounds": acct.get("eval_rounds", []),
+            "main_eval_id": acct.get("main_eval_id", ""), "eval_rounds": acct.get("eval_rounds", []),
             "tasks": tasks,
             "target_calls_total": sum(len(t["rounds"]) for t in tasks)}
 
@@ -341,6 +372,9 @@ def render_audit_markdown(audit: dict) -> str:
             lines.append(f"**独立 Judge（主评）**：{mv.get('basis')}（未判定）")
         lines.append(f"**Judge 发送对账**：发送 {j['sends']}／有效 {j['valid']}／"
                      f"明确504 {j['explicit_504']}／未见回执 {j['no_receipt']}"
+                     + (f"／本地超时 {j['local_timeout']}" if j.get('local_timeout') else "")
+                     + (f"／裁判返回未评分 {j['judge_unscored']}" if j.get('judge_unscored') else "")
+                     + (f"／推理用尽输出额度 {j['reasoning_output_limit']}" if j.get('reasoning_output_limit') else "")
                      + (f"／其他错误 {j['other_error']}" if j['other_error'] else ""))
         ce = t.get("contribution_example") or {}
         if ce:

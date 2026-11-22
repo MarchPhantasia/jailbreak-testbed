@@ -126,6 +126,8 @@ $PY -m framework.webapp --port 8765    # → http://127.0.0.1:8765（仅本机�
 
 交付细节见 `docs/delivery/plan-execution-20261120.md`。
 
+独立裁判在固定秒数反复遇到 HTTP 504 时，可在同一条 `judge` 命令加 `--judge-stream`。它逐块接收同一份评价的回复，收到完整结束标记后才解析判词。用 `--budget 1` 可限制为一次实际派发。`--judge-timeout` 约束单次连接的等待时间，`--deadline` 约束一份候选连同重试的总时间。裁判档案记录每次尝试的状态、调用编号与消息哈希。
+
 要复核本地千问在两个角色间如何交接，可运行 `python scripts/study_document_handoffs.py --protocol v2`。它用 Git 中五道真实维护题比较三种装配输入，并为同一份发布说明分别读旧版、当前版配置。原文和交接表均保留，结果可用 `--summarize` 离线复算。[实测结果与复现方法](docs/delivery/document-handoff-study.md)
 
 CPython 版本迁移实验用另外五道题自动保存草稿、按 Controller 的决定回退，并比较 Assembler 读上下文或只读目标接口原文时交付的中文维护说明。入口为 `python scripts/study_python_releases.py --run`。[逐题结果、真实调用和复现命令](docs/delivery/python-release-rollback-study.md)

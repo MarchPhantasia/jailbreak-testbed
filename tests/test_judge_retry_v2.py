@@ -244,4 +244,4 @@ def tpl_of(judge):
 # ---------------- 规则版本进协议 ----------------
 
 def test_retry_rule_version_exported():
-    assert JUDGE_RETRY_RULE_VERSION == "judge-retry@v2"
+    assert JUDGE_RETRY_RULE_VERSION == "judge-retry@v3"

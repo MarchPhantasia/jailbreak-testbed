@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import time
 from copy import copy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -36,6 +38,7 @@ from .budget import BudgetGuard
 from .evaluation import (EVIDENCE_POLICY, JUDGE_RETRY_RULE_VERSION, SemanticJudge,
                          partial_success_from_rule, success_from_rule)
 from .events import EventStore
+from .judge_transport import call_with_deadline  # compatibility for callers of the former helper
 from .prompts import PromptTemplate
 from .routing import build_gateway, resolve_routing
 
@@ -264,8 +267,8 @@ def build_judge(
             else (cfg.get("evaluation") or {}).get("max_evidence_chars", 40000)
         ),
         evidence_scope=evidence_scope,
-        context_window=None,
-        max_output_tokens=0,
+        context_window=routing.service(routing.route("judge_eval")).context_window,
+        max_output_tokens=int(routing.resolved_params("judge_eval").get("max_tokens") or 0),
     )
     return judge, store, guard
 
@@ -320,33 +323,8 @@ def cfg_eval_budget(cfg: Dict[str, Any]) -> int:
     return int(budget.get("non_target_calls") or 100)
 
 
-def call_with_deadline(fn, deadline_s: float):
-    """在硬性总时限内执行一次调用（urllib 的 timeout 只是 socket 级，不是总时长）。
-
-    超时返回 (None, "hard_deadline_exceeded")；调用线程为 daemon，不阻塞进程退出。
-    """
-    import queue
-    import threading
-
-    if not deadline_s or deadline_s <= 0:
-        return fn(), ""
-    box: "queue.Queue" = queue.Queue(maxsize=1)
-
-    def _run():
-        try:
-            box.put((fn(), ""))
-        except BaseException as exc:  # noqa: BLE001
-            box.put((None, f"call_error:{type(exc).__name__}:{exc}"))
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    try:
-        return box.get(timeout=float(deadline_s))
-    except Exception:  # noqa: BLE001
-        return None, "hard_deadline_exceeded"
-
-
-def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> Verdict:
+def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str,
+                   deadline_at: Optional[float] = None, judge_stream: bool = False) -> Verdict:
     """复用 evaluate：只喂已有产物，不重建、不改写。
 
     R3：先做包完整性检查（与在线主入口同一套 candidate_evidence_scope 结论）。
@@ -374,6 +352,8 @@ def judge_artifact(judge: SemanticJudge, art: Artifact, *, eval_run_id: str) -> 
         eval_run_id=eval_run_id,
         evidence=art.evidence,
         rubric_version=str(judge.rubric.get("version", "v1")),
+        deadline_at=deadline_at,
+        judge_stream=judge_stream,
     )
 
 
@@ -421,6 +401,12 @@ def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any],
         "pack_input_hash": list(art.pack_input_hash),
         "evidence_in_view": len(art.evidence),
         "judge_evidence_ids": recorded_evidence_ids(payload),
+        "judge_attempts": [
+            {k: a[k] for k in ("attempt", "call_id", "dispatched", "status", "error", "messages_hash",
+                               "failure_kind", "finish_reason", "text_chars", "output_tokens",
+                               "reasoning_tokens", "n_messages", "retry_rule") if k in a}
+            for a in payload.get("attempts") or []
+        ],
         "protocol": {
             "rubric_id": rubric.get("id"),
             "rubric_version": rubric.get("version"),
@@ -469,9 +455,12 @@ def run(
     max_evidence_chars: Optional[int] = None,
     timeout_s: float = 0.0,
     deadline_s: float = 0.0,
+    judge_stream: bool = False,
     resume_from: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """独立评价主流程：装配产物 → 逐份评价 → 写产物。"""
+    if any(not math.isfinite(v) or v < 0 for v in (timeout_s, deadline_s)):
+        raise ValueError("Judge 超时和截止时间必须是有限的非负秒数")
     rubric = load_rubric(rubric_path)
     arts = discover_artifacts(roots, evidence_scope=evidence_scope, candidates=candidates)
     if tasks:
@@ -485,6 +474,8 @@ def run(
     if route is None or not route.enabled:
         raise ValueError("judge_eval 未启用")
     service = routing.service(route)
+    if judge_stream and service.type == "mock":
+        raise ValueError("流式裁判需要 OpenAI 兼容服务")
     protocol = {
         "rubric_id": rubric.get("id"),
         "rubric_version": rubric.get("version"),
@@ -499,6 +490,9 @@ def run(
         "max_evidence_chars": int(max_evidence_chars if max_evidence_chars is not None
                                   else evaluation.get("max_evidence_chars", 40000)),
         "max_format_retries": int(evaluation.get("max_format_retries", 1)),
+        "judge_retry_rule": JUDGE_RETRY_RULE_VERSION,
+        "judge_transport": "stream" if judge_stream else "json",
+        "context_planning": "configured-window@1",
     }
     done_keys = _load_done_keys(resume_from, protocol=protocol)
     pending = [(art, key) for art in arts if (key := art.resume_key()) not in done_keys]
@@ -537,13 +531,15 @@ def run(
 
     rows: List[Dict[str, Any]] = []
     for art, input_sha256 in pending:
-        verdict, failure = call_with_deadline(
-            lambda a=art: judge_artifact(judge, a, eval_run_id=eval_run_id), deadline_s
-        )
-        if verdict is None:
+        deadline_at = time.monotonic() + deadline_s if deadline_s else None
+        try:
+            verdict = judge_artifact(judge, art, eval_run_id=eval_run_id,
+                                     deadline_at=deadline_at, judge_stream=judge_stream)
+        except Exception as exc:
             verdict = judge.unavailable_verdict(
                 art.task, art.candidate, eval_run_id=eval_run_id,
-                rubric_version=str(rubric.get("version", "v1")), failure=failure,
+                rubric_version=str(rubric.get("version", "v1")),
+                failure=f"call_error:{type(exc).__name__}:{exc}",
             )
         row = verdict_row(art, verdict, rubric, prompt_sha256=protocol["prompt_sha256"])
         row.update(protocol=protocol, input_sha256=input_sha256)

@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .budget import BudgetExhausted
 from .context import DEFAULT_RESERVE, estimate_tokens, request_budget
-from .clients import CallResult, ModelGateway
+from .clients import CallResult, ModelGateway, usage_field
 from .contracts import AnswerCandidate, Phase, Role, Status, Task, Verdict, new_id
 from .events import EventStore
 from .prompts import THINK_ADAPTER_VERSION, PromptTemplate, final_content
@@ -137,7 +138,7 @@ def plan_evidence(
 
 
 #: Judge 重试规则版本（2026-11-22 修复：暂时性传输错误同消息重发，不再误加格式修复）
-JUDGE_RETRY_RULE_VERSION = "judge-retry@v2"
+JUDGE_RETRY_RULE_VERSION = "judge-retry@v3"
 #: 暂时性服务错误：超时 + 已识别的临时连接中断（HTTP 408/429/500/502/503/504 及连接类）
 import re as _re_retry
 _TRANSIENT_HTTP = _re_retry.compile(r"HTTP (408|429|500|502|503|504)\b")
@@ -146,8 +147,8 @@ _TRANSIENT_CONN = _re_retry.compile(
     r"goaway|bad gateway|service unavailable|econnreset|econnrefused", _re_retry.I)
 
 
-def classify_judge_failure(status: str, error: str, has_text: bool):
-    """Judge 单次失败分流（judge-retry@v2）。
+def classify_judge_failure(status: str, error: str, has_text: bool, *, finish_reason: str = ""):
+    """Judge 单次失败分流。推理耗尽输出额度且无正文时记 U，交由新的评价协议处理。
 
     返回 (kind, retry, repair)：
     - transient：暂时性服务错误/超时 → 同消息重发（不加格式修复）；
@@ -158,20 +159,27 @@ def classify_judge_failure(status: str, error: str, has_text: bool):
     """
     st = str(status or "")
     err = str(error or "")
-    if st == "TIMEOUT" or _TRANSIENT_CONN.search(err) or (st == "TRANSPORT_ERROR" and _TRANSIENT_HTTP.search(err)):
+    if err == "hard_deadline_exceeded":
+        return "deadline", False, False
+    if st == "INVALID_OUTPUT" and err == "reasoning_only" and finish_reason == "length" and not has_text:
+        return "reasoning_output_limit", False, False
+    if st == "TIMEOUT":
         return "transient", True, False
     if st == "TRANSPORT_ERROR":
+        if (_TRANSIENT_HTTP.search(err) or _TRANSIENT_CONN.search(err)
+                or err.startswith("incomplete_judge_stream:")
+                or (err.startswith("judge_stream_error:") and
+                    err.split(":", 1)[1] in {"408", "429", "500", "502", "503", "504"})):
+            return "transient", True, False
         return "terminal", False, False
     if st == "REFUSED" or st == "BUDGET_EXHAUSTED":
         return "terminal", False, False
     if st == "TRUNCATED":
         return "truncated", True, False
-    if st in ("INVALID_OUTPUT", "INSUFFICIENT_EVIDENCE", "PARTIAL") or not st:
+    if st in ("OK", "INVALID_OUTPUT", "INSUFFICIENT_EVIDENCE", "PARTIAL") or not st:
         if has_text:
             return "parse", True, True
         return "empty", True, False
-    if st == "OK":
-        return "parse", True, True  # OK 但正文不可解析
     return "terminal", False, False
 
 
@@ -561,7 +569,11 @@ class SemanticJudge:
         evidence: Optional[List[Dict[str, Any]]] = None,
         rubric_version: str = "",
         node_id: str = "",
+        deadline_at: Optional[float] = None,
+        judge_stream: bool = False,
     ) -> Verdict:
+        self.last_status = self.last_failure = ""
+        self.last_call_ids = []
         payload, messages, request_estimate, dispatches = self.prepare_request(task, candidate, evidence)
         plan = payload["evidence_plan"]
         if not dispatches:
@@ -581,6 +593,9 @@ class SemanticJudge:
         attempts: List[Dict[str, Any]] = []
         parsed: Optional[JudgeParse] = None
         for attempt in range(1 + self.max_format_retries):
+            if deadline_at is not None and time.monotonic() >= deadline_at:
+                self.last_failure = "hard_deadline_exceeded"
+                break
             attempt_budget = self._budget(messages)
             if attempt_budget["fits"] is False:
                 # 追加修复消息后超窗：先前已发出的调用照样计费，这里不再发、也不再重试
@@ -612,17 +627,24 @@ class SemanticJudge:
                     messages,
                     {},
                     node_id=node_id,
+                    phase=Phase.ANALYSIS,
                     attempt_id=f"judge_{attempt + 1}",
                     template_ref=template_ref,
                     # 重试走真实派发：失败后缓存里可能存着上一次的错误
-                    cache_bypass=(attempt > 0),
+                    cache_bypass=(attempt > 0 or judge_stream),
+                    judge_subject={"eval_run_id": eval_run_id, "task_id": task.task_id,
+                                   "candidate_id": candidate.candidate_id},
+                    deadline_at=deadline_at,
+                    judge_stream=judge_stream,
                 )
             except BudgetExhausted:
                 self.last_status = Status.BUDGET_EXHAUSTED.value
-                self.last_failure = "budget_exhausted"
-                attempts.append({"attempt": attempt + 1, "status": Status.BUDGET_EXHAUSTED.value})
+                self.last_failure = self.last_failure or "budget_exhausted"
+                attempts.append({"attempt": attempt + 1, "status": Status.BUDGET_EXHAUSTED.value,
+                                 "dispatched": False})
                 break
-            self.last_call_ids.append(res.call_id)
+            if res.call_id:
+                self.last_call_ids.append(res.call_id)
             self.last_status = res.status.value
             if not res.ok:
                 problems = [f"call_status:{res.status.value}:{res.error}"]
@@ -631,15 +653,22 @@ class SemanticJudge:
                 parsed = parse_judge_output(res.text)
             # judge-retry@v2：失败先分流，再决定重发什么
             kind, retry, repair = classify_judge_failure(
-                res.status.value, res.error or "", bool((res.text or "").strip()))
+                res.status.value, res.error or "",
+                bool((res.text or "").strip()) and "no_final_content" not in parsed.problems,
+                finish_reason=res.finish_reason)
+            usage = getattr(res, "usage", {}) or {}
+            details = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
             attempts.append(
                 {
                     "attempt": attempt + 1,
                     "call_id": res.call_id,
+                    "dispatched": bool(res.call_id and getattr(res, "served", True)),
                     "status": res.status.value,
                     "error": res.error,
                     "problems": list(parsed.problems),
                     "finish_reason": res.finish_reason,
+                    "output_tokens": usage_field(usage, "completion_tokens", "output_tokens"),
+                    "reasoning_tokens": usage_field(details, "reasoning_tokens") if isinstance(details, dict) else None,
                     "text_chars": len(res.text or ""),
                     "final_content": getattr(parsed, "meta", None) or {"adapter_version": THINK_ADAPTER_VERSION},
                     "evidence_plan": plan,
@@ -657,13 +686,19 @@ class SemanticJudge:
             if not retry:
                 # terminal：鉴权/请求错误、REFUSED、预算/预检未通过、未识别错误
                 # —— 结束本次评价并保留原始原因
-                self.last_failure = res.status.value if not res.ok else "invalid_output"
+                if kind == "reasoning_output_limit":
+                    self.last_failure = kind
+                elif kind == "deadline":
+                    self.last_failure = "hard_deadline_exceeded"
+                else:
+                    self.last_failure = res.status.value if not res.ok else "invalid_output"
                 break
             self.last_failure = res.status.value if not res.ok else "invalid_output"
             if repair:
                 # 仅"有可见正文但不可解析"附加格式修复提示（消息改变，哈希随之不同）
+                visible, _ = final_content(res.text or "")
                 messages = messages + [
-                    {"role": "assistant", "content": (res.text or "")[:2000]},
+                    {"role": "assistant", "content": visible[:2000]},
                     {"role": "user", "content": REPAIR_INSTRUCTION},
                 ]
             # transient / empty / truncated：同消息重发（消息与哈希不变）

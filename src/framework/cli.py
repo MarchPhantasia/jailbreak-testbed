@@ -150,6 +150,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
             max_evidence_chars=args.max_evidence_chars,
             timeout_s=args.judge_timeout,
             deadline_s=args.deadline,
+            judge_stream=args.judge_stream,
             resume_from=args.resume_from or (),
         )
     except (SystemExit, ValueError, FileNotFoundError, RuntimeError) as exc:
@@ -341,6 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--judge-timeout", type=float, default=900.0,
         help="裁判服务超时秒数（默认 900；判据字段变多后 300s 易超时）",
     )
+    sp.add_argument("--judge-stream", action="store_true",
+                    help="独立裁判流式收包（适用于代理空闲超时），逐块接收并在完整结束后判分")
     sp.set_defaults(func=cmd_judge)
 
     sp = sub.add_parser("report", help="导出逐题结果与汇总（不调用模型）")
