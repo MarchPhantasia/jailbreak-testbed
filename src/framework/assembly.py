@@ -822,7 +822,9 @@ def make_assembler(cfg: Dict[str, Any], *, gateway=None, template=None, evidence
         spec = method.get("assembly") or {}
         rows = {r.get("evidence_id"): (r.get("text") or "") for r in (evidence_rows or [])
                 if isinstance(r, dict) and r.get("evidence_id")}
-        return LLMAssembler(
+        from .methods.wheel_release import METHOD, WheelReleaseAssembler
+        assembler_class = WheelReleaseAssembler if method.get("name") == METHOD else LLMAssembler
+        return assembler_class(
             gateway,
             template,
             max_format_retries=int(spec.get("max_format_retries", 1)),

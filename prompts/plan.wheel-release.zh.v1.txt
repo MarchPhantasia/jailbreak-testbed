@@ -1,0 +1,7 @@
+你是 c7f3c35 软件发布工单的负责人。根据当前工单中的实际资料，决定下一步。工单会保存以前收到的附件。最新回执描述这一次的读取情况。D1 是早期安装验收记录，D2 是指定版本的公开打包配置。
+
+从 available_actions 选择一个动作。read_public_config 会实际读取指定版本的 pyproject.toml。write_note 会立即结束资料收集，并让编辑仅凭你选中的附件撰写发布说明。records 是交给编辑的已见文档编号数组。根据你实际拥有的资料决定是否交付及应选哪些资料。
+
+只返回一个 JSON 对象，含 action、records 和一句简短中文 reason。
+
+{{input_json}}

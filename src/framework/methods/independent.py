@@ -29,6 +29,7 @@ from ..requests import RequestLedger
 from ..routing import RoutingPlan, build_gateway, resolve_routing
 from ..search import make_policy, make_scorer
 from ..state import make_backend
+from . import wheel_release
 
 
 @dataclass
@@ -181,6 +182,15 @@ def run_episode(
     if local_gateway is None and not routing.new_registry and not has_prompts:
         local_gateway = build_local_gateway(config, guard, store)
 
+    wheel_study = method_cfg.get("name") == wheel_release.METHOD
+    if wheel_study:
+        if (task.task_id != "wheel" or task.category != "repository_release"
+                or not isinstance(target_gateway, MockGateway)
+                or method_cfg.get("controller", {}).get("type") != "llm"
+                or assembly_cfg.get("type") != "llm" or not has_prompts):
+            raise ValueError("wheel-release@1 requires the wheel documentation task, a fixture and both model stages")
+        target_gateway.scripts = _to_script_items(task.runtime_hints["target_scripts"])
+
     if rubric is None:
         from ..runner import resolve_rubric
 
@@ -290,17 +300,20 @@ def run_episode(
             engine.controller_gateway = controller_gateway
     else:
         controller_gateway = local_gateway
-    controller = build_controller(
-        controller_kind,
-        queries=controller_cfg.get("queries"),
-        elements=elements,
-        gateway=controller_gateway,
-        renderer=backend.render_for_controller,
-        stage_id=controller_stage,
-        template=controller_template,
-        strategy=str(controller_cfg.get("strategy") or "model_query_v1"),
-        strategy_version=str(controller_cfg.get("strategy_version") or ""),
-    )
+    if wheel_study:
+        controller = wheel_release.WheelReleaseController(controller_gateway, controller_template, assembler)
+    else:
+        controller = build_controller(
+            controller_kind,
+            queries=controller_cfg.get("queries"),
+            elements=elements,
+            gateway=controller_gateway,
+            renderer=backend.render_for_controller,
+            stage_id=controller_stage,
+            template=controller_template,
+            strategy=str(controller_cfg.get("strategy") or "model_query_v1"),
+            strategy_version=str(controller_cfg.get("strategy_version") or ""),
+        )
     recovery = RecoveryPolicy(store, **{k: v for k, v in recovery_cfg.items() if k in ("max_network_retries", "max_format_retries", "total_cap", "version")})
 
     # ---- 请求产物索引（派生文件；权威记录是 request_generated 事件） ----
