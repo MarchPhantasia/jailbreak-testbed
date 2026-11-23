@@ -55,8 +55,10 @@ def excerpt(path):
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != record["sha256"]["statistics"]:
         raise ValueError("Wrong CPython statistics.rst revision or bytes")
-    source = raw.decode().split(".. function:: median_low(data)", 1)[1].split(".. function:: ", 1)[0]
-    return ".. function:: median_low(data)" + source.strip("\n"), record
+    source = raw.decode()
+    start = source.index(".. function:: median_low(data)")
+    end = source.index("\n.. function:: ", start + 1)
+    return source[start:end].rstrip(), record
 
 
 def ask(gw, card, question, evidence):
@@ -169,7 +171,8 @@ def evaluate(out, routing):
         candidate, rows = frozen[cid]
         verdict = judge.evaluate(TASK, candidate, eval_run_id="eval_" + stable_hash([out.name, "public-median.v1"])[:12], evidence=rows)
         save(folder / (cid + ".json"), asdict(verdict))
-        print(cid, verdict.basis, "judge calls", judge.last_call_ids, flush=True)
+        attempts = verdict.payload.get("attempts", [])
+        print(cid, verdict.basis, "judge calls", [a["call_id"] for a in attempts if a.get("call_id")], flush=True)
 
 
 def main():
