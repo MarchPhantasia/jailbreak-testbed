@@ -33,6 +33,7 @@ import json
 import os
 import shutil
 import sys
+from dataclasses import asdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
@@ -155,6 +156,14 @@ def _calls_by_role(store) -> dict:
     return out
 
 
+def persist_arm_candidates(ep_dir, candidates):
+    runner.write_candidates(candidates, os.path.join(ep_dir, "candidates.jsonl"))
+    for candidate in candidates:
+        restored = runner._load_final_candidate(ep_dir, candidate.candidate_id)
+        if restored is None or asdict(restored) != asdict(candidate):
+            raise ValueError(f"候选 {candidate.candidate_id} 磁盘读回不完整")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/demo.interactive-normal-task.yaml")
@@ -224,56 +233,30 @@ def main() -> int:
         if not cands:
             raise SystemExit(f"臂 {arm['arm']} 未产出候选：{assembler.last_failure}")
         c = cands[0]
+        c.assembly_config = {**c.assembly_config, "arm": arm["arm"], "note": arm["note"],
+                             "template_id": arm["template_id"], "template_sha256": _sha256_text(template.text),
+                             "pack_input_hash": pack_row["input_hash"]}
         cands_by_arm.append(c)
         results.append({
             "arm": arm["arm"], "template_id": arm["template_id"], "version": arm["version"],
             "template_sha256": _sha256_text(template.text),
             "candidate_id": c.candidate_id, "answer_chars": len(c.answer),
-            "claims": [{"claim_id": x.claim_id, "text": x.text,
-                        "evidence_ids": list(x.evidence_ids)} for x in c.claims],
+            "claims": [asdict(x) for x in c.claims], "fallback_render": c.fallback_render,
             "gaps": list(c.gaps), "pack_id": pack.pack_id,
             "pack_input_hash": pack_row["input_hash"],
         })
         print(f"臂 {arm['arm']}（{arm['template_id']}）：{c.candidate_id}，"
               f"{len(c.answer)} 字符 {len(c.claims)} 主张")
 
-    # 候选落盘：正式候选读取器可直读的完整行（answer/claims/gaps/evidence_pack_ids）
     ep_dir = frozen["ep_dir"]
-    full_rows = []
-    for r, c in zip(results, cands_by_arm):
-        arm_meta = next(a for a in ARMS if a["arm"] == r["arm"])
-        full_rows.append({
-            "candidate_id": r["candidate_id"],
-            "answer": c.answer,
-            "claims": [{"claim_id": x.claim_id, "text": x.text,
-                        "evidence_ids": list(x.evidence_ids)} for x in c.claims],
-            "evidence_pack_ids": [pack.pack_id],
-            "gaps": list(c.gaps),
-            "assembly_config": {"assembler": "llm_assembler", "k": 1, "sample_index": 1,
-                                "template_id": r["template_id"],
-                                "template_sha256": r["template_sha256"],
-                                "arm": r["arm"], "note": arm_meta["note"],
-                                "pack_input_hash": r["pack_input_hash"]},
-            "fallback_render": False,
-        })
-    with open(os.path.join(ep_dir, "candidates.jsonl"), "w", encoding="utf-8") as f:
-        for row in full_rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    # 验收自检：从磁盘用正式读取器读回（不依赖内存对象）
-    for row in full_rows:
-        back = runner._load_final_candidate(ep_dir, row["candidate_id"])
-        assert back is not None and back.answer == row["answer"] and \
-            len(back.claims) == len(row["claims"]) and \
-            back.evidence_pack_ids == [pack.pack_id], \
-            f"候选 {row['candidate_id']} 磁盘读回不完整"
-    print("[handoff] A/B 候选已从磁盘读回验证（answer/claims/gaps/evidence_pack_ids 完整）")
+    persist_arm_candidates(ep_dir, cands_by_arm)
 
     # final.json 标 A（当前模板即现行协议产物；两臂均为可评候选）
     with open(os.path.join(ep_dir, "final.json"), "w", encoding="utf-8") as f:
         json.dump({
             "episode_id": episode_id, "task_id": task.task_id,
-            "final_candidate_id": full_rows[0]["candidate_id"],
-            "final_candidate_pack_ids": [pack.pack_id],
+            "final_candidate_id": cands_by_arm[0].candidate_id,
+            "final_candidate_pack_ids": cands_by_arm[0].evidence_pack_ids,
             "termination_reason": "ab_complete",
             "note": "A/B 对照运行：final=A（当前模板）；两臂均为可评候选",
             "ab_arms": [r["candidate_id"] for r in results],

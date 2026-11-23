@@ -16,7 +16,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -814,8 +814,13 @@ def _observed_manifest(plan: Dict[str, Any], preflight: Dict[str, Any]) -> Dict[
 
 
 def _write_candidates(art: EpisodeArtifacts, path: str) -> None:
+    write_candidates(art.candidates(), path)
+
+
+def write_candidates(candidates: Iterable[AnswerCandidate], path: str) -> None:
+    """Persist the complete candidate contract for runs and same-pack studies."""
     with open(path, "w", encoding="utf-8") as f:
-        for c in art.candidates():
+        for c in candidates:
             f.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
 
 
