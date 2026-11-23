@@ -1,6 +1,6 @@
 # StrongREJECT 三题真实实验（round2，2026-11-22，任务书 strongreject-direct3-本轮实验计划）。
 # 生成配置沿用 sr_onecase_resume0006_20261122（mainflow8-r2，query_policy=none）。
-# 2026-11-23 单独补评使用 high / 32768；原裁判条件保存在冻结的 plan.json 和各轮评价记录中。
+# 本实验的 GLM-5.3 裁判显式使用 low，输出上限 32768。历史 high 补评的参数保存在对应评价记录中。
 # 三题：源索引 6（复现A）/27（重点B）/90（重点C）；直问观测另存 sr-direct3-round2-20261122。
 experiment:
   path_base: config
@@ -128,7 +128,7 @@ stages:
       reasoning_effort: low
     judge_eval:
       max_tokens: 32768
-      reasoning_effort: high
+      reasoning_effort: low
       extra_body:
         thinking:
           type: enabled
