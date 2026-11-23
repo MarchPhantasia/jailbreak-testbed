@@ -1,6 +1,8 @@
 """Episode-level accounting for a completed evaluation."""
 from decimal import Decimal, ROUND_HALF_UP
 
+from .archive_attribution import reconstruct_episode_attribution
+
 
 def _percent(numerator: int, denominator: int) -> float | None:
     if denominator == 0:
@@ -60,55 +62,6 @@ def _stable_hash_messages(messages) -> str:
                         for m in (messages or [])])
 
 
-def reconstruct_episode_attribution(events) -> dict:
-    """从事件流重建 Target 交互的分支归属（新旧档案通用）。
-
-    新档案：node_created.payload 带 call_id/response_event_id（直接绑定）；
-    旧档案：按事件序重建——每次 target 调用的观察子节点 =
-    该响应事件之后首条 parent=发送节点 的 node_created。
-    """
-    reqs = [(i, e) for i, e in enumerate(events)
-            if e.get("type") == "request_sent" and (e.get("role") or "") == "target"]
-    resp_idx = {e.get("call_id"): i for i, e in enumerate(events)
-                if e.get("type") == "response_received"}
-    nodes = [(i, e) for i, e in enumerate(events) if e.get("type") == "node_created"]
-    child2parent = {}
-    for _, e in nodes:
-        child2parent[e.get("node_id") or ""] = (e.get("payload") or {}).get("parent")
-    call2child = {}
-    for _, e in nodes:
-        cid = (e.get("payload") or {}).get("call_id")
-        if cid:
-            call2child[cid] = e.get("node_id") or ""
-    rounds = []
-    for order, (i, r) in enumerate(reqs, 1):
-        call = r.get("call_id") or ""
-        node = r.get("node_id") or ""
-        child = call2child.get(call)
-        rebuilt = False
-        if not child:
-            ri = resp_idx.get(call, -1)
-            for j, e in nodes:
-                if j > ri and (e.get("payload") or {}).get("parent") == node:
-                    child = e.get("node_id") or ""
-                    break
-            rebuilt = True
-        rounds.append({"order": order, "call_id": call, "send_node": node,
-                       "obs_child": child, "attribution_rebuilt": rebuilt})
-    def ancestors(n):
-        seen, chain = set(), []
-        while n and n not in seen:
-            seen.add(n)
-            chain.append(n)
-            n = child2parent.get(n) or ""
-        return set(chain)
-    for rd in rounds:
-        anc = ancestors(rd["send_node"])
-        rd["inherits_observations"] = [
-            x["order"] for x in rounds
-            if x["order"] != rd["order"] and x["obs_child"] and x["obs_child"] in anc
-        ]
-    return {"rounds": rounds, "any_rebuilt": any(r["attribution_rebuilt"] for r in rounds)}
 
 
 def _classify_send(status: str, text: str, error: str = "") -> str:
@@ -202,7 +155,7 @@ def build_direct3_audit(run_root: str, *, judge_root: str = "",
     acct = judge_send_accounting(judge_root, eval_run_id) if judge_root else {"per_task": {}, "eval_rounds": []}
     verdicts = {}
     vpath = _os.path.join(judge_root, "verdicts.jsonl")
-    if _os.path.exists(vpath):
+    if judge_root and _os.path.exists(vpath):
         for l in open(vpath, encoding="utf-8"):
             v = _json.loads(l)
             verdicts[v.get("task_id")] = v
@@ -225,17 +178,11 @@ def build_direct3_audit(run_root: str, *, judge_root: str = "",
         note_by_call = {n.get("call_id"): n for n in task_notes}
         # 逐轮：网关状态 + 运行时标签 + 离线判读
         rounds = []
-        resp_by_call = {e.get("call_id"): e for e in events if e.get("type") == "response_received"}
         for rd in attr["rounds"]:
-            resp = resp_by_call.get(rd["call_id"]) or {}
-            pl = resp.get("payload") or {}
             note = note_by_call.get(rd["call_id"])
             rounds.append({
                 **rd,
-                "gateway_status": pl.get("status") or "no_response_event",
-                "reply_chars": len(pl.get("text") or ""),
-                "finish_reason": pl.get("finish_reason") or "",
-                "runtime_label": note.get("runtime_label") if note else None,
+                "annotated_runtime_label": note.get("runtime_label") if note else None,
                 "offline_reading": note.get("offline_reading") if note else None,
                 "reading_source": note.get("source") if note else None,
             })
@@ -284,8 +231,10 @@ def build_direct3_audit(run_root: str, *, judge_root: str = "",
             "answer_chars": len(fc.get("answer", "") or ""),
             "answer_gaps": fc.get("gaps", []),
             "rounds": rounds,
+            "target_refusal_events": sum(e.get("type") == "target_refusal" for e in events),
             "recoveries": recoveries,
             "attribution_rebuilt": attr["any_rebuilt"],
+            "attribution_unresolved": attr["any_unresolved"],
             "direct_ask": {
                 "label": (dr.get("behavior") or {}).get("label"),
                 "benign_alternative": (dr.get("behavior") or {}).get("benign_alternative"),
@@ -316,10 +265,12 @@ def render_audit_markdown(audit: dict) -> str:
     lines = ["# StrongREJECT 三题对账（直问 vs 完整流程 vs 独立 Judge）", ""]
     lines.append(f"- 运行：`{audit['run_root']}`；主评 `{audit['main_eval_id']}`；"
                  f"评价轮次 {len(audit['eval_rounds'])}（{', '.join(audit['eval_rounds'][:6])}）")
-    lines.append(f"- Target 调用合计（完整流程）：{audit['target_calls_total']} 次；"
-                 "直问另计。分支归属"
-                 + ("由旧档案按事件序重建（无新关联字段）。" if any(
-                     t["attribution_rebuilt"] for t in audit["tasks"]) else "来自事件直接绑定。"))
+    bindings = [r.get("observation_binding", "legacy_report") for t in audit["tasks"] for r in t["rounds"]]
+    lines.append(f"- Target 调用合计 {audit['target_calls_total']} 次，直问另计。"
+                 f"观察归属共直接关联 {bindings.count('explicit')} 次，"
+                 f"按事件序重建 {bindings.count('chronology')} 次，待确认 {bindings.count('unresolved')} 次。"
+                 + (f"旧报告另有 {bindings.count('legacy_report')} 次尚未按现口径核对。"
+                    if "legacy_report" in bindings else ""))
     lines.append("")
     for t in audit["tasks"]:
         lines.append(f"## 源索引 {t['source_row']}（{t['task_id']} / {t['episode_id']}）")
@@ -353,11 +304,22 @@ def render_audit_markdown(audit: dict) -> str:
                          f"（正当替代：{'是' if da.get('benign_alternative') else '否'}，"
                          f"{da.get('reply_chars')} 字符）")
         lines.append("")
-        lines.append("| 轮 | 网关 | 字符 | 运行时标签 | 离线判读 | 继承观察 |")
-        lines.append("|---|---|---|---|---|---|")
+        if "target_refusal_events" in t:
+            lines.append(f"运行时共记录 {t['target_refusal_events']} 条 Target 拒答事件。"
+                         "下表的运行时标签来自观察节点，离线判读来自批注。")
+        else:
+            lines.append("旧报告未记录 Target 拒答事件总数及标签出处。")
+        lines.append("")
+        lines.append("| 轮 | 网关 | 字符 | 观察归属 | 运行时标签 | 离线判读 | 继承观察 |")
+        lines.append("|---|---|---|---|---|---|---|")
         for r in t["rounds"]:
+            binding = {"explicit": "直接关联", "chronology": "按事件序重建",
+                       "unresolved": "待确认"}.get(r.get("observation_binding"), "旧表待核")
+            label = r.get("runtime_label") or "—"
+            if label != "—" and "observation_binding" not in r:
+                label += "（旧表，出处待核）"
             lines.append(f"| {r['order']} | {r['gateway_status']} | {r['reply_chars']} | "
-                         f"{r.get('runtime_label') or '—'} | "
+                         f"{binding} | {label} | "
                          f"{r.get('offline_reading') or ('未复核' if not r.get('reading_source') else r['reading_source'])} | "
                          f"{('第' + ','.join(str(x) for x in r['inherits_observations']) + '次') if r['inherits_observations'] else '—'} |")
         recs = [r for r in t["recoveries"] if r["action"] not in ("fallback_continue",)]
