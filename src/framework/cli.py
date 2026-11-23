@@ -335,15 +335,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="既有 verdicts.jsonl 或评价输出目录（可重复），复用同输入、同协议的可用判定",
     )
     sp.add_argument(
-        "--deadline", type=float, default=900.0,
-        help="每份候选的硬性总时限（秒；超时记 U 并继续下一份）",
+        "--deadline", type=float, default=0.0,
+        help="可选的每份候选总时限，包含重试（秒；默认 0，无总时限）",
     )
     sp.add_argument(
-        "--judge-timeout", type=float, default=900.0,
-        help="裁判服务超时秒数（默认 900；判据字段变多后 300s 易超时）",
+        "--judge-timeout", type=float, default=None,
+        help="等待裁判的秒数；流式按配置的空闲间隔（默认 1800），普通请求沿用 CLI 的 900 秒默认值",
     )
-    sp.add_argument("--judge-stream", action="store_true",
-                    help="独立裁判流式收包（适用于代理空闲超时），逐块接收并在完整结束后判分")
+    sp.add_argument("--judge-stream", action=argparse.BooleanOptionalAction, default=None,
+                    help="覆盖配置的流式收包设置；收到推理或正文时延长等待，完整结束后判分")
     sp.set_defaults(func=cmd_judge)
 
     sp = sub.add_parser("report", help="导出逐题结果与汇总（不调用模型）")

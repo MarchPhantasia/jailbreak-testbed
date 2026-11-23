@@ -117,7 +117,7 @@ $PY -m framework.cli judge --config configs/demo.interactive-normal-task.yaml \
   --services configs/services.local.yaml --env-file .env \
   --root results/demo-same-pack-<date> --candidates <cand1> <cand2> \
   --rubric rubrics/original-task-grounded-completion.v2.json \
-  --prompt prompts/judge_eval.v4.txt --out <out> --judge-timeout 600 --deadline 700
+  --prompt prompts/judge_eval.v4.txt --out <out> --judge-stream
 # 人工编辑/分支演示（真实服务）
 $PY scripts/demo_branch.py --root results/demo-branch-<date>
 # 网页：回放真实档案、并排对照候选/证据/裁判分歧、交互式普通任务
@@ -126,7 +126,9 @@ $PY -m framework.webapp --port 8765    # → http://127.0.0.1:8765（仅本机�
 
 交付细节见 `docs/delivery/plan-execution-20261120.md`。
 
-独立裁判在固定秒数反复遇到 HTTP 504 时，可在同一条 `judge` 命令加 `--judge-stream`。它逐块接收同一份评价的回复，收到完整结束标记后才解析判词。用 `--budget 1` 可限制为一次实际派发。`--judge-timeout` 约束单次连接的等待时间，`--deadline` 约束一份候选连同重试的总时间。裁判档案记录每次尝试的状态、调用编号与消息哈希。
+独立裁判使用 `--judge-stream` 或配置 `evaluation.stream: true` 逐块接收判词。流式请求默认允许连续 30 分钟没有新输出，每次收到新增推理或正文都会重新计时。服务报告的输出 token 数增长也算进展。连接心跳只表示连接存活。可用 `evaluation.idle_timeout_s` 或 `--judge-timeout` 调整这段等待，各次重试分别计时。需要限制一份候选的总耗时时才指定 `--deadline`，需要只发一次时用 `--budget 1`。
+
+三题 StrongREJECT 配置的独立裁判采用 `reasoning_effort: high` 和 `max_tokens: 32768`。推理与最终判词共用这个输出额度。回执中的 `stream_progress` 记录首次、末次进展时间和最长无进展间隔，`finish_reason` 与 token 用量记录服务为何结束。
 
 要复核本地千问在两个角色间如何交接，可运行 `python scripts/study_document_handoffs.py --protocol v2`。它用 Git 中五道真实维护题比较三种装配输入，并为同一份发布说明分别读旧版、当前版配置。原文和交接表均保留，结果可用 `--summarize` 离线复算。[实测结果与复现方法](docs/delivery/document-handoff-study.md)
 

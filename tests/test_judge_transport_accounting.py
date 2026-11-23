@@ -3,6 +3,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -227,3 +228,164 @@ def test_judge_format_retry_only_uses_visible_output(visible):
                                   {"role": "user", "content": REPAIR_INSTRUCTION}]
     else:
         assert second == first
+
+
+class ScheduledStream:
+    headers = EventStream.headers
+
+    def __init__(self, clock, frames):
+        self.clock, self.frames = clock, frames
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def __iter__(self):
+        for at, frame in self.frames:
+            self.clock[0] = at
+            if frame is None:
+                yield b": heartbeat\n"
+            else:
+                data = frame if isinstance(frame, str) else json.dumps(frame)
+                yield ("data: " + data + "\n").encode()
+            yield b"\n"
+
+
+def _delta(**fields):
+    return {"choices": [{"index": 0, "delta": fields}]}
+
+
+def test_cli_stream_keeps_waiting_for_reasoning_and_content(run_judge, monkeypatch):
+    from framework import judge_transport
+    from framework.cli import build_parser
+
+    run, cfg = run_judge
+    args = build_parser().parse_args(["judge", "--config", "unused", "--root", ".", "--out", "unused"])
+    assert args.deadline == 0 and args.judge_stream is None
+    cfg["evaluation"].update(stream=True, idle_timeout_s=10)
+    clock = [0.0]
+    monkeypatch.setattr(judge_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    calls = []
+    def serve(request, timeout):
+        calls.append((json.loads(request.data)["stream"], timeout))
+        return ScheduledStream(clock, [(6, _delta(reasoning_content="一")), (14, _delta(reasoning="二")),
+            (22, _delta(content=json.dumps(SCORED)[:12])), (30, _delta(content=json.dumps(SCORED)[12:])),
+            (38, {"choices": [{"delta": {}, "finish_reason": "stop"}]}), (39, "[DONE]")])
+    monkeypatch.setattr("urllib.request.urlopen", serve)
+    out = run(judge_stream=args.judge_stream, deadline_s=args.deadline, timeout_s=args.judge_timeout)
+    assert calls == [(True, 10.0)] and out["rows"][0]["full_success"]
+    stats = out["rows"][0]["judge_attempts"][0]["stream_progress"]
+    assert (stats["first_progress_ms"], stats["last_progress_ms"], stats["longest_gap_ms"]) == (6000, 38000, 8000)
+
+
+def test_heartbeat_only_times_out_and_retry_has_its_own_idle_window(run_judge, monkeypatch):
+    from framework import judge_transport
+
+    run, cfg = run_judge
+    cfg["evaluation"].update(stream=True, idle_timeout_s=10, max_format_retries=1)
+    clock = [0.0]
+    monkeypatch.setattr(judge_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    schedules = iter([
+        [(2, _delta(reasoning="开始")), (8, None), (11, _delta(role="assistant", content="")), (13, None)],
+        [(22, _delta(reasoning="重试")), (31, _delta(content=json.dumps(SCORED))),
+         (32, {"choices": [{"delta": {}, "finish_reason": "stop"}]}), (33, "[DONE]")],
+    ])
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: ScheduledStream(clock, next(schedules)))
+    out = run(budget=2)
+    first, second = out["rows"][0]["judge_attempts"]
+    assert (first["error"], first["failure_kind"]) == ("judge_idle_timeout", "idle_timeout")
+    assert second["status"] == "OK" and out["rows"][0]["full_success"]
+    assert first["messages_hash"] == second["messages_hash"]
+
+
+def test_silent_stream_returns_without_waiting_for_late_transport(run_judge, monkeypatch):
+    run, _ = run_judge
+    release = threading.Event()
+    def stalled(request, timeout):
+        release.wait(3)
+        return stream_response()
+    monkeypatch.setattr("urllib.request.urlopen", stalled)
+    try:
+        out = run(budget=1, judge_stream=True, timeout_s=0.1)
+        assert out["rows"][0]["basis"] == "unscored:judge_idle_timeout"
+        journal = read_events(out)
+        assert sum(e["type"] == "budget_settled" for e in journal) == 1
+    finally:
+        release.set()
+    assert read_events(out) == journal
+
+
+def test_usage_progress_requires_more_output_tokens(monkeypatch):
+    from framework import judge_transport
+
+    clock = [0.0]
+    monkeypatch.setattr(judge_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    wait = judge_transport.JudgeWait(idle_s=10)
+    clock[0] = 4
+    assert wait.socket_timeout(10) == 10
+    frames = [(5, {"usage": {"completion_tokens": 1}}), (14, {"usage": {"completion_tokens": 2}}),
+              (22, {"usage": {"completion_tokens": 2}}), (25, None)]
+    with pytest.raises(judge_transport.JudgeTimeout, match="judge_idle_timeout"):
+        judge_transport.read_judge_stream(ScheduledStream(clock, frames), wait)
+    assert wait.summary()["last_progress_ms"] == 14000
+
+
+def test_stream_request_accepts_progressive_json_fallback(run_judge, monkeypatch):
+    from framework import judge_transport
+
+    run, _ = run_judge
+    clock = [0.0]
+    monkeypatch.setattr(judge_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    body = json.dumps({"choices": [{"message": {"content": json.dumps(SCORED)}, "finish_reason": "stop"}]}).encode()
+    class BufferedReply(io.BytesIO):
+        headers = {"Content-Type": "application/json"}
+
+        def read1(self, size):
+            clock[0] += 7
+            return super().read1(min(size, 75))
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: BufferedReply(body))
+    out = run(judge_stream=True, timeout_s=10)
+    received, = [e["payload"] for e in read_events(out) if e["type"] == "response_received"]
+    assert clock[0] > 10 and out["rows"][0]["full_success"]
+    assert received["raw"]["wire_format"] == "json"
+
+
+def test_explicit_overall_limit_still_applies_to_active_stream(monkeypatch):
+    from framework import judge_transport
+
+    clock = [0.0]
+    monkeypatch.setattr(judge_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    wait = judge_transport.JudgeWait(idle_s=10, deadline_at=18)
+    stream = ScheduledStream(clock, [(5, _delta(reasoning="一")), (12, _delta(reasoning="二")),
+                                     (19, _delta(content="三"))])
+    with pytest.raises(judge_transport.JudgeTimeout, match="hard_deadline_exceeded"):
+        judge_transport.read_judge_stream(stream, wait)
+    assert wait.summary()["progress_events"] == 2
+
+
+def test_batch_evaluation_uses_its_frozen_stream_settings(tmp_path, monkeypatch):
+    from framework import runner
+    from framework.evaluation import JUDGE_RETRY_RULE_VERSION
+    from test_execution1_r2 import run_once
+
+    cfg = routed_cfg(tmp_path)
+    cfg["evaluation"].update(stream=True, idle_timeout_s=73)
+    monkeypatch.setenv("JBT_UNIT_KEY", "test")
+    monkeypatch.setattr("urllib.request.urlopen", FakeService())
+    root, _, plan, _ = run_once(cfg)
+    assert plan["evaluation_spec"]["idle_timeout_s"] == 73
+    cfg["evaluation"].update(stream=False, idle_timeout_s=1)
+    calls = []
+    def serve(request, timeout):
+        calls.append((json.loads(request.data)["stream"], timeout))
+        return stream_response()
+    monkeypatch.setattr("urllib.request.urlopen", serve)
+    out = runner.evaluate_experiment(cfg, root=str(root))
+    assert len(calls) == 1 and calls[0][0] and 72 < calls[0][1] <= 73
+    assert out["S"] == 1
+    events = [json.loads(line) for line in (Path(out["dir"]) / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    start = next(e["payload"] for e in events if e["type"] == "evaluation_started")
+    assert start["judge_retry_rule"] == JUDGE_RETRY_RULE_VERSION and start["idle_timeout_s"] == 73

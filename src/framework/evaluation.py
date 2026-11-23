@@ -161,6 +161,8 @@ def classify_judge_failure(status: str, error: str, has_text: bool, *, finish_re
     err = str(error or "")
     if err == "hard_deadline_exceeded":
         return "deadline", False, False
+    if st == "TIMEOUT" and err == "judge_idle_timeout":
+        return "idle_timeout", True, False
     if st == "INVALID_OUTPUT" and err == "reasoning_only" and finish_reason == "length" and not has_text:
         return "reasoning_output_limit", False, False
     if st == "TIMEOUT":
@@ -678,6 +680,8 @@ class SemanticJudge:
                     "n_messages": len(messages),
                     "failure_kind": kind if not parsed.ok else "",
                     "retry_rule": JUDGE_RETRY_RULE_VERSION,
+                    **({"stream_progress": res.raw["stream_progress"]}
+                       if "stream_progress" in (getattr(res, "raw", None) or {}) else {}),
                 }
             )
             if parsed.ok:
@@ -693,7 +697,8 @@ class SemanticJudge:
                 else:
                     self.last_failure = res.status.value if not res.ok else "invalid_output"
                 break
-            self.last_failure = res.status.value if not res.ok else "invalid_output"
+            self.last_failure = (res.error if kind == "idle_timeout" else
+                                 res.status.value if not res.ok else "invalid_output")
             if repair:
                 # 仅"有可见正文但不可解析"附加格式修复提示（消息改变，哈希随之不同）
                 visible, _ = final_content(res.text or "")

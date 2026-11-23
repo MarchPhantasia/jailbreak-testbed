@@ -37,8 +37,9 @@ from .assembly import (
     resolve_lexical_policy,
 )
 from .datasets import load_split, write_json
-from .evaluation import SemanticJudge
+from .evaluation import JUDGE_RETRY_RULE_VERSION, SemanticJudge
 from .judge import EpisodeEvaluation, JudgeEval, Rubric, compute_metrics, decide_outcome
+from .judge_transport import JUDGE_STREAM_WAIT_POLICY
 from .methods.independent import EpisodeArtifacts, run_episode
 from .prompts import PromptError, PromptRegistry
 from .routing import PROFILE_OPENAI, RoutingError, RoutingPlan, build_gateway, probe_params, resolve_routing, validate_budget, validate_evaluation
@@ -927,13 +928,14 @@ def _build_eval_judge(
     # W01：冻结的 context_window 必须同时送到**实际发送网关**，否则只有 SemanticJudge
     # 知道窗口，真正的发送前拦截路径缺失。窗口未知(None)保持未知语义，不伪造默认值。
     context_window = service.get("context_window")
+    timeout_s = spec["idle_timeout_s"] if spec.get("stream") else service.get("timeout_s", 60)
     gateway = OpenAICompatGateway(
         guard,
         store,
         base_url=str(service["base_url"]),
         model=str(service["model"]),
         api_key_env=str(service.get("api_key_env") or ""),
-        timeout=float(service.get("timeout_s", 60)),
+        timeout=float(timeout_s),
         service_id=str(service.get("service_id") or ""),
         profile=profile,
         default_params=raw_params,
@@ -958,7 +960,9 @@ def _build_eval_judge(
         phase=Phase.ANALYSIS,
         role="judge_eval",
         payload={
-            "judge_retry_rule": "judge-retry@v2",
+            "judge_retry_rule": JUDGE_RETRY_RULE_VERSION,
+            **({"stream_wait_policy": JUDGE_STREAM_WAIT_POLICY, "idle_timeout_s": timeout_s}
+               if spec.get("stream") else {}),
             "eval_run_id": eval_run_id,
             "stage_id": stage_id,
             "service_id": service.get("service_id", ""),
@@ -1441,6 +1445,7 @@ def evaluate_experiment(
                                     evidence=evidence,
                                     rubric_version=rubric_version,
                                     node_id=entry.get("episode_id", ""),
+                                    judge_stream=bool(spec.get("stream", False)),
                                 )
                             scope_info["input"] = (verdict.payload or {}).get("evidence_plan")
                             assert eval_store is not None

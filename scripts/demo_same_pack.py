@@ -15,7 +15,7 @@
     --candidates <cand1> <cand2> \
     --rubric rubrics/original-task-grounded-completion.v2.json \
     --prompt prompts/judge_eval.v4.txt \
-    --out results/demo-same-pack-20261120-judge --judge-timeout 900 --deadline 900
+    --out results/demo-same-pack-20261120-judge --judge-stream
 """
 
 from __future__ import annotations

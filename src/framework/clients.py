@@ -21,7 +21,7 @@ from .budget import BudgetGuard, BudgetExhausted
 from .context import request_budget
 from .contracts import Phase, Role, Status, new_id
 from .events import EventStore
-from .judge_transport import call_with_deadline, read_completion_json, read_judge_stream
+from .judge_transport import DEFAULT_JUDGE_IDLE_S, JudgeTimeout, JudgeWait, read_completion_json, read_judge_stream
 
 #: 旧配置（无 parameter_profile）仍走这个五字段白名单，保持历史序列化不变。
 LEGACY_PARAM_KEYS = ("temperature", "top_p", "max_tokens", "stop", "seed")
@@ -301,27 +301,20 @@ class ModelGateway:
         return res
 
     def _timed_judge_call(self, role, stage, messages, params, deadline_at, stream):
-        if deadline_at is None:
-            return self._judge_exchange(role, stage, messages, params, None, stream)
-        remaining = deadline_at - time.monotonic()
-        if remaining <= 0:
-            return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
-
-        def exchange():
-            if time.monotonic() >= deadline_at:
-                return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
-            return self._judge_exchange(role, stage, messages, params, deadline_at, stream)
-
-        # Only transport I/O can outlive the deadline. The caller alone settles
-        # the ticket and owns retries, even if the provider sends a late response.
-        result, failure = call_with_deadline(exchange, remaining)
-        if failure == "hard_deadline_exceeded" or time.monotonic() >= deadline_at:
-            return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
-        if failure:
-            return CallResult("", Status.TRANSPORT_ERROR, error=failure)
+        idle_s = getattr(self, "timeout", DEFAULT_JUDGE_IDLE_S) if stream else None
+        wait = JudgeWait(idle_s=idle_s, deadline_at=deadline_at)
+        # The worker owns only I/O. The caller alone records a receipt, settles
+        # the ticket and decides whether to dispatch another attempt.
+        result, failure = wait.run(lambda: self._judge_exchange(role, stage, messages, params, wait, stream))
+        if failure in ("judge_idle_timeout", "hard_deadline_exceeded"):
+            result = CallResult("", Status.TIMEOUT, error=failure)
+        elif failure:
+            result = CallResult("", Status.TRANSPORT_ERROR, error=failure)
+        if stream:
+            result.raw["stream_progress"] = wait.summary()
         return result
 
-    def _judge_exchange(self, role, stage, messages, params, deadline_at, stream):
+    def _judge_exchange(self, role, stage, messages, params, wait, stream):
         if stream:
             raise ValueError("Judge streaming requires an OpenAI-compatible service")
         return self._invoke(role, stage, messages, params)
@@ -430,10 +423,10 @@ class OpenAICompatGateway(ModelGateway):
         # params 已由 profile 序列化器展开并校验过；这里不再做静默丢弃
         return self._http_completion(messages, params)
 
-    def _judge_exchange(self, role, stage, messages, params, deadline_at, stream):
-        return self._http_completion(messages, params, deadline_at=deadline_at, stream=stream)
+    def _judge_exchange(self, role, stage, messages, params, wait, stream):
+        return self._http_completion(messages, params, wait=wait, stream=stream)
 
-    def _http_completion(self, messages, params, *, deadline_at=None, stream=False):
+    def _http_completion(self, messages, params, *, wait=None, stream=False):
         body: Dict[str, Any] = {"model": self.model_name, "messages": messages, "stream": stream}
         if stream:
             body["stream_options"] = {"include_usage": True}
@@ -447,19 +440,17 @@ class OpenAICompatGateway(ModelGateway):
             headers=self._headers(),
             method="POST",
         )
-        timeout = self.timeout
-        if deadline_at is not None:
-            timeout = min(timeout, deadline_at - time.monotonic())
-            if timeout <= 0:
-                return CallResult("", Status.TIMEOUT, error="hard_deadline_exceeded")
         try:
+            timeout = wait.socket_timeout(self.timeout) if wait is not None else self.timeout
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if stream and "application/json" not in resp.headers.get("Content-Type", "").lower():
-                    data = read_judge_stream(resp, deadline_at)
+                    data = read_judge_stream(resp, wait)
                     wire_format = "sse"
                 else:
-                    data = read_completion_json(resp, deadline_at)
+                    data = read_completion_json(resp, wait)
                     wire_format = "json"
+        except JudgeTimeout as exc:
+            return CallResult("", Status.TIMEOUT, error=str(exc))
         except urllib.error.HTTPError as exc:
             exc.close()
             return CallResult(call_id="", status=Status.TRANSPORT_ERROR, error=f"HTTP {exc.code}")

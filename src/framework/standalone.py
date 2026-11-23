@@ -38,9 +38,9 @@ from .budget import BudgetGuard
 from .evaluation import (EVIDENCE_POLICY, JUDGE_RETRY_RULE_VERSION, SemanticJudge,
                          partial_success_from_rule, success_from_rule)
 from .events import EventStore
-from .judge_transport import call_with_deadline  # compatibility for callers of the former helper
+from .judge_transport import JUDGE_STREAM_WAIT_POLICY, call_with_deadline
 from .prompts import PromptTemplate
-from .routing import build_gateway, resolve_routing
+from .routing import build_gateway, judge_stream_settings, resolve_routing
 
 DEFAULT_RUBRIC = {
     "id": "original-task-grounded-completion",
@@ -251,10 +251,10 @@ def build_judge(
         text=open(prompt_path, encoding="utf-8").read(),
         source_path=prompt_path,
     )
-    if timeout_s:
-        cfg = _with_service_override(cfg, "judge_eval", {"timeout_s": float(timeout_s)})
     routing = runner.build_run_context(cfg).routing
     gateway = build_gateway(routing, "judge_eval", guard, store, template_ref=template.ref())
+    if timeout_s:
+        gateway.timeout = float(timeout_s)  # private Judge connection, including shared-service configurations
     judge = SemanticJudge(
         gateway,
         template,
@@ -271,26 +271,6 @@ def build_judge(
         max_output_tokens=int(routing.resolved_params("judge_eval").get("max_tokens") or 0),
     )
     return judge, store, guard
-
-
-def _with_service_override(cfg: Dict[str, Any], role: str, patch: Dict[str, Any]) -> Dict[str, Any]:
-    """返回 cfg 的浅拷贝，并把某角色所用服务（按 service ID）的指定字段替换。
-
-    只影响本次进程内的客户端构造，不写回任何配置文件；provenance 会记录超时值。
-    """
-    import copy
-
-    new_cfg = copy.deepcopy(cfg)
-    try:
-        routing = runner.build_run_context(new_cfg).routing
-        route = routing.components.get(role)
-        service_id = routing.service(route).service_id if route is not None else ""
-    except Exception:  # noqa: BLE001 - 解析失败时退回按角色 id 查找服务
-        service_id = role
-    services = new_cfg.get("services") or {}
-    if service_id and service_id in services:
-        services[service_id].update(patch)
-    return new_cfg
 
 
 def _load_done_keys(paths: Sequence[str], *, protocol: Dict[str, Any]) -> set:
@@ -404,7 +384,7 @@ def verdict_row(art: Artifact, verdict: Verdict, rubric: Dict[str, Any],
         "judge_attempts": [
             {k: a[k] for k in ("attempt", "call_id", "dispatched", "status", "error", "messages_hash",
                                "failure_kind", "finish_reason", "text_chars", "output_tokens",
-                               "reasoning_tokens", "n_messages", "retry_rule") if k in a}
+                               "reasoning_tokens", "n_messages", "retry_rule", "stream_progress") if k in a}
             for a in payload.get("attempts") or []
         ],
         "protocol": {
@@ -453,13 +433,13 @@ def run(
     evidence_scope: str = "",
     budget: int = 0,
     max_evidence_chars: Optional[int] = None,
-    timeout_s: float = 0.0,
+    timeout_s: Optional[float] = 0.0,
     deadline_s: float = 0.0,
-    judge_stream: bool = False,
+    judge_stream: Optional[bool] = None,
     resume_from: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """独立评价主流程：装配产物 → 逐份评价 → 写产物。"""
-    if any(not math.isfinite(v) or v < 0 for v in (timeout_s, deadline_s)):
+    if any(not math.isfinite(v) or v < 0 for v in (timeout_s, deadline_s) if v is not None):
         raise ValueError("Judge 超时和截止时间必须是有限的非负秒数")
     rubric = load_rubric(rubric_path)
     arts = discover_artifacts(roots, evidence_scope=evidence_scope, candidates=candidates)
@@ -474,6 +454,10 @@ def run(
     if route is None or not route.enabled:
         raise ValueError("judge_eval 未启用")
     service = routing.service(route)
+    judge_stream, idle_s = judge_stream_settings(evaluation, judge_stream)
+    if not judge_stream and timeout_s is None:
+        timeout_s = 900.0  # historical buffered CLI default; an explicit 0 selects the service timeout
+    timeout_s = float(timeout_s or (idle_s if judge_stream else service.timeout_s))
     if judge_stream and service.type == "mock":
         raise ValueError("流式裁判需要 OpenAI 兼容服务")
     protocol = {
@@ -492,6 +476,7 @@ def run(
         "max_format_retries": int(evaluation.get("max_format_retries", 1)),
         "judge_retry_rule": JUDGE_RETRY_RULE_VERSION,
         "judge_transport": "stream" if judge_stream else "json",
+        **({"stream_wait_policy": JUDGE_STREAM_WAIT_POLICY, "idle_timeout_s": timeout_s} if judge_stream else {}),
         "context_planning": "configured-window@1",
     }
     done_keys = _load_done_keys(resume_from, protocol=protocol)

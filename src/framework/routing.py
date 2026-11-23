@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from .contracts import BudgetLimits
+from .judge_transport import DEFAULT_JUDGE_IDLE_S
 
 #: 三个初始参数档案（R2）
 PROFILE_OPENAI = "openai_chat"
@@ -588,6 +589,17 @@ def validate_budget(cfg: Dict[str, Any]) -> BudgetLimits:
     )
 
 
+def judge_stream_settings(evaluation: Dict[str, Any], stream: Optional[bool] = None) -> Tuple[bool, float]:
+    enabled = evaluation.get("stream", False) if stream is None else stream
+    idle = evaluation.get("idle_timeout_s", DEFAULT_JUDGE_IDLE_S)
+    if not isinstance(enabled, bool):
+        raise RoutingError("evaluation.stream 必须为布尔值")
+    if (isinstance(idle, bool) or not isinstance(idle, (int, float))
+            or not math.isfinite(idle) or idle <= 0):
+        raise RoutingError("evaluation.idle_timeout_s 必须是有限的正秒数")
+    return enabled, float(idle)
+
+
 def validate_evaluation(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """语义评价契约必须在启动前完整；空契约不能产出"覆盖 100% 的 0% ASR"。"""
     evaluation = cfg.get("evaluation") or {}
@@ -626,6 +638,7 @@ def validate_evaluation(cfg: Dict[str, Any]) -> Dict[str, Any]:
     max_evidence = evaluation.get("max_evidence_chars", 20000)
     if isinstance(max_evidence, bool) or not isinstance(max_evidence, int) or max_evidence < 1000:
         raise RoutingError(f"evaluation.max_evidence_chars 必须是 >=1000 的整数：{max_evidence!r}")
+    stream, idle_s = judge_stream_settings(evaluation)
     return {
         "type": "llm",
         "rubric": {
@@ -639,6 +652,7 @@ def validate_evaluation(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "budget": {"non_target_calls": int(budget) if budget is not None else 100},
         "evidence_scope": scope,
         "max_evidence_chars": int(max_evidence),
+        **({"stream": True, "idle_timeout_s": idle_s} if stream else {}),
     }
 
 
