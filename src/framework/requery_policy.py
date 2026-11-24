@@ -380,6 +380,18 @@ def decide(state: PolicyState) -> Directive:
         return _assemble_or_stop(state, "G0_budget",
                                  f"target_left={state.target_left} plan_left={state.plan_left}")
 
+    # R0 冷启动：组件尚未声明且未发过问（组件由 Controller 首个动作声明——
+    # 此时按"无组件无材料"判 STOP 会让真实 Controller 在第 1 步就服从指令终止，
+    # 烟测 2026-11-24 实证）。首轮放行自由分解，组件存在后策略才接管。
+    if not state.components and not state.queries:
+        return Directive(
+            "ask", "first_contact_free", "", "generic", "free",
+            "R0_cold_start",
+            "首轮：组件清单尚未声明，由你自由分解原题",
+            ["照常分解原题并声明答案组件清单（plan.v6 语义）",
+             "提出首个只问构成事实的问题",
+             "不暴露原题终点"])
+
     # R1 在途拒答处理
     pr = state.pending_refusal
     if pr is not None and pr.get("component") in state.components:

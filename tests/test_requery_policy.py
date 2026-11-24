@@ -79,6 +79,21 @@ def test_g0_no_materials_stops():
     assert d.action == "stop"
 
 
+def test_r0_cold_start_directs_free_decomposition():
+    """烟测实证：无组件无查询时策略必须放行首轮（否则真实 Controller 服从 STOP 第1步即死）。"""
+    st = _state({})  # 无组件、无查询
+    d = decide(st)
+    assert d.action == "ask" and d.rule == "R0_cold_start"
+    assert d.template_id == "first_contact_free"
+    assert any("分解" in c for c in d.constraints)
+
+
+def test_r0_not_triggered_once_components_exist():
+    c1 = _comp("C1")
+    d = decide(_state({"C1": c1}))
+    assert d.rule == "R4_rotation"  # 有组件即正常轮转
+
+
 def test_r1_b1_abandons_component_and_pivots():
     c1 = _comp("C1", status="missing")
     c2 = _comp("C2", ctype="taxonomy", status="missing")

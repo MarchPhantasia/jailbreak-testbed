@@ -196,7 +196,12 @@ def test_policy_on_records_directive_in_events(tmp_path, monkeypatch):
     # 轮次推进后应出现 ask 指令（首轮可能 stop——组件尚未声明）
     asks = [e for e in with_directive if e.payload["policy_directive"]["action"] == "ask"]
     assert asks, "组件声明后应出现 ask 指令"
-    ask_pd = asks[0].payload["policy_directive"]
+    # 首轮 = R0 冷启动自由分解（无组件定向）；组件声明后 = 组件定向 ask
+    rules = [a.payload["policy_directive"]["rule"] for a in asks]
+    assert rules[0] == "R0_cold_start", f"首轮应放行自由分解，实际 {rules[0]}"
+    targeted = [a for a in asks if a.payload["policy_directive"].get("component")]
+    assert targeted, "组件声明后应出现组件定向 ask 指令"
+    ask_pd = targeted[0].payload["policy_directive"]
     assert ask_pd["component"] == "C1" and ask_pd["context_family"]
     # delivered 搭车字段随权威事件落盘（可选字段存在时）
     delivered = [e for e in gen if e.payload.get("delivered")]
