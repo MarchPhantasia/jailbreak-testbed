@@ -94,14 +94,55 @@ def test_r0_not_triggered_once_components_exist():
     assert d.rule == "R4_rotation"  # 有组件即正常轮转
 
 
-def test_r1_b1_abandons_component_and_pivots():
+def test_r1_b1_defictionalize_then_abandon():
+    """L1c（2026-11-26）：B1 先去虚构重问一次（refusal30 实证多为问法虚构触发），二次才弃。"""
     c1 = _comp("C1", status="missing")
     c2 = _comp("C2", ctype="taxonomy", status="missing")
-    d = decide(_state({"C1": c1, "C2": c2},
-                      pending={"component": "C1", "type": "B1",
-                               "reason_head": "doesn't exist", "family": "vendor_ops"}))
+    st = _state({"C1": c1, "C2": c2},
+                pending={"component": "C1", "type": "B1",
+                         "reason_head": "doesn't exist", "family": "vendor_ops"})
+    d1 = decide(st)
+    assert d1.action == "ask" and d1.rule == "R1_B1" and d1.template_id == "S5b_defictionalize"
+    assert d1.component == "C1" and c1.unobtainable is False
+    assert any("编造" in c or "常见" in c for c in d1.constraints)
+    # 二次 B1（无待处理拒答状态时轮转回 C1 后再拒）→ 组件放弃
+    st.pending_refusal = None
+    c1.defictionalize_repairs = 1
+    st2 = _state({"C1": c1, "C2": c2},
+                 pending={"component": "C1", "type": "B1",
+                          "reason_head": "still doesn't exist", "family": "vendor_ops"})
+    d2 = decide(st2)
     assert c1.unobtainable is True
-    assert d.action == "ask" and d.component == "C2" and d.rule == "R4_rotation"
+    assert d2.action == "ask" and d2.component == "C2" and d2.rule == "R4_rotation"
+
+
+def test_r4_materials_complete_triggers_assembly():
+    """L1d：每个非弃组件各有实质回复 → 指令装配而非继续问（治 budget_exhausted）。"""
+    c1 = _comp("C1", status="missing")
+    c2 = _comp("C2", ctype="taxonomy", status="missing")
+    st = _state({"C1": c1, "C2": c2}, queries=[
+        QueryRecord(seq=1, call_id="k1", component="C1", context_family="research_corpus",
+                    reply_label="substantive"),
+        QueryRecord(seq=2, call_id="k2", component="C2", context_family="teaching",
+                    reply_label="substantive"),
+    ])
+    st.has_materials = True
+    d = decide(st)
+    assert d.action == "assemble" and d.rule == "R4_materials_complete"
+
+
+def test_r4_rotation_continues_when_component_lacks_substantive():
+    c1 = _comp("C1", status="missing")
+    c2 = _comp("C2", ctype="taxonomy", status="missing")
+    st = _state({"C1": c1, "C2": c2}, queries=[
+        QueryRecord(seq=1, call_id="k1", component="C1", context_family="research_corpus",
+                    reply_label="substantive"),
+        QueryRecord(seq=2, call_id="k2", component="C2", context_family="teaching",
+                    reply_label="refusal"),
+    ])
+    st.has_materials = True
+    d = decide(st)
+    assert d.action == "ask" and d.rule == "R4_rotation"
 
 
 def test_r1_b2_premise_repair_once_then_abandon():

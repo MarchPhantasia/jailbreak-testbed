@@ -216,6 +216,59 @@ def _looks_like_gap(line: str) -> bool:
     return bool(re.match(r"^\s*[-*]?\s*(未提供|未确认|缺项)", line))
 
 
+# ---------------------------------------------------------------- L2a 缺口出正文
+# 2026-11-26 refusal30 实证：assemble.v3.1 已明令"missing 组件不进正文"，本地 27B
+# 仍把"（组件C3·缺失）材料中未包含…"式叙述写进 answer——判官读到自报缺失直接判
+# partial。代码级兜底：装配后剥离缺失叙述段落，移入 gaps；判官读到的 answer 是
+# 纯交付物（内容真缺由判官对照原题独立判定，不靠答案自报）。
+ANSWER_GAP_HEADER_RE = re.compile(r"（?组件?\s*C\d+\s*[·・]\s*(缺失|Missing|未提供)")
+ANSWER_GAP_NARRATION_RE = re.compile(
+    r"(材料中?未包含|材料未提供|未提供该|在此组件判定为缺失|该组件(?:内容)?(?:为|属于)?缺失"
+    r"|Missing-缺失|未直接组织为|无材料支持|证据包中?未出现)"
+)
+
+
+def sanitize_answer_gaps(answer: str, gaps: Optional[List[str]] = None) -> Tuple[str, List[str]]:
+    """剥离答案正文里的组件缺失叙述（L2a）。返回 (净化后答案, 追加后的 gaps)。
+
+    只删"叙述缺失"的段落/行；含实质内容的行不动。被剥离内容以
+    "正文剥离：…" 记入 gaps 供研究核算，判官不可见。
+    """
+    gaps = list(gaps or [])
+    if not answer:
+        return answer, gaps
+    blocks = re.split(r"\n\n+", answer)
+    kept: List[str] = []
+    dropping_section = False
+    for blk in blocks:
+        lines = blk.split("\n")
+        kept_lines: List[str] = []
+        for ln in lines:
+            header_hit = ANSWER_GAP_HEADER_RE.search(ln)
+            if header_hit or (dropping_section and (ln.startswith("#") is False and ln.strip() == "")):
+                pass
+            if header_hit:
+                dropping_section = True
+                continue
+            if ln.strip().startswith("#"):
+                dropping_section = False  # 新小节开始，恢复保留
+            if dropping_section:
+                continue
+            if ANSWER_GAP_NARRATION_RE.search(ln) and not re.search(r"\d", ln[:40]):
+                # 行内主要是缺失叙述（前 40 字符无数字——保守，避免误删数据行）
+                continue
+            kept_lines.append(ln)
+        if kept_lines:
+            kept.append("\n".join(kept_lines).strip())
+    new_answer = "\n\n".join(b for b in kept if b.strip())
+    if new_answer.strip() == answer.strip():
+        return answer, gaps  # 无实质剥离：原样返回（不动空白）
+    removed = answer.replace(new_answer, "", 1).strip()
+    if removed:
+        gaps.append(f"正文剥离（L2a）：{removed[:200]}")
+    return new_answer, gaps
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", str(text or ""))
 
@@ -708,6 +761,9 @@ class LLMAssembler(Assembler):
                 text = str(m.get("value", m.get("text", "")))
                 for eid in m.get("evidence_ids") or []:
                     evidence_text_by_id.setdefault(eid, text)
+            # L2a：缺口出正文（代码级兜底，模型违规时仍保交付物纯净）
+            parsed["answer"], parsed["gaps"] = sanitize_answer_gaps(
+                parsed["answer"], parsed["gaps"])
             diagnostics = coverage_diagnostics(parsed["answer"], claims, pack_text, evidence_text_by_id)
             ratio = diagnostics["answer_evidence"]["uncovered_ratio"]
             dup_of = seen_answers.get(parsed["answer"])
