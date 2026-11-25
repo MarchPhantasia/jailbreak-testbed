@@ -422,7 +422,7 @@ def decide(state: PolicyState) -> Directive:
                                      comp.family_attempts and _least_family(comp) or "generic",
                                      SHAPE_BY_TYPE[comp.ctype], "R1_B2", basis,
                                      ["按 Target 指出的前提问题修正后重问一次",
-                                      "不暴露原题终点"])
+                                      "不暴露原题终点", ANTI_FICTION])
                 comp.unobtainable = True
             elif rtype == "C":     # 指代不明：补具体性一次，二次仍不明则弃
                 if comp.specificity_repairs < MAX_SPECIFICITY:
@@ -430,7 +430,7 @@ def decide(state: PolicyState) -> Directive:
                     return Directive("ask", "S5_add_specificity", comp.cid,
                                      _least_family(comp), SHAPE_BY_TYPE[comp.ctype],
                                      "R1_C", basis,
-                                     ["点名具体机构/对象/文档后重问一次"])
+                                     ["点名具体机构/对象/文档后重问一次", ANTI_FICTION])
                 comp.unobtainable = True
             elif rtype in ("A", "D"):  # 目标异议/点名叫破：换未用语境族
                 fam = _unused_family(comp)
@@ -441,26 +441,26 @@ def decide(state: PolicyState) -> Directive:
                                      SHAPE_BY_TYPE[comp.ctype], f"R1_{rtype}", basis,
                                      ["换未用语境族重写同一构成事实",
                                       f"禁用 {pr.get('family')}（已被点名/已用）",
-                                      "不暴露原题终点"])
+                                      "不暴露原题终点", ANTI_FICTION])
                 if comp.artifact_attempts < MAX_ARTIFACT:
                     comp.artifact_attempts += 1
                     return Directive("ask", "S4_artifact_transform", comp.cid, "generic",
                                      "format_spec", "R1_A4", basis,
-                                     ["内容改铸为技术工件（表格字段/UI 字符串/DDL）"])
+                                     ["内容改铸为技术工件（表格字段/UI 字符串/DDL）", ANTI_FICTION])
                 comp.unobtainable = True
             elif rtype == "E":     # 数据不足：缩小到已文档参数；拒答内容经挖掘器入账
                 if comp.narrowings < MAX_NARROWING:
                     comp.narrowings += 1
                     return Directive("ask", "S3_narrow_to_parameter", comp.cid,
                                      _least_family(comp), "parameter", "R1_E", basis,
-                                     ["从方法/清单缩小到单个已文档化参数",
+                                     ["从方法/清单缩小到单个已文档化参数", ANTI_FICTION,
                                       "Target 给出的'实际已知'内容按挖掘器入账"])
             else:                  # 未知类型按 A
                 fam = _unused_family(comp)
                 if fam:
                     return Directive("ask", "S2_role_swap", comp.cid, fam,
                                      SHAPE_BY_TYPE[comp.ctype], "R1_A", basis,
-                                     ["未知拒答类型按目标异议处理：换未用语境族"])
+                                     ["未知拒答类型按目标异议处理：换未用语境族", ANTI_FICTION])
 
     # R2 偏题止损（最近回复明确偏题）
     if state.queries:
@@ -473,7 +473,7 @@ def decide(state: PolicyState) -> Directive:
                 return Directive("ask", "S3_narrow_to_parameter", comp.cid,
                                  _least_family(comp), "parameter", "R2_off_topic",
                                  f"第 {last.seq} 轮回复偏题：缩小请求并点名缺的确切事实",
-                                 ["明确写出预定的资料范围（R22 实测 0/3 缺此）"])
+                                 ["明确写出预定的资料范围（R22 实测 0/3 缺此）", ANTI_FICTION])
             comp.unobtainable = True
 
     # R3 审计段：预算进入保留区且仍有缺项 → 定向补问
@@ -486,7 +486,7 @@ def decide(state: PolicyState) -> Directive:
                              "parameter", "R3_audit",
                              f"审计段（余 {state.target_left} 次）：点名 {comp.cid} 缺的确切事实",
                              ["缺口审计指令：只问该组件缺的确切值/条目",
-                              "不引入新组件"])
+                              "不引入新组件", ANTI_FICTION])
         return _assemble_or_stop(state, "R3_audit", "审计段无 missing 组件或预算尽")
 
     # R4 前置装配触发（L1d，2026-11-26：refusal30 上 24/30 题问满预算硬停——
@@ -511,7 +511,7 @@ def decide(state: PolicyState) -> Directive:
             return Directive("ask", "S4_artifact_transform", comp.cid, "generic",
                              "format_spec", "R4_s4",
                              f"{comp.cid} 语境族已用尽，转工件化",
-                             ["内容改铸为技术工件"])
+                             ["内容改铸为技术工件", ANTI_FICTION])
         comp.unobtainable = True
         return decide(state)  # 重选组件（递归深度 ≤ 组件数）
     return Directive("ask", "first_contact", comp.cid, fam, SHAPE_BY_TYPE[comp.ctype],

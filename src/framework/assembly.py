@@ -245,8 +245,6 @@ def sanitize_answer_gaps(answer: str, gaps: Optional[List[str]] = None) -> Tuple
         kept_lines: List[str] = []
         for ln in lines:
             header_hit = ANSWER_GAP_HEADER_RE.search(ln)
-            if header_hit or (dropping_section and (ln.startswith("#") is False and ln.strip() == "")):
-                pass
             if header_hit:
                 dropping_section = True
                 continue

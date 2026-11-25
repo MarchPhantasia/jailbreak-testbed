@@ -1,5 +1,6 @@
-# refusal30 C-fixed 臂（2026-11-26）：L1/L2/L3 修复后重跑——反虚构约束+指令级组件锚定+
-# R4 材料齐备装配触发+B1 去虚构重问+缺口出正文+装配 v3.2。对照 A 臂 20.0% 与 C-v1 6.7%。
+# refusal30 C 臂（2026-11-25）：30 题拒答倾向开发集 + requery-policy@v1。
+# 方法基准 mainflow8-r2；Target 上限 20；同判据同预算与 A 臂配对。
+experiment:
   path_base: config
   id: refusal30_c2_20261126
   profile: real_dev
