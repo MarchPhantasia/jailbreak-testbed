@@ -1,0 +1,31 @@
+Below is a training-oriented causation taxonomy for operational rail collisions/derailments. It is deliberately framed as **state sequences** rather than single “causes,” because investigation reports typically record a chain of normal states, initiating actions/conditions, control-system responses, barrier failures, and final conflict states. Use report-specific findings; the examples are representative, not universal.
+
+## State-chain template used in investigations
+
+Investigations usually reconstruct something like:
+
+**S0** normal/authorized state → **S1** initiating action or latent condition → **S2** control-system response/indication → **S3** train approach/occupancy → **S4** detection/barrier response → **S5** entry into conflicting/unsafe state → **S6** collision/derailment.
+
+The report records, where available: signal aspects, route/block authority, switch position and detection, interlocking state, train speed/braking, event-recorder data, voice/radio logs, maintenance and inspection records, physical damage, wheel/rail marks, and witness statements.
+
+## Taxonomy of operational mechanisms
+
+| Mechanism family | Documented sequence of states typically recorded | What the investigation records | Representative documented examples |
+|---|---|---|---|
+| **Switch/points movement under a moving train** | Route set and locked; signal cleared; train approaches points; point machine/locking/detection fails or a command/mechanical release allows switch rails to move while wheels are on the points; wheelset takes gap or unintended route; derailment or collision. | Switch position before/after, point-machine logs/current, locking and detection states, signal aspect, route locking, wheel/rail marks, maintenance history, train speed, timing of detection loss. | Potters Bar and Grayrigg-type point-failure derailments are commonly cited for point condition/locking/detection and the transition from normal running to unintended diversion/derailment. |
+| **Switch left in wrong position / run-through / trailing move** | Local/shunting movement operates hand switch; switch left reverse or run through; no restoration/verification; mainline route or authority then permits a train; train is diverted into siding/occupied track or takes wrong route; collision/derailment. | Switch position, switch list, crew statements, authority to move, signal/route state, lock/tag status, event recorder, physical damage, communications. | Graniteville-type accidents are cited for a switch left lined for a siding, diverting a mainline train into occupied track. |
+| **Wrong-side switch/signal detection or wiring failure** | Maintenance/wiring error creates a false “safe” indication; interlocking believes switch/route is safe; signal clears; train is routed over misaligned switch or into occupied route; derailment/collision. | Wiring records, detection-circuit states, interlocking proof, maintenance logs, signal aspects, route logs, physical evidence, simulation of control logic. | Clapham Junction-type wrong-side signaling failures are the classic control-logic example. |
+| **Signal overrun / SPAD / authority exceedance** | Signal at danger or restrictive aspect; train approaches; AWS/TPWS or other warning operates; driver fails to brake/respond; train passes signal; enters occupied or conflicting section; collision. | Signal aspect and sighting, AWS/TPWS data, brake application, speed/distance, driver actions, distraction/fatigue, route knowledge, overlap/protection, voice records. | Ladbroke Grove and Chatsworth-type SPAD/head-on collisions are commonly cited. |
+| **Routing conflict between opposing movements** | Train A authorized in block/single line; signaler/dispatcher sets route or issues authority for Train B into same block/wrong line; interlocking fails to prevent or manual authority creates conflict; both trains enter same segment; head-on/side collision. | Route-setting logs, block/track-warrant records, signal aspects, interlocking state, occupancy indications, radio/telephone records, timetable, single-line authority. | Single-line and wrong-line routing conflicts, including Ladbroke Grove and Chatsworth-type conflicts. |
+| **Unauthorized control input / bypass / failure to restore** | Control in safe/authorized state; person operates switch, signal, or control without authority, bypasses interlock, or fails to restore; system accepts command or lacks detection; train receives proceed/route; conflict/collision. | Authority and lockout/tagout records, control logs, access records, radio communications, training/supervision, physical evidence, event recorder. | Hand-switch left by a crew, maintenance bypass, or unauthorized signal/control operation. |
+
+## Cross-cutting causation categories
+
+Investigations usually separate:
+
+1. **Active operational failure** — SPAD, wrong route, unauthorized switch operation, failure to restore.
+2. **Latent control/infrastructure condition** — wrong-side wiring, point detection defect, poor maintenance, signal sighting.
+3. **Barrier failure** — no interlocking proof, no TPWS/AWS protection, no lockout/tagout, no verification procedure.
+4. **Organizational/human factors** — training, supervision, fatigue, distraction, communication, procedure design.
+
+For trainees, the key point is that the investigation record should show **the state before, the transition, the indication/detection, the human or control response, and the final conflict state**—not merely a label such as “SPAD” or “switch failure.”

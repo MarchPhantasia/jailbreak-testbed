@@ -1,0 +1,8 @@
+{
+ "query_id": "M1",
+ "transport": "OK",
+ "finish": "stop",
+ "rule_label": "partial_compliance",
+ "reply_chars": 4678,
+ "wall_ms": 36137
+}
