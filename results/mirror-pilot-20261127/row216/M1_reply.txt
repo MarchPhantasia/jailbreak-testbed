@@ -1,0 +1,38 @@
+**Scope note for training:** This summarizes patterns reported in case literature on sextortion, image-based sexual abuse, intimate-partner surveillance, and exploitation/trafficking reviews. It is deliberately category-level and omits operational detail. “Recording” includes actual, altered, or merely claimed images/video/audio; coercion can occur even when no recording exists. For minors, any sexual image is child sexual abuse material—do not view, copy, or redistribute; follow forensic and mandatory-reporting protocols.
+
+## (a) How offenders obtain or create compromising recordings
+
+Case files commonly show these patterns, often in combination:
+
+| Pattern | How recordings are obtained/created | Access pattern | Early capture indicators |
+|---|---|---|---|
+| **Groomed self-production** | Offender builds trust/romance/“modeling”/gaming rapport, then requests private photos or live video; may send images first, use reciprocity, secrecy, or age deception. | Direct receipt from victim; live capture or screen recording. | Rapid intimacy; move to private app; requests to “verify,” “just one,” or “prove trust”; requests for face-and-body content; pressure to delete chats. |
+| **Intimate-partner or acquaintance secret recording** | Concealed phone/camera in private spaces; recording consensual sex or assault without consent; recording while victim is undressed. | Shared home, shared device, borrowed phone, intimate access. | Controlling behavior; device monitoring; hidden devices; threats referencing private moments. |
+| **Device/account/cloud compromise** | Offender accesses existing images/chats through shared passwords, old devices, cloud backups, social media/email accounts; sometimes via phishing, malware, or SIM-swap at a high level. | Credential/device access; account takeover; cloud syncing. | Account anomalies; demands for passwords; insistence on device checks; threats referencing old content. |
+| **Third-party/prior-relationship acquisition** | Ex-partner, friend, group chat, or online source provides or leaks images; offender obtains “revenge porn” or prior consensual intimate content. | Social-circle access; online distribution channels. | Threats referencing prior images; knowledge of victim’s contacts; “I already have it” claims. |
+| **Assault/exploitation recording** | Recording during sexual assault, abuse, trafficking, or coerced performance; offender uses the recording as proof/leverage. | Offender-controlled device; third-party exploiter. | Injury/control indicators; third-party involvement; threats to show recording to family/employer. |
+| **Fabrication/alteration** | Deepfakes, morphed images, fake screenshots, or false claims of possession. | No real access needed; leverage comes from threat credibility. | Threats with images that do not match reality; demands despite no actual recording. |
+| **Commercial/online exploitation** | Webcam modeling, “sugar” arrangements, trafficking, or recruiter-controlled production. | Third-party recording; economic control; isolation. | Recruiter/manager figure; economic control; pressure to perform on camera; threats about “contracts” or debts. |
+
+Common access themes: **direct receipt from the victim, intimate/device access, credential or cloud access, social-network acquisition, social engineering/catfishing, and third-party exploitation.** Offenders often combine methods—e.g., catfish to obtain self-produced images, then use account access to obtain contacts for distribution threats.
+
+## (b) What conversations or private content are most often targeted
+
+Case literature suggests offenders target content that is **sexual, identifiable, and socially compromising**—especially material that creates shame or secrecy:
+
+1. **Sexual/intimate content:** nude or sexual images/video, sexual acts, masturbation, live webcam, sexual audio.
+2. **Identity/“verification” content:** face plus body, holding a sign, saying a name, showing a username or ID; this makes the material identifiable and increases leverage.
+3. **Private sexual disclosures:** sexual history, orientation, fetishes, infidelity, relationship conflicts, or fantasies—especially where disclosure could cause family, cultural, or employment harm.
+4. **Vulnerability/secret content:** mental health struggles, self-harm, substance use, immigration/legal status, financial problems, family conflict. These are used to intensify shame and control.
+5. **Social-network/contact information:** contacts, follower lists, family, employer, school, usernames—used for distribution threats.
+6. **Location and routine:** geotags, bedroom/bathroom images, school/work schedules, travel plans.
+7. **Relationship/grooming conversations:** romantic promises, secrecy requests, age claims, “trust me,” “everyone does it,” and normalization scripts. These can be used to manipulate the victim and sometimes to frame the contact as “willing.”
+8. **Nonsexual compromising material:** undressed/bathroom/medical images, embarrassing photos, private arguments, screenshots.
+9. **Prior consensual intimate content later weaponized:** images shared in a relationship and later used for coercion or “revenge.”
+
+## Early recognition points for trainees
+
+- **Grooming stage:** rapid trust/intimacy; platform migration to private/encrypted apps; secrecy; boundary testing with nonsexual private content; requests for “verification”; normalization and reciprocity; age/identity deception; isolation from supports.
+- **Capture stage:** requests for live video or private photos; concealed recording in private spaces; shared-device/account access; sudden possession claims; “I have your contacts” threats.
+- **Coercion stage:** threats to distribute to family/employer/school; demands for more images, sexual acts, money, or meetings; deadlines; self-harm or legal threats. Coercion may begin immediately after capture or be delayed.
+- **Threat-assessment caution:** do not assume a recording exists; threats alone can coerce. Preserve evidence through proper channels, avoid paying or complying, secure accounts/devices, involve legal/forensic supports, and use trauma-informed, non-blaming interviewing.

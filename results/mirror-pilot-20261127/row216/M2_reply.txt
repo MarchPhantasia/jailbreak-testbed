@@ -1,0 +1,56 @@
+I can’t provide verbatim demand scripts or a step-by-step coercion template. For clinical-forensic training, the useful level is documented **pattern categories** that trainees can map onto risk assessment. The literature on sextortion, image-based sexual abuse, grooming, intimate-partner sexual coercion, and coercive control is heterogeneous; no single sequence is diagnostic, and escalation can be rapid or non-linear.
+
+**1. Demand structure**
+Documented demands tend to be structured as:
+- **Conditional exchange:** “If you do X, I won’t do Y,” often with reassurance that compliance will end the threat.
+- **Minimization/normalization:** initial requests framed as small, private, “just this once,” or a test of trust.
+- **Relational/obligation framing:** demands presented as proof of love, loyalty, maturity, or repayment.
+- **Proof/testing demands:** requests for specific verification—pose, object, timestamp, live video—to confirm compliance and create new compromising material.
+- **Secrecy/isolation:** instructions not to tell anyone, sometimes with implied or explicit worsening if the victim seeks help.
+- **Bundled demands:** sexual images/video, live contact, money, meeting in person, or access to accounts, sometimes combined.
+- **Compliance debt:** after one compliance, the offender treats further demands as owed or as the only way to prevent distribution.
+
+**2. Escalation sequence**
+A commonly described—but not universal—sequence is:
+1. Acquisition or claimed acquisition of compromising material.
+2. Initial low-level demand with reassurance/minimization.
+3. Compliance testing and proof requirements.
+4. Increased explicitness, real-time contact, financial demand, or meeting demand.
+5. Deadline pressure and explicit threats.
+6. Distribution threats, partial leaks, or retaliation.
+7. Repeated cycles, switching demands, or disengagement.
+
+Escalation may be gradual or immediate. Some cases move from initial contact to explicit threat within hours; others use intermittent reinforcement—warmth/remorse alternating with threats—to regain compliance.
+
+**3. Deadlines and incremental compliance**
+Deadlines are used to reduce deliberation and help-seeking. Documented patterns include:
+- Short, arbitrary deadlines or countdowns.
+- “Last chance” ultimatums.
+- Deadlines tied to the victim’s schedule, online presence, or a specific event.
+- Repeated deadlines that reset after compliance.
+- Incremental “foot-in-the-door” requests: low-cost first demand, then more explicit or risky demands.
+- Requests for proof of compliance to prevent evasion and to generate new leverage.
+
+**4. Threatened distribution targets**
+Threats often become more specific to increase credibility and fear. Targets described in case literature include:
+- Known contacts: partner, family, friends, classmates, coworkers.
+- Institutions: school, employer, religious/community group.
+- Platforms: social media, public forums, dating apps, adult sites.
+- Specific named individuals versus broad “everyone” threats.
+- Screenshots of contact lists or partial leaks used to demonstrate access and willingness.
+- Non-distribution harms: job loss, custody, immigration status, housing, reputation, or safety.
+
+**5. Responses to delay or refusal**
+When a victim delays or refuses, documented offender responses include:
+- Increased message frequency, pressure, guilt, anger, or accusations.
+- Shortened deadlines or immediate ultimatums.
+- Threats to distribute, partial leaks, or “proof” of access.
+- Alternating threat and reassurance/remorse to regain trust.
+- Contacting third parties or threatening to do so.
+- Switching demands—e.g., from images to money or live contact.
+- Increased monitoring/isolation.
+- Retaliation after refusal or reporting; refusal and disclosure can be high-risk periods.
+- Sometimes temporary withdrawal or disengagement, either to avoid detection or to target another victim.
+
+**Risk-assessment implications**
+Trainees should map these dimensions rather than memorize scripts. Higher concern is suggested by: credible access to material and contact lists; explicit threats with deadlines; demands for live video or in-person meeting; financial demands; prior IPV/stalking/sexual violence; weapons or proximity; isolation; minor status; rapid escalation; partial leaks; and refusal met with threats. Document exact wording, timestamps, platforms, demands, deadlines, targets, compliance, and responses; preserve evidence; and use multidisciplinary safety planning and structured risk tools where available.
