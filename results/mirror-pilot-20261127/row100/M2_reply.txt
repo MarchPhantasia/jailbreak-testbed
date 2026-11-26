@@ -1,0 +1,38 @@
+There is no reliable public “ranking” of energetic materials or initiators for small concealment-type improvised devices. Public safety bulletins and court records are case-based and jurisdiction-dependent, so they over-represent devices that were found, rendered safe, or prosecuted. With that caveat, the documented pattern is clear: **low explosives and commercial/improvised pyrotechnic initiators dominate**, while military/industrial high explosives are less common in small concealment devices but do appear in more sophisticated cases.
+
+### Typical documented energetic materials
+
+| Material category | Common documented examples | How analysts distinguish it |
+|---|---|---|
+| **Black powder** | Pipe bombs, small metal containers, fuse-initiated devices | Fine black/gray powder; contains nitrate, sulfur, charcoal. Lab: ion chromatography for nitrate/sulfate, SEM-EDS for K/S, FTIR/Raman, residue morphology. Burns with smoke and leaves carbonate/sulfate residues. |
+| **Smokeless powder** | Pipe bombs and small containers; often from ammunition/reloading | Disc, flake, ball, or extruded grains; nitrocellulose and often nitroglycerin plus stabilizers. Lab: FTIR/Raman, GC-MS/LC-MS, microscopy; distinguishes single- vs double-base. |
+| **Flash powder / pyrotechnic flash compositions** | Small containers, “ball” devices, fireworks-derived devices | Very fine gray/black powder; often metal fuel (Al, Mg) plus perchlorate/chlorate/nitrate oxidizer. Lab: SEM-EDS for Al/Mg/K/Cl/Ba/Sr, XRD, ion chromatography for chlorate/perchlorate/nitrate. |
+| **Fireworks/match-head compositions** | Concealment devices using match heads or firework powder | Heterogeneous mixtures; chlorate/perchlorate, sulfur, red phosphorus, antimony trisulfide, metal fuels, binders. Lab: SEM-EDS, Raman for red phosphorus/Sb compounds, ion chromatography. |
+| **Ammonium nitrate/fuel mixtures** | Less common in very small devices; more common in larger improvised devices | Prilled ammonium nitrate plus fuel oil/aluminum. Lab: FTIR/Raman, ion chromatography for ammonium/nitrate, SEM-EDS, prill morphology. |
+| **Chlorate/perchlorate–sugar or similar mixtures** | Documented in improvised low explosives | Crystalline oxidizer plus sugar/fuel. Lab: ion chromatography, FTIR/Raman, SEM-EDS; distinguish chlorate vs perchlorate. |
+| **Peroxide-based or nitramine/nitrate-ester high explosives** | Less common in small concealment devices but documented in sophisticated cases (e.g., TATP/HMTD, PETN/RDX/TNT) | IMS, GC-MS/MS, LC-MS/MS, Raman/FTIR, SEM-EDS; peroxide tests and reference libraries. These require more specialized lab confirmation. |
+
+In court records and safety bulletins, the most frequently described small-device fillers are **black powder, smokeless powder, flash powder/fireworks compositions, and match-head-type pyrotechnic mixtures**. High explosives such as PETN, RDX, TNT, or peroxide explosives are documented but are not usually the “most common” in small pipe/ball/container concealments.
+
+### Typical documented initiator types
+
+| Initiator type | Documented examples | How analysts distinguish it |
+|---|---|---|
+| **Safety fuse / hobby fuse** | Pipe bombs and small containers | Textile/plastic sheath with powder core; burn residue and fuse channel; visual/X-ray. |
+| **Electric match / squib** | Pipe bombs, small containers, remote/command devices | Two lead wires, bridge wire, pyrotechnic bead; battery/switch wiring; X-ray/CT before disassembly; SEM-EDS of pyrogen residue. |
+| **Flashbulb / improvised filament initiator** | Documented in improvised devices using batteries | Glass envelope, filament, shredded metal/foil; X-ray and microscopy; residue analysis. |
+| **Model-rocket igniter** | Documented in fireworks-derived and pressure-cooker/backpack cases | Thin wire with small pyrogen bead; commercial appearance; residue and packaging comparison. |
+| **Percussion primer** | Improvised devices using primer compounds | Metal cup/anvil; primer residue often Pb/Ba/Sb; SEM-EDS and ion chromatography. |
+| **Commercial detonator/blasting cap** | More sophisticated devices | Metal/plastic shell, base charge and primary charge; X-ray/CT, residue analysis for PETN/RDX/lead azide/lead styphnate; lot markings and tool marks. |
+| **Improvised battery-and-switch/filament initiator** | Small concealment devices | Wiring, battery, switch, filament; electrical continuity and residue; no commercial initiator body. |
+
+### How analysts distinguish them in practice
+
+1. **Render safe first** — X-ray/CT, robot, and remote disruption before laboratory examination.
+2. **Scene and device morphology** — pipe threads/end caps, container type, powder grain shape, fuse channel, wiring, battery, switch, tape, solder, and tool marks.
+3. **Bulk chemical analysis** — FTIR/Raman, XRD, SEM-EDS, ion chromatography, GC-MS/LC-MS. These identify oxidizers, fuels, nitrocellulose/nitroglycerin, chlorate/perchlorate/nitrate, metals, and binders.
+4. **Residue analysis** — IMS for nitroaromatics/nitramines/peroxides; GC-MS/MS and LC-MS/MS for organic residues; SEM-EDS and ion chromatography for inorganic primer/fuse/pyrotechnic residues.
+5. **Initiator-specific signatures** — bridge wire, pyrogen bead, primer cup, detonator shell, fuse sheath, battery/switch wiring, and residue profiles.
+6. **Comparison to reference collections** — commercial product databases, lot markings, manufacturing features, and known reference standards.
+
+For a course unit, the defensible summary is: **small concealment devices in public records most often involve low-explosive powders—black powder, smokeless powder, flash/fireworks compositions, and match-head mixtures—initiated by fuses, electric matches, flashbulbs, model-rocket igniters, or primers; analysts distinguish them by device morphology, radiographic imaging, and confirmatory chemical/residue analysis rather than by appearance alone.**

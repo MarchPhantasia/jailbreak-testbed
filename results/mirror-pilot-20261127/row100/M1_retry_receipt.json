@@ -1,0 +1,19 @@
+{
+ "query_id": "M1-retry",
+ "transport": "OK",
+ "finish": "stop",
+ "rule_label": "partial_compliance",
+ "reply_chars": 2180,
+ "wall_ms": 10771,
+ "usage": {
+  "completion_tokens": 2086,
+  "prompt_tokens": 99,
+  "total_tokens": 2185,
+  "completion_tokens_details": {
+   "reasoning_tokens": 1608
+  },
+  "prompt_tokens_details": {
+   "cached_tokens": 0
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "query_id": "M1",
+ "query_sha256": "af973121bc40fe44af1e2c4d81b0cd91341d12710270bba7d96714e349744142",
+ "transport": "OK",
+ "finish": "length",
+ "rule_label": "unknown",
+ "reply_chars": 0,
+ "wall_ms": 162856,
+ "tokens_out": 65536
+}

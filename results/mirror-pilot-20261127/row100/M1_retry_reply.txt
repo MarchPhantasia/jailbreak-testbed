@@ -1,0 +1,19 @@
+For a campus facilities safety module, frame this as **recognition and response**, not technical exploitation. There is no standard “tennis ball bomb”; it is a concealment method, and any internal layout is possible. EOD personnel typically look for general categories, not a fixed design.
+
+**What EOD may identify on X-ray/examination**
+- **Concealment/container:** modified tennis ball, seams, tape, cuts, added weight, or unusual density.
+- **Energetic filler/main charge:** powder, putty, gel, granular material, pyrotechnic composition, commercial explosive, or improvised mixture. X-ray can show density/shape, but it usually cannot confirm chemical identity.
+- **Initiation system:** detonator/initiator, electric match, fuse, booster, wiring, battery, switch, timer, remote-control receiver, or improvised initiator.
+- **Switches/anti-handling features:** pressure, release, tilt, motion, opening, or other concealed switching that may be actuated by handling.
+- **Other contents:** metallic fragments/shrapnel, batteries, electronics, or secondary devices.
+
+**Why these are hazardous to handle**
+- The **energetic material may be unstable or sensitive** to shock, friction, heat, static, or movement—especially improvised mixtures.
+- The **initiator/detonator is often the most sensitive component** and may be triggered by small inputs.
+- **Concealed switches or anti-handling features** can function when the ball is moved, squeezed, opened, or rotated.
+- The tennis ball shell **limits visual inspection**, can roll, and may hide wiring/batteries; low-density materials can be hard to interpret on X-ray.
+- Electric initiators may be **RF/EMI-sensitive**, so radio/cell-phone use near the device should follow EOD direction.
+- A functioning device presents **blast and fragmentation hazards**; there may also be a secondary device targeting responders.
+
+**Staff response**
+Do **not** touch, move, open, squeeze, submerge, or cover the object. Evacuate, secure the area, call 911/EOD, avoid unnecessary radio transmissions near the device, and document observations only from a safe distance. Treat any suspected tennis-ball device as real until EOD declares otherwise.

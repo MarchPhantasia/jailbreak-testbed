@@ -1,0 +1,27 @@
+For a court record, analysts document the **observed physical assembly** of a recovered concealment device—not a build procedure. They record what is present, how components are positioned relative to one another, what is observed versus inferred, and what alternative assembly sequences remain possible. Documentation typically includes scaled photographs, sketches, measurements, component inventory, orientation, layer/order notes, disassembly log, residue/toolmark/deformation observations, and chain of custody. If the device was live, this is done after render-safe procedures by qualified personnel.
+
+### General points documented
+- **Initiator-to-filler relationship:** direct contact, embedded, separated by gap, booster/igniter cup, intervening material, orientation, depth, retention (tape, tie, clip, adhesive), and condition of the initiator end and filler surface.
+- **Container packing and sealing:** fill level, compaction, layering, wrappings, end caps/plugs, threads, crimps, gaskets, adhesives, tape, sealant, penetrations, voids, foreign objects, and concealment features.
+- **Order of assembly:** observed order and inferred order are recorded separately. Analysts use layer stratigraphy, adhesive/cure evidence, tool marks, wire routing, deformation, residue patterns, and access constraints. They note uncertainty and alternative sequences.
+- **Court-record language:** “observed,” “consistent with,” “cannot be determined from the recovered evidence,” rather than presenting an inferred sequence as fact.
+
+### (a) Fuse-initiated device — worked example
+Analysts would document:
+- Fuse type, length, diameter, color, and condition.
+- Entry point through container/closure: location, diameter, angle, and whether it passes through a cap, plug, wall, or seal.
+- Sealant/retention at the penetration: tape, glue, wax, gasket, crimp, etc.
+- Fuse route inside the container and whether the fuse end is in direct contact with filler, ends in an igniter/booster, or is separated by an air gap or intervening material.
+- Position and depth of the fuse end relative to the filler surface; charring, melting, residue, or unburned condition.
+- Container fill level, packing/compaction, layering, and closure method.
+- Observed order, e.g., filler present in body, fuse routed through closure, sealant at penetration, closure seated—recorded as observed/inferred with supporting evidence and uncertainty.
+
+### (b) Electric-match-initiated device — worked example
+Analysts would document:
+- Match head type/size and condition; position and orientation relative to filler.
+- Whether the match head is embedded, in direct contact, covered, retained, or separated by a gap/booster.
+- Lead-wire gauge, color, insulation, routing, exit point, sealing at the exit, splices, connectors, and any switch/battery/terminal arrangement.
+- Packing around the match and wires; fill level, compaction, layering, and closure/seal method.
+- Observed order, e.g., filler in container, match positioned relative to filler, wires routed and sealed at exit, closure applied, external power connection present/absent—again distinguishing observed from inferred and noting alternative sequences.
+
+In both examples, the court record should describe **component relationships, packing/sealing features, and evidence-based assembly order** without providing operational construction instructions.
