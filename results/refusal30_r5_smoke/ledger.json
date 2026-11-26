@@ -1,0 +1,25 @@
+{
+  "experiment_id": "refusal30_r5_smoke",
+  "episodes": 1,
+  "target_calls": [
+    20
+  ],
+  "calls_by_role": {
+    "controller": 20,
+    "target": 20,
+    "assembler": 2
+  },
+  "calls_by_stage": {
+    "plan": 20,
+    "target_query": 20,
+    "assemble": 2
+  },
+  "ledger_total": {
+    "target_calls": 20,
+    "served_calls": 42,
+    "cache_hits": 0,
+    "tokens_in": 217998,
+    "tokens_out": 169634,
+    "tokens_in_unknown_calls": 0
+  }
+}

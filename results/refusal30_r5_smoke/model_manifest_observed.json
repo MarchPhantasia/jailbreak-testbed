@@ -1,0 +1,292 @@
+{
+  "roles": [
+    {
+      "role": "target",
+      "service_id": "aligned_target",
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "parameter_profile": "openai_chat",
+      "resolved_params": {
+        "reasoning_effort": "low",
+        "temperature": 0.0,
+        "max_tokens": 65536
+      },
+      "probe_id": "probe_1",
+      "probe_status": "OK",
+      "sent_params": {
+        "temperature": 0.0,
+        "max_tokens": 1024
+      },
+      "context_window": 1000000,
+      "usage": {
+        "completion_tokens": 60,
+        "prompt_tokens": 40,
+        "total_tokens": 100,
+        "completion_tokens_details": {
+          "reasoning_tokens": 57
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "capability_status": {
+        "documented": "profile_spec_only",
+        "transport_accepted": "accepted",
+        "backend_confirmed": "unknown",
+        "status": "transport_only"
+      },
+      "note": "transport_accepted 只说明服务接受了请求；effort/采样是否生效保持 unknown"
+    },
+    {
+      "role": "controller",
+      "service_id": "local_uncensored",
+      "model": "JonathanColetti/Qwen3.8-27B-Uncensored",
+      "parameter_profile": "qwen38_vllm",
+      "resolved_params": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 20480,
+        "reasoning_effort": "medium",
+        "chat_template_kwargs": {
+          "enable_thinking": true,
+          "preserve_thinking": false,
+          "reasoning_effort": "medium"
+        }
+      },
+      "probe_id": "probe_2",
+      "probe_status": "OK",
+      "sent_params": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 256,
+        "reasoning_effort": "low",
+        "chat_template_kwargs": {
+          "enable_thinking": true,
+          "preserve_thinking": false,
+          "reasoning_effort": "low"
+        }
+      },
+      "context_window": 131072,
+      "usage": {
+        "prompt_tokens": 48,
+        "total_tokens": 120,
+        "completion_tokens": 72,
+        "prompt_tokens_details": null
+      },
+      "capability_status": {
+        "documented": "profile_spec_only",
+        "transport_accepted": "accepted",
+        "backend_confirmed": "unknown",
+        "status": "transport_only"
+      },
+      "note": "transport_accepted 只说明服务接受了请求；effort/采样是否生效保持 unknown"
+    },
+    {
+      "role": "assembler",
+      "service_id": "local_uncensored",
+      "model": "JonathanColetti/Qwen3.8-27B-Uncensored",
+      "parameter_profile": "qwen38_vllm",
+      "resolved_params": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 8192,
+        "chat_template_kwargs": {
+          "enable_thinking": false,
+          "preserve_thinking": false
+        }
+      },
+      "probe_id": "probe_2",
+      "probe_status": "OK",
+      "sent_params": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 256,
+        "reasoning_effort": "low",
+        "chat_template_kwargs": {
+          "enable_thinking": true,
+          "preserve_thinking": false,
+          "reasoning_effort": "low"
+        }
+      },
+      "context_window": 131072,
+      "usage": {
+        "prompt_tokens": 48,
+        "total_tokens": 120,
+        "completion_tokens": 72,
+        "prompt_tokens_details": null
+      },
+      "capability_status": {
+        "documented": "profile_spec_only",
+        "transport_accepted": "accepted",
+        "backend_confirmed": "unknown",
+        "status": "transport_only"
+      },
+      "note": "transport_accepted 只说明服务接受了请求；effort/采样是否生效保持 unknown"
+    },
+    {
+      "role": "judge_eval",
+      "service_id": "judge_remote",
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "parameter_profile": "deepseek_thinking_proxy",
+      "resolved_params": {
+        "max_tokens": 16384,
+        "reasoning_effort": "high",
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      "probe_id": "probe_3",
+      "probe_status": "OK",
+      "sent_params": {
+        "max_tokens": 1024,
+        "reasoning_effort": "low",
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      "context_window": 1000000,
+      "usage": {
+        "completion_tokens": 57,
+        "prompt_tokens": 40,
+        "total_tokens": 97,
+        "completion_tokens_details": {
+          "reasoning_tokens": 54
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "capability_status": {
+        "documented": "profile_spec_only",
+        "transport_accepted": "accepted",
+        "backend_confirmed": "unknown",
+        "status": "transport_only"
+      },
+      "note": "transport_accepted 只说明服务接受了请求；effort/采样是否生效保持 unknown"
+    }
+  ],
+  "probes": [
+    {
+      "response_model": "deepseek/deepseek-v4.1-flash-1017",
+      "model_alias_match": true,
+      "ok": true,
+      "generation_ok": true,
+      "probed": true,
+      "status": "OK",
+      "error": "",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 60,
+        "prompt_tokens": 40,
+        "total_tokens": 100,
+        "completion_tokens_details": {
+          "reasoning_tokens": 57
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "sent_params": {
+        "temperature": 0.0,
+        "max_tokens": 1024
+      },
+      "probe_event_count": 4,
+      "service_id": "aligned_target",
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "base_url": "https://api.test.tokenca.ke/v1",
+      "parameter_profile": "openai_chat",
+      "stage_id": "target_query",
+      "auth_required": true,
+      "context_window": 1000000,
+      "probe_id": "probe_1",
+      "roles": [
+        "target"
+      ]
+    },
+    {
+      "response_model": "JonathanColetti/Qwen3.8-27B-Uncensored",
+      "model_alias_match": true,
+      "ok": true,
+      "generation_ok": true,
+      "probed": true,
+      "status": "OK",
+      "error": "",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 48,
+        "total_tokens": 120,
+        "completion_tokens": 72,
+        "prompt_tokens_details": null
+      },
+      "sent_params": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 256,
+        "reasoning_effort": "low",
+        "chat_template_kwargs": {
+          "enable_thinking": true,
+          "preserve_thinking": false,
+          "reasoning_effort": "low"
+        }
+      },
+      "probe_event_count": 4,
+      "service_id": "local_uncensored",
+      "model": "JonathanColetti/Qwen3.8-27B-Uncensored",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "parameter_profile": "qwen38_vllm",
+      "stage_id": "plan",
+      "auth_required": false,
+      "context_window": 131072,
+      "probe_id": "probe_2",
+      "roles": [
+        "controller",
+        "assembler"
+      ]
+    },
+    {
+      "response_model": "deepseek/deepseek-v4.1-flash-1017",
+      "model_alias_match": true,
+      "ok": true,
+      "generation_ok": true,
+      "probed": true,
+      "status": "OK",
+      "error": "",
+      "finish_reason": "stop",
+      "usage": {
+        "completion_tokens": 57,
+        "prompt_tokens": 40,
+        "total_tokens": 97,
+        "completion_tokens_details": {
+          "reasoning_tokens": 54
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "sent_params": {
+        "max_tokens": 1024,
+        "reasoning_effort": "low",
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      "probe_event_count": 4,
+      "service_id": "judge_remote",
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "base_url": "https://api.test.tokenca.ke/v1",
+      "parameter_profile": "deepseek_thinking_proxy",
+      "stage_id": "judge_eval",
+      "auth_required": true,
+      "context_window": 1000000,
+      "probe_id": "probe_3",
+      "roles": [
+        "judge_eval"
+      ]
+    }
+  ],
+  "note": "HTTP 200 只证明接受请求；effort/采样/限额是否生效保持 unknown，除非部署方给出模板 hash 或运营说明。"
+}

@@ -1,0 +1,143 @@
+{
+  "source_url": "/home/pha/sci-deepseek/worktrees/refusal-recovery-04a/data/slices/strongreject_dataset.refusal30.dev.csv",
+  "revision": "f7cad6c17e624e21d8df2278e918ae1dddb4cb56",
+  "raw_sha256": "010cde6cad95b51e74a5399c088e50f7462d2a195c9c44a5abddc7499a7d02fa",
+  "adapter_version": "1",
+  "filter_version": "text_holdout_v1",
+  "split_seed": 20261112,
+  "tasks": [
+    "sr_0000",
+    "sr_0001",
+    "sr_0002",
+    "sr_0003",
+    "sr_0004",
+    "sr_0005",
+    "sr_0006",
+    "sr_0007",
+    "sr_0008",
+    "sr_0009",
+    "sr_0010",
+    "sr_0011",
+    "sr_0012",
+    "sr_0013",
+    "sr_0014",
+    "sr_0015",
+    "sr_0016",
+    "sr_0017",
+    "sr_0018",
+    "sr_0019",
+    "sr_0020",
+    "sr_0021",
+    "sr_0022",
+    "sr_0023",
+    "sr_0024",
+    "sr_0025",
+    "sr_0026",
+    "sr_0027",
+    "sr_0028",
+    "sr_0029"
+  ],
+  "duplicate_groups": {
+    "dup_aff633d7b6f6": [
+      "sr_0000"
+    ],
+    "dup_b74d04b07fea": [
+      "sr_0001"
+    ],
+    "dup_35e7106d51bc": [
+      "sr_0002"
+    ],
+    "dup_607e988f33d3": [
+      "sr_0003"
+    ],
+    "dup_1e48e9d16d8f": [
+      "sr_0004"
+    ],
+    "dup_92e9779f2302": [
+      "sr_0005"
+    ],
+    "dup_943b0f062a06": [
+      "sr_0006"
+    ],
+    "dup_0294601d0366": [
+      "sr_0007"
+    ],
+    "dup_b823095f92e0": [
+      "sr_0008"
+    ],
+    "dup_e005e193c294": [
+      "sr_0009"
+    ],
+    "dup_1717c0d5c699": [
+      "sr_0010"
+    ],
+    "dup_f65a3842e43c": [
+      "sr_0011"
+    ],
+    "dup_e66195f43fd4": [
+      "sr_0012"
+    ],
+    "dup_bc1253f8cc1c": [
+      "sr_0013"
+    ],
+    "dup_93b885585df0": [
+      "sr_0014"
+    ],
+    "dup_9c7a60818366": [
+      "sr_0015"
+    ],
+    "dup_ee818fb90623": [
+      "sr_0016"
+    ],
+    "dup_825d31a4b271": [
+      "sr_0017"
+    ],
+    "dup_897bc9b7cf70": [
+      "sr_0018"
+    ],
+    "dup_b75411bbfa1f": [
+      "sr_0019"
+    ],
+    "dup_cb3f4b2064ce": [
+      "sr_0020"
+    ],
+    "dup_f7e47fd5fad5": [
+      "sr_0021"
+    ],
+    "dup_db3cffd4f265": [
+      "sr_0022"
+    ],
+    "dup_3c910bf72cb2": [
+      "sr_0023"
+    ],
+    "dup_6d91ff8bebb6": [
+      "sr_0024"
+    ],
+    "dup_851fd327042d": [
+      "sr_0025"
+    ],
+    "dup_eba833f315b6": [
+      "sr_0026"
+    ],
+    "dup_0b83cfe2c814": [
+      "sr_0027"
+    ],
+    "dup_9e49a05c4c86": [
+      "sr_0028"
+    ],
+    "dup_65c750de3be0": [
+      "sr_0029"
+    ]
+  },
+  "included": 30,
+  "excluded": [],
+  "source_license": "",
+  "slice": {
+    "limit": null,
+    "offset": 14,
+    "n": 1,
+    "task_ids": [
+      "sr_0014"
+    ]
+  }
+}

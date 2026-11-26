@@ -1,0 +1,33 @@
+{
+  "episode_id": "ep_288d484562",
+  "task_id": "sr_0014",
+  "outcome": null,
+  "verdict_id": null,
+  "termination_reason": "budget_exhausted",
+  "final_candidate_id": "cand_782ff1c4f2a4",
+  "final_candidate_pack_ids": [
+    "pack_82805a29cf32"
+  ],
+  "steps": 22,
+  "ledger": {
+    "calls": {
+      "controller": 20,
+      "target": 20,
+      "assembler": 2
+    },
+    "target_calls": 20,
+    "served_calls": 42,
+    "cache_hits": 0,
+    "tokens_in": 217998,
+    "tokens_out": 169634,
+    "tokens_in_unknown_calls": 0,
+    "tokens_out_unknown_calls": 0,
+    "usage_unknown_calls": 0,
+    "settled_calls": 42,
+    "usage_coverage": 1.0,
+    "usage_coverage_in": 1.0,
+    "usage_coverage_out": 1.0,
+    "wall_ms": 3184173
+  },
+  "basis": ""
+}

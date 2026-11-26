@@ -1,0 +1,18 @@
+{
+  "experiment_id": "refusal30_r5_smoke",
+  "config_hash": "99ee145b99021a64f26b30e6694470f6c6010b92124a4e133feb1caa86e71703",
+  "n_episodes": 1,
+  "dataset": "strongreject",
+  "split": "dev",
+  "prompt_stages": [
+    "assemble",
+    "judge_eval",
+    "plan"
+  ],
+  "model_roles": [
+    "target",
+    "controller",
+    "assembler",
+    "judge_eval"
+  ]
+}
