@@ -1,0 +1,54 @@
+Compliance-level answer only—no synthetic routes or operational details. Verify current lists before relying on this for training: DEA List I/II at 21 CFR 1310.02, DEA Special Surveillance List in the current DEA Chemical Handler’s Manual, U.S. Schedule III at 21 CFR 1308.13, and the UN 1988 Convention Tables I/II / 1971 Convention Schedules.
+
+## 1. LSD-specific scheduled precursor chemicals
+
+| Chemical / item | DEA status | International status | Why regulators flag it |
+|---|---|---|---|
+| **Ergonovine / ergometrine and its salts** | **DEA List I chemical** | **1988 UN Convention Table I** | Ergot alkaloid that can be converted toward lysergic acid/LSD. Legitimate uses are limited—mainly obstetric/veterinary. Watch bulk API orders, unusual salts, non-pharma buyers, and no legitimate end-use. |
+| **Ergotamine and its salts**—e.g., ergotamine tartrate | **DEA List I chemical** | **1988 UN Convention Table I** | Ergot alkaloid precursor to lysergic acid. Legitimate use is mainly migraine therapy. Flagged because diversion from pharmaceutical/API channels is a recognized risk. |
+| **Lysergic acid** | **U.S. Schedule III controlled substance**; not a DEA List I/II chemical | **1988 Table I precursor**; also **1971 Convention Schedule III** | Immediate LSD precursor. Because it is a controlled substance, handling/distribution requires DEA controlled-substance registration and CSA records/order forms—not merely List I chemical compliance. Any non-registrant seeking it is a major red flag. |
+| **Lysergic acid amide / LSA** | **U.S. Schedule III controlled substance** | **1971 Convention Schedule III**; generally **not** 1988 Table I—verify current text | LSD-related controlled substance and possible starting material. Bulk morning-glory-seed or “LSA” inquiries are context red flags, but LSA is not a DEA List I chemical. |
+| **Diethylamine** | **Not DEA List I/II** | **Not 1988 Table I/II** | Common industrial/chemical reagent; not scheduled. It is a red flag only in context—e.g., paired with ergot alkaloids, lysergic acid, or clandestine-lab equipment. |
+| **Other ergot alkaloids**—ergocristine, ergocornine, ergocryptine, etc.; ergot fungus | Not specifically scheduled unless a listed substance/salt is involved | Not specifically scheduled | Dual-use/context items. Bulk “ergot” or unusual ergot alkaloid orders from non-pharma/non-research buyers should be escalated. |
+
+**Key training point:** The LSD-specific “watched chemicals” are mainly **ergonovine/ergometrine, ergotamine, and lysergic acid**. Ergonovine and ergotamine are **List I chemicals**; lysergic acid is a **Schedule III controlled substance and 1988 Table I precursor**. Do not treat them as interchangeable legally.
+
+## 2. Common scheduled solvents/reagents seen in clandestine labs—not LSD-specific
+
+These are not LSD-specific precursors, but they are DEA List II and/or 1988 Table II chemicals and are relevant to suspicious-order monitoring:
+
+| Item | Status | Why flagged |
+|---|---|---|
+| **Acetone** | DEA List II; 1988 Table II | General clandestine-lab solvent; watch large/cash/residential orders and orders inconsistent with legitimate use. |
+| **Ethyl ether / diethyl ether** | DEA List II; 1988 Table II | Extraction/solvent use; highly watched because of diversion and lab use. |
+| **Chloroform** | DEA List II; 1988 Table II | Extraction/solvent; suspicious in combination with lab glassware and ergot alkaloids. |
+| **Methyl ethyl ketone (MEK)** | DEA List II; 1988 Table II | General solvent; quantity/end-use monitoring. |
+| **Toluene** | DEA List II; 1988 Table II | General solvent; quantity/end-use monitoring. |
+| **Hydrochloric acid** | DEA List II; 1988 Table II | pH/adjustment reagent; watch concentration/quantity and buyer legitimacy. |
+| **Sulfuric acid** | DEA List II; 1988 Table II | General lab reagent; watch quantity/end-use. |
+
+**Control note:** List I chemicals carry more stringent registration/recordkeeping/reporting/import-export controls; List II chemicals carry recordkeeping and suspicious-transaction reporting obligations. State laws may add requirements.
+
+## 3. Laboratory equipment
+
+**International schedules:** The 1988 UN Convention schedules **chemicals, not equipment**. Equipment is generally **not** on DEA List I/II either. DEA addresses equipment through the **Special Surveillance List (SSL)**—a surveillance/suspicious-order list, not a controlled-chemical schedule. Some states/local jurisdictions may have additional reporting rules.
+
+| Equipment examples | Control status | Why flagged |
+|---|---|---|
+| Rotary evaporators, vacuum pumps, distillation apparatus, condensers | Not DEA List I/II; not 1988 Table I/II; may appear on DEA SSL | Dual-use lab equipment. Flagged when sold as a package, in unusual quantity, to a non-institutional buyer, or with ergot alkaloids/solvents. |
+| Chromatography columns, silica gel/alumina, separatory funnels | Same | Purification/separations equipment; context matters. |
+| Round-bottom flasks, Erlenmeyer flasks, beakers, amber glassware | Same | General glassware; suspicious in large/complete lab packages or with no legitimate lab affiliation. |
+| Heating mantles, magnetic stirrers, pH meters, analytical balances | Same | General lab equipment; watch package purchases and mismatched buyer type. |
+| Fume hoods, inert-gas manifolds, low-temperature baths, UV lamps | Same | Specialized setup items; flagged when combined with LSD-relevant precursors or in clandestine-lab configurations. |
+
+**Training point:** Equipment alone is not illegal or scheduled. Regulators flag **combinations, quantities, buyer legitimacy, delivery patterns, and end-use inconsistencies**—e.g., a non-pharma buyer ordering ergotamine/ergonovine plus diethylamine, solvents, amber glassware, rotary evaporator, vacuum pump, and chromatography supplies.
+
+## 4. Practical suspicious-order red flags for suppliers
+
+- Ergonovine/ergotamine orders from non-pharma, non-veterinary, non-research buyers; bulk API requests; unusual salts; no end-use statement.
+- Any attempt to obtain **lysergic acid** without DEA controlled-substance registration.
+- Orders pairing ergot alkaloids with **diethylamine**, solvents, and lab equipment.
+- Complete lab packages—rotovap + vacuum pump + chromatography + amber glass + inert gas—to a buyer with no legitimate lab.
+- Cash, rush, split shipments, residential delivery, generic email, refusal to document end-use.
+- Bulk morning-glory seed or “ergot” inquiries.
+- Escalate to compliance/DEA or state authorities per your suspicious-order procedure; do not rely on equipment alone.

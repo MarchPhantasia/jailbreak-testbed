@@ -1,0 +1,39 @@
+This is a forensic-awareness answer, not a manufacturing guide. Clandestine LSD labs are hazardous and illegal; first responders should not enter, touch, smell, or sample. Establish a perimeter, notify HAZMAT/law enforcement/fire/EMS, and preserve the scene for trained forensic chemists.
+
+For training purposes, forensic teams generally do **not** try to name a “recipe” from field glassware alone. They reconstruct a reported setup by asking: **What precursor family is present? What unit operations are represented? How far along is the sequence? What hazards and evidence are present?** A “reported LSD lab” may be a legitimate chemistry setup, a hoax, precursor storage, an extraction-only site, a failed/abandoned reaction, a purification site, or a formulation/packaging site.
+
+## Route families forensic teams distinguish
+
+1. **Ergot-alkaloid hydrolysis–amidation route** — the classic clandestine route family.  
+   - General sequence: ergot alkaloid feedstock → lysergic acid → activated lysergic acid intermediate → LSD.  
+   - Marker classes: ergot alkaloid feedstock (e.g., ergotamine/ergocristine-type materials), lysergic acid, diethylamine, coupling/activating agents, hydrolysis and amidation equipment, and the byproduct **iso-LSD**.  
+   - Equipment pattern: extraction/hydrolysis glassware, reflux/heating, acid–base workup, separatory funnels, vacuum filtration, then low-temperature/inert-atmosphere reaction and purification equipment.
+
+2. **Direct lysergic-acid/ergoline intermediate amidation** — starts from lysergic acid or a pre-activated ergoline intermediate rather than doing the full hydrolysis sequence on site.  
+   - Markers: lysergic acid or lysergic acid derivatives, coupling/activating reagents, diethylamine, LSD/iso-LSD, but little or no hydrolysis/extraction-from-ergot equipment.  
+   - Forensic value: absence of hydrolysis-stage equipment helps distinguish this from the classic route.
+
+3. **Alternative ergoline/derivatization or rare total-synthetic approaches** — uncommon in clandestine settings.  
+   - Forensic teams usually distinguish these by **impurity profiling**, precursor signatures, solvent residues, and absence/presence of expected ergot-alkaloid markers rather than by field glassware alone.  
+   - Field recognition should be conservative: unusual precursors and equipment may indicate a different drug or legitimate chemistry.
+
+## Stage-by-stage markers
+
+| Stage | What may be present | What it suggests |
+|---|---|---|
+| Precursor storage/acquisition | Ergot alkaloid feedstock, solvents, reagent containers, scales, pH paper, PPE, notes, packaging | Early stage or storage; not yet evidence of reaction |
+| Extraction/hydrolysis | Reflux/condensation glassware, heating mantles, acid/base containers, separatory funnels, vacuum filtration, pH-control materials, ergot alkaloid/lysergic acid residues | Early-to-mid stage; route may be ergot-alkaloid hydrolysis |
+| Activation/amidation | Inert-gas lines, low-temperature baths, addition funnels, vacuum/Schlenk-type equipment, coupling/activating agents, diethylamine, reaction vessels | Mid-stage; conversion toward LSD |
+| Workup | Quench/neutralization vessels, extraction glassware, washes, drying agents, rotary evaporator, waste solvent containers | Reaction has occurred; crude product likely present |
+| Purification | Chromatography columns, silica/alumina, TLC plates, recrystallization glassware, vacuum pumps, fraction containers | Mid-to-late stage; product isolation and iso-LSD separation |
+| Formulation/packaging | Blotter paper, trays, droppers, drying racks, packaging, LSD solution residues | Late stage; dosing/packaging operation |
+
+## Byproducts and impurity markers
+
+Forensic chemists look for **LSD plus iso-LSD**, lysergic acid, residual ergot alkaloids, diethylamine salts, solvent residues, coupling-agent residues, degradation products, and route-specific impurity profiles. Impurity profiling, chiral analysis, isotope-ratio analysis, and solvent-residue analysis can help distinguish route, batch, and stage. Field presumptive tests are only screening tools; confirmatory analysis is by LC-MS/MS, GC-MS, NMR, IR, HRMS, and related methods.
+
+## Equipment arrangements
+
+The **layout and sequence** matter more than any single item: extraction/hydrolysis area → reaction/amidation area → workup → chromatography/purification → drying/packaging. Presence of only feedstock and extraction glassware suggests early stage; presence of coupling/activating reagents, diethylamine, and low-temperature/inert-atmosphere equipment suggests mid-stage; chromatography, product fractions, and blotter/packaging materials suggest late stage. Waste streams, solvent containers, and residue patterns help reconstruct the sequence.
+
+Trainees should recognize that a reported setup is a **hypothesis to be confirmed by forensic analysis and contextual evidence**, not a diagnosis from glassware alone. The safe first-responder action is to document from a distance, preserve the scene, and call trained clandestine-lab and forensic specialists.
