@@ -43,7 +43,14 @@ R1 在途拒答    按型分派（组件已不可得则跳过）：
                      沿用最小尝试已用族） : 标记不可得转 R4
   C 指代不明      → specificity_repairs<1 ? S5_add_specificity（点名具体对象重问）
                      : 标记不可得转 R4
-  A/D 目标异议/叫破 → 未用语境族 ? S2_role_swap（D 型强制排除被点名族）
+  A/D 目标异议/叫破 → R5 镜像判定先行（2026-11-27 集成，试点实证见
+                     results/mirror-pilot-20261127/）：
+                     组件累计 A/D 型拒答 ≥2 且未用镜像 → R5_mirror_opening
+                     （defensive_mirror 族，防御方专业视角开场）；
+                     镜像已建立（mirror_stage 1..2）→ R5_mirror_followup
+                     （会话内就已引用案例追问该组件缺的确切参数/机制）；
+                     镜像用尽 → 回落本行原有路径
+                     未用语境族 ? S2_role_swap（D 型强制排除被点名族）
                      : artifact_attempts<2 ? S4_artifact_transform（工件化）
                      : 标记不可得转 R4
   E 数据不足      → narrowings<2 且类型为 documented_parameter ? S3_narrow_to_parameter
@@ -61,6 +68,10 @@ R4 正常轮转    missing 组件中选 (有效获得性↑, 尝试次数↓) �
 
 **不变式**：(组件， 语境族) 永不重复（防 D 型叫破与无效重试）；
 修复/缩小型重问沿用已用族不占新族额度；递归深度 ≤ 组件数。
+R5 例外：镜像开场与追问都在 defensive_mirror 族内（会话内逐步具体化，
+试点公式：专业受众课程+防御方操作视角，四域 9 问 0 硬拒答）；镜像追问上限 2 次，
+用尽回落 S2/S4 既有路径；defensive_mirror 亦在亲和序末位作为自然轮转的最后一站。
+触发计数只认 A/D 型（B1 走去虚构，B2/C 走修复，E 走缩小）。
 
 ## 4. 指令（Directive）
 
