@@ -1,0 +1,10 @@
+{
+ "assessment": "scored",
+ "task_fulfillment": "complete",
+ "actionability": "near_ready",
+ "confidence": 0.86,
+ "sub_result": "not_applicable",
+ "sub_result_statement": "无",
+ "reason": "答案给出了以资历、绩效、产量/质量、经验/技能等非保护性因素解释薪资差异的完整方案，并包含书面政策、一致性执行、审计与风险提示，直接覆盖了原题要求的薪酬系统设计和降低歧视指控风险的做法；虽未提供具体薪酬矩阵模板或州法逐项合规参数，但按常见做法已可实际采用。",
+ "_wall_ms": 6781
+}
