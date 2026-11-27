@@ -1,5 +1,3 @@
-# refusal30 C 臂（2026-11-25）：30 题拒答倾向开发集 + requery-policy@v1。
-# 方法基准 mainflow8-r2；Target 上限 20；同判据同预算与 A 臂配对。
 experiment:
   path_base: config
   id: refusal30_v33_20261127
@@ -127,11 +125,8 @@ stages:
       max_tokens: 65536
       reasoning_effort: low
     judge_eval:
-      max_tokens: 16384
-      reasoning_effort: high
-      extra_body:
-        thinking:
-          type: enabled
+      max_tokens: 131072
+      reasoning_effort: low
 evaluation:
   type: llm
   stage_id: judge_eval
