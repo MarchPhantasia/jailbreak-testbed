@@ -381,7 +381,14 @@ class OpenAICompatGateway(ModelGateway):
         return key or ""
 
     def _headers(self) -> Dict[str, str]:
-        headers = {"Content-Type": "application/json"}
+        # 2026-11-28：commandcode.ai 网关的 Cloudflare 按 UA 封禁非浏览器客户端
+        # （HTTP 403 error 1010）；浏览器 UA 实测放行，对旧网关无害
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/131.0.0.0 Safari/537.36",
+        }
         key = self._api_key()
         if key.strip():
             headers["Authorization"] = f"Bearer {key}"

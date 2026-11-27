@@ -85,6 +85,16 @@ HarmBench 全量不在本地（仅 6 条 cka 切片 + drone39 单条），引入
 
 ## 6. 变更日志
 
+- 2026-11-28 03:10：**新 deepseek provider 接入（操作者提供 commandcode.ai）**。旧
+  tokenca.ke deepseek-v4.1-flash-1017 停服（503）后先临时切 glm，操作者随后提供新
+  provider（api.commandcode.ai/provider/v1，deepseek/deepseek-v4.1-flash）。技术障碍：
+  该网关 Cloudflare 按 UA 封禁非浏览器客户端（HTTP 403 error 1010）→ clients.py
+  _headers() 加浏览器 User-Agent（对旧网关无害），实测 1.6s 返回。处置：Target 与
+  判官均切新 provider；glm 上的 fixup 中途作废，第 30 题（行 263）在新 deepseek 上
+  重跑——批次口径：29 题 deepseek-flash-1017@tokenca.ke + 1 题
+  deepseek-flash@commandcode + 终判 deepseek-flash@commandcode（judge v6+rubric v3），
+  provider/构建切换如实记录。key 存 .env（COMMANDCODE_API_KEY，gitignore 验证 ✓）。
+
 - 2026-11-28 01:35：**远端 deepseek v4.1-flash 停服（503）→ 临时切 glm-5.3**（操作者指示，
   glm 不换）。影响与处置：①v3.3 全批 29/30 完成（deepseek Target），第 30 题（行 263）
   卡死在断流端点 → 杀进程，fixup 单题重跑（glm Target，refusal30_v33fix_20261128，
