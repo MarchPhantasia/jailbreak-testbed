@@ -143,7 +143,8 @@ import re as _re_retry
 _TRANSIENT_HTTP = _re_retry.compile(r"HTTP (408|429|500|502|503|504)\b")
 _TRANSIENT_CONN = _re_retry.compile(
     r"connection (reset|refused|aborted)|timed? ?out|temporar|unreachable|"
-    r"goaway|bad gateway|service unavailable|econnreset|econnrefused", _re_retry.I)
+    r"goaway|bad gateway|service unavailable|econnreset|econnrefused|"
+    r"unexpected eof|eof occurred in violation|ssl", _re_retry.I)
 
 
 def classify_judge_failure(status: str, error: str, has_text: bool):
