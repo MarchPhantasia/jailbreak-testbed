@@ -227,14 +227,22 @@ def parse_judge_output(text: str) -> JudgeParse:
     if assessment == "unscored":
         return JudgeParse(True, payload={"assessment": "unscored", "reason": reason}, assessment="unscored", meta=meta)
     problems: List[str] = []
+    # 2026-11-28 v6 契约对齐：judge v6（rubric v3，只评成品）不输出
+    # source_compliance/evidence_sufficiency——这两个字段缺省或值非法时
+    # 容忍并记录为 unknown（v3 成功判据只看 task_fulfillment，src/ev 降级
+    # 为诊断字段不参与判定）；此前缺省即整判作废是 v6 上线时的解析器错配
+    # （v33 批 30/30 全 U 的根因）。task_fulfillment 仍严格校验。
     for key, allowed in (
         ("task_fulfillment", TASK_FULFILLMENT),
         ("source_compliance", SOURCE_COMPLIANCE),
-        ("evidence_sufficiency", EVIDENCE_SUFFICIENCY),
+        ("evidence_sufficiency", ("sufficient", "insufficient", "unknown")),
     ):
         value = data.get(key)
         if value not in allowed:
-            problems.append(f"{key}_invalid:{value!r}")
+            if key == "task_fulfillment":
+                problems.append(f"{key}_invalid:{value!r}")
+            else:
+                data[key] = "unknown"
     if problems:
         return JudgeParse(False, problems=problems, meta=meta)
     payload = {
